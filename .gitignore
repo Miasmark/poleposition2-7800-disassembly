@@ -1,0 +1,34 @@
+# The cartridge itself -- copyrighted, not distributed. Supply your own
+# legally-owned dump named exactly as below (or edit the .command scripts)
+# to reproduce anything in this repo.
+*.a78
+
+# Generated disassembly -- fully reproducible from annotations.json + the
+# ROM via the a7800-toolkit (see README.md). Not committed: this literally
+# is the copyrighted machine code in readable form, plus it's stale the
+# moment annotations.json changes.
+/src/
+/build/
+
+# Audio/video captures and renders -- derived from the cartridge's own
+# copyrighted graphics, and reproducible from the .inp recordings plus the
+# toolkit's capture tools.
+*.wav
+*.trk
+*.log
+/snap/
+
+# Raw memory dumps -- contain copyrighted ROM/RAM bytes, reproducible from
+# a recording + a probe script (see docs/FINDINGS.md for which probe made
+# each one).
+*.bin
+
+# Local MAME config -- machine-specific, regenerated on first run.
+/cfg/
+
+# Derived analysis manifests -- reproducible from the ROM + recordings via
+# the tools/*.lua scripts. Not the primary record (annotations.json and
+# docs/FINDINGS.md are); regenerate as needed.
+*-out.json
+
+.DS_Store

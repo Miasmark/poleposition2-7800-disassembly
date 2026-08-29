@@ -1,0 +1,45 @@
+{
+  "_README": [
+    "Started by init.py from Pole Position II (NTSC) (Atari) (1987) (A85FB962).a78.",
+    "",
+    "Every human judgement about this ROM lives in this file; the",
+    "generated listings are disposable, so renaming is free.",
+    "",
+    "What to do next, roughly in order:",
+    "",
+    "  1. python tools/disasm.py Pole Position II (NTSC) (Atari) (1987) (A85FB962).a78 -c annotations.json",
+    "     Read the coverage it reports. Low coverage is normal at",
+    "     first and is the number you are trying to move.",
+    "",
+    "  2. Every unresolved indirect jump it reports is a hole. Add the",
+    "     target to `entries`, or the pointer pair to `ram_vectors` if",
+    "     the handler is installed into RAM.",
+    "",
+    "  3. python tools/audiotrace.py Pole Position II (NTSC) (Atari) (1987) (A85FB962).a78 -c annotations.json",
+    "     Finds the sound code and the tables feeding it.",
+    "",
+    "  4. Name things in `labels` as soon as you know what they are.",
+    "",
+    "See docs/method.md for the working order and docs/pitfalls.md for",
+    "the traps that each cost real time."
+  ],
+  "entries": [
+    "rom:EC0E",
+    "rom:EBEF",
+    "rom:D205"
+  ],
+  "ram_vectors": [],
+  "bankat": {},
+  "labels": {
+    "rom:EC0E": "ENTRY_Irq",
+    "rom:EBEF": "ENTRY_Nmi",
+    "rom:D205": "ENTRY_Reset"
+  },
+  "ram": {},
+  "comments": {},
+  "headers": {},
+  "blocks": [],
+  "notes": {
+    "rom": "Pole Position II (NTSC) (Atari) (1987) (A85FB962).a78\nmapper linear, 32 KB, NTSC\nno POKEY declared; audio is the TIA's two voices\n\nVectors: IRQ $EC0E  NMI $EBEF  RESET $D205\n\nWritten by init.py. Everything here is read from the cartridge; the\njudgement calls are yours to add."
+  }
+}
