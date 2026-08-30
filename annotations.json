@@ -61,7 +61,8 @@
     "rom:ECA1": "DLI_ECA1",
     "rom:ED2B": "DLI_ED2B",
     "rom:F204": "DrawHud",
-    "rom:D3F7": "QualifyingPosition"
+    "rom:D3F7": "QualifyingPosition",
+    "rom:C92F": "SpeedDecay"
   },
   "ram": {
     "00DE": "RaceClockHi",
@@ -72,7 +73,8 @@
     "1FBA": "HudRow2Right",
     "00BC": "LapTimeHundredths",
     "00BD": "LapTimeSeconds",
-    "00BE": "LapTimeHundreds"
+    "00BE": "LapTimeHundreds",
+    "00CE": "Speed"
   },
   "comments": {},
   "headers": {},

@@ -426,6 +426,75 @@ The lap timer also advances at the same 1.667x rate as the race clock (80.62 at
 f7000 to 136.14 at f9000 is 55.52 units in 33.3 real seconds), so the two share
 one prescaler.
 
+## Speed, and how it bleeds off
+
+Speed is `$CE`, a single **binary** byte -- not BCD like everything else on
+the HUD. Found by reading two values off screenshots (158 at frame 4200, 241
+at frame 10600) and searching for exactly those bytes: one match in all of
+RAM, and no match at all for the BCD encodings. That it saturates at 255 is
+the confirming detail, since a BCD speedometer would cap at 199 or 999.
+
+Its behaviour through a crash confirms it beyond the fingerprint:
+
+    f7460  232    f7500  136    f7530   39
+    f7480  215    f7510   94    f7540    0
+    f7490  187    f7520   75
+
+A car decelerating to a stop over about eighty frames.
+
+### The decay is one eighth per update
+
+`rom:C92F`:
+
+    LDA Speed
+    LSR / LSR / LSR      speed >> 3
+    EOR #$FF
+    SEC
+    ADC Speed            EOR/SEC/ADC is the 6502 subtract idiom
+    STA Speed            so: speed = speed - speed/8
+
+Exponential decay, losing an eighth each time it runs. Immediately above it a
+threshold gates a call:
+
+    LDA Speed
+    CMP #$5A             90
+    BCC skip
+    LDA #$02
+    JSR sub_DEF3         only above 90
+
+So something -- plausibly the crash effect or its sound -- happens only when
+the impact is above 90.
+
+### Events in run-02
+
+Watching `$CE` for sharp losses across the recording gives eleven, of which
+two have the shape of a collision -- a slowdown, then a stop about fifty
+frames later:
+
+    f7485  215 -> 187     f7533   39 -> 0
+    f9753  237 -> 208     f9807   43 -> 0
+
+and five are identical, mechanical drops of exactly 31 from a saturated 255
+to 224, at f6537, f7263, f8379, f9105 and f10965. A collision would vary with
+approach speed; a fixed subtraction from a fixed value is code. Not yet
+identified, and `224` being `$E0` suggests a mask rather than a subtraction.
+
+The run contains one sign strike, puddles and a lot of skidding, so the two
+collision-shaped events are the sign and one other thing. Which is which is
+not established.
+
+### A note on the instrument, not the game
+
+Write taps on `$CE` reported **nothing at all** across the crash while the
+value demonstrably changed every few frames. The taps are not reliable here:
+the only one that ever fired was the BIOS clearing RAM at frame 1. Tapping
+the mirror at `$20CE` as well as `$00CE` was necessary and still not
+sufficient.
+
+The listing found all six writers of the byte immediately. Where MAME's
+instruments have been unreliable all through this project, the disassembly
+has not been -- and it should be the first place looked, not the fallback.
+
 ## What's open
 
 * The road bands: how many there are, and where the run ends.
