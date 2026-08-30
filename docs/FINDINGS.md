@@ -207,11 +207,19 @@ holds `01` through the 120-second qualifying run and borrows to `00` at the
 100-to-99 boundary, which is what proves the two are coupled. For every
 two-digit allowance it is `00`.
 
-**It ticks every 30 frames**, so a driving second is half a real one and the
-clock runs at twice real time. Measured on a clean running stretch: 64 -> 60
-across frames 6540 to 6660, four units in 120 frames, exactly. During
-qualifying it looked closer to 36 frames a unit, which is not asserted here --
-that window spans a phase change and is the less trustworthy measurement.
+**It ticks every 36 frames**, so a driving second is about 0.6 of a real one
+and the clock runs at roughly 1.67x real time. Measured at single-frame
+resolution: 26 down to 00 across frames 10071 to 10971, every transition
+exactly 36 frames apart.
+
+An earlier version of this file said 30 frames, "exactly", and that was
+wrong -- it came from sampling the clock every 30 frames and seeing one
+change per sample, which is aliasing and will report the sampling interval
+back at you whatever the truth is. The same note dismissed a ~36-frame
+estimate from the qualifying phase as the less trustworthy measurement. It
+was the correct one. **Never measure a period at the period you are
+sampling at**, and treat a result that lands exactly on the sampling
+interval as evidence of the method rather than the subject.
 
 The clock also stops. Between phases (`$DD` = `$08`) both bytes sit at `$75`
 and nothing moves for hundreds of frames. That reading is not a clock value at
@@ -238,6 +246,14 @@ wording does not make and the RAM does.
 
 Against the manual: 120 confirmed, 75 confirmed, 60 confirmed as the extension
 amount, and the clock reaching zero where the recording ends.
+
+**The 200-points-a-second rule cannot be checked from `run-02`.** The game
+tallies cars passed and seconds remaining into the score before the game-over,
+but this run ended *because* the clock hit zero, so the seconds component is
+zero by construction. There is also no rapid drain in `$DF` anywhere in the
+run -- it counts down at its normal 36 frames a tick all the way to `00` at
+f10971 -- so nothing here converts time into points. Testing that rule needs a
+recording that finishes a race with time left.
 
 ### The messages are not findable by search
 
