@@ -119,10 +119,49 @@ not the cartridge's: `$FB1C` onward in this ROM is all `$FF` padding). So
 whatever index 0 would jump to is either installed by the game later, or is
 BIOS leftovers.
 
+## Two display lists, and the road
+
+The game builds its display list pointer in exactly two places -- and neither
+is the address a tap reports. `$1F84` is the BIOS's display list; write taps on
+`DPPH`/`DPPL` catch the BIOS's stores and stop firing before the cartridge
+makes its own, which yields a screenful of nonsense that reads like a decode
+failure. The real ones come straight out of the code:
+
+    $D89B   LDA #$22 / STA DPPH,  LDA #$6B / STA DPPL   ->  DLL $226B
+    $D8D6   LDA #$22 / STA DPPH,  LDA #$00 / STA DPPL   ->  DLL $2200
+
+Two screens. Walked live at frame 3000 of `run-01`, `$226B` draws from `$A5xx`,
+`$A6xx` and `$B0xx` in small pieces -- text and panel furniture. `$2200` is the
+race, and the lower half of it is the road:
+
+    zone 20   $8000/w6      zone 28   $8038/w16  $8047/w19
+    zone 21   $8006/w8      zone 29   $805A/w16  $8069/w21
+    zone 22   $800E/w12     zone 30   $807E/w16  $808D/w25
+    zone 27   $801A/w30     zone 31   $80A6/w16  $80B5/w29
+
+**The bands are packed end to end by width.** `$8000`+6 = `$8006`, +8 =
+`$800E`, +12 = `$801A`, +30 = `$8038`. Where a zone draws two objects the
+first is a fixed 16 and lands 15 bytes on -- an off-by-one in either the width
+decode or the packing, not yet run down -- while the second grows steadily:
+19, 21, 25, 29, and its successor follows exactly.
+
+Widths increasing down the screen is a road in perspective: narrow at the
+horizon, wide at the car. So **the block at `$8000` opens with the road
+bands**, stored as a contiguous run of variable-width strips, and MARIA is
+observed fetching from them rather than this being inferred from entropy or a
+render.
+
+The same screen also fetches from `$87xx`-`$8Bxx`, `$9Exx`, `$A3xx`, `$AAxx`
+and `$B0xx`, all inside the same block. So it is graphics throughout, reached
+from many display-list entries rather than one table -- which is why a static
+search for references into it finds so little.
+
 ## What's open
 
-* The remaining 23,730 bytes, dominated by `$8000-$C1A4` less the handler
-  table now carved out of it. Render it; find what points into it.
+* The road bands: how many, where the run ends, and what the fixed-16 first
+  object in each paired zone is. The off-by-one above wants settling first.
+* The rest of `$8000-$C1A4`. The display list names `$87xx`-`$8Bxx`, `$9Exx`,
+  `$A3xx`, `$AAxx`, `$B0xx`; nothing yet says what they draw.
 * The RAM handler at `$2456`: nothing selects index 0 and nothing writes
   that address during `run-01`. Settle whether any mode does.
 * `run-01` (17,115 frames) is the only recording: the "Test" track, a rounded
