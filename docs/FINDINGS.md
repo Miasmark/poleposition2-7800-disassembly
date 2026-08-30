@@ -93,11 +93,38 @@ structure identified in it, and evidence that the block is not purely graphics.
 Coverage after all this: **27.5%** (9,014 bytes, 4,230 instructions), 23,730
 bytes still in 24 gaps. Round-trip byte-identical throughout.
 
+## The chain, and an entry nothing selects
+
+Each handler installs the index for the next one, which is what makes it a
+chain rather than a table lookup. Every site that writes `ram_00FF`:
+
+    $D890  #$01     $EC78  #$04     $ED2B  #$09  (via $EC78)
+    $D8D4  #$07     $EC9A  #$01     $ED30  #$0A  (guarded, see below)
+    $EC52  #$02     $ECA6  #$08     $F169  #$07
+    $EC5F  #$03
+
+So indices **1, 2, 3, 4, 7, 8, 9 and 10** are installed. `$ED30` is the only
+conditional one: it loads `$0A`, and only stores it when `ram_0048` is in
+`4..7`, otherwise branching away -- a range check on some game-state value.
+
+**Nothing installs index 0.** No path found writes it, and across the whole of
+`run-01` the address it points at (`$2456`) is never executed. Two readings,
+and the evidence does not separate them: the entry is dead, or it belongs to a
+mode this recording never enters. It is written down as unselected rather than
+as dead, because "no path found" is a statement about the search.
+
+That `$2456` is in RAM is itself worth noting. The BIOS copies into `$2300`
+and `$2400` during startup (`$FB2F`/`$FB35`, 256 iterations each -- BIOS code,
+not the cartridge's: `$FB1C` onward in this ROM is all `$FF` padding). So
+whatever index 0 would jump to is either installed by the game later, or is
+BIOS leftovers.
+
 ## What's open
 
 * The remaining 23,730 bytes, dominated by `$8000-$C1A4` less the handler
   table now carved out of it. Render it; find what points into it.
-* The RAM handler at `$2456` -- what copies it there, and from where.
+* The RAM handler at `$2456`: nothing selects index 0 and nothing writes
+  that address during `run-01`. Settle whether any mode does.
 * `run-01` (17,115 frames) is the only recording: the "Test" track, a rounded
   rectangle, driven to completion. It includes a crash and a stretch where a
   system dialog took the controls, so input during that window is not the
