@@ -39,7 +39,12 @@
   "rom:ED2B",
   "rom:ED30",
   "rom:ED4A",
-  "rom:ED4F"
+  "rom:ED4F",
+  "rom:D701",
+  "rom:C1D3",
+  "rom:C600",
+  "rom:C705",
+  "rom:C3B2"
  ],
  "ram_vectors": [],
  "bankat": {},
@@ -67,7 +72,15 @@
   "rom:C907": "CollisionContact",
   "rom:C93E": "CrashStart",
   "rom:D015": "SpawnObjectCommon",
-  "rom:D6E8": "SpeedPenalty16"
+  "rom:D6E8": "SpeedPenalty16",
+  "rom:C269": "SkidCheck",
+  "rom:C2BC": "SpeedUpdate",
+  "rom:C3B2": "SkidDrag",
+  "rom:C47A": "SetGearLo",
+  "rom:C489": "SetGearHi",
+  "rom:C4F7": "SteerAndLimits",
+  "rom:D701": "PhysicsUpdate",
+  "rom:C17E": "ReadController"
  },
  "ram": {
   "00DE": "RaceClockHi",
@@ -88,7 +101,13 @@
   "19C4": "ObjZLo",
   "19D4": "ObjZHi",
   "1A00": "ObjLateral",
-  "1A2E": "ObjLatOffset"
+  "1A2E": "ObjLatOffset",
+  "00D0": "LateralVel",
+  "00D2": "SkidFlag",
+  "00D7": "InputAccel",
+  "00D8": "InputBrake",
+  "00DA": "RoadCurve",
+  "00DB": "Gear"
  },
  "comments": {},
  "headers": {},
@@ -110,6 +129,18 @@
    "end": "rom:AE2F",
    "name": "dat_HudSpeedTemplate",
    "note": "The SPEED field's template, copied to ram_1FBA by rom:F204. Reads 'SPEED  00' then $AC $AD, which render as the 'mph' unit on screen."
+  },
+  {
+   "loc": "rom:C3C1",
+   "end": "rom:C3E1",
+   "name": "dat_AccelCurves",
+   "note": "Two 16-entry acceleration curves, indexed at rom:C2F6 by (Speed >> 4) + Gear, where Gear is 0 for LO and $10 for HI. Entries are signed and ADDED to Speed at rom:C33A.\\n\\nLO  03 05 07 08 07 06 05 04 03 02 00 00 FF FF FE FC\\nHI  01 01 01 02 03 05 07 06 05 04 03 02 01 01 01 01\\n\\nLO pulls hardest at index 3 (speed 48-63) and then goes NEGATIVE from index 12, actively braking the car above about 192 -- so LO has a top speed near 176. HI barely moves the car off the line at +1 but never stops pulling, which is the only way to reach the 255 the HUD tops out at. That is the real Pole Position gearbox, in sixteen bytes each."
+  },
+  {
+   "loc": "rom:C965",
+   "end": "rom:C96D",
+   "name": "dat_SkidThresholds",
+   "note": "Eight traction thresholds, indexed by Speed >> 5 (rom:C269 shifts right five times, so 0-7 across the whole speed range): 24, 24, 22, 20, 19, 18, 16, 14. SkidCheck skids the car when |LateralVel - RoadCurve| reaches the threshold for the current speed band, so the faster the car is going the less divergence it takes to break traction."
   },
   {
    "loc": "rom:C976",

@@ -611,6 +611,121 @@ The listing found all six writers of the byte immediately. Where MAME's
 instruments have been unreliable all through this project, the disassembly
 has not been -- and it should be the first place looked, not the fallback.
 
+## The physics, and 929 bytes that were hiding behind a JMP
+
+Six routines wrote `Speed`, and not one of them accelerated the car. That was
+the tell. `rom:D701` sits in the listing as a nine-byte gap, and those nine
+bytes are three well-formed calls:
+
+    D701: 20 D3 C1   JSR $C1D3     into a 442-byte gap
+    D704: 20 00 C6   JSR $C600     into a 119-byte gap
+    D707: 20 05 C7   JSR $C705     into a 176-byte gap
+
+It is a gap only because `rom:D6FE` does `JMP sub_D70A` and steps straight
+over it -- the penalty path skipping the normal update. Nothing reachable
+calls `$D701`, so the tracer never entered, and three entire routines stayed
+dark. Declaring `rom:D701`, `rom:C1D3`, `rom:C600`, `rom:C705` and `rom:C3B2`
+as entries took coverage from 27.5% to **30.3%** (+929 bytes, +471
+instructions) and turned six `Speed` writers into fourteen.
+
+`--check-gaps` had listed all of this under "70 coincidences", which is
+correct by its own rule and useless here: nothing inside an unreached region
+can be an instruction start, so the test cannot distinguish dead data from
+live code that simply has no reachable caller. What actually settled it was
+the internal consistency -- `$C25A` and `$C2A4` both `JSR $C3B2`, `$C317` and
+`$C333` both `JMP $C33A`. Independent references converging on the same
+targets are not coincidence.
+
+### The gear, found at last
+
+`Gear` is `$DB`, and it is written in exactly two places, each of which also
+writes the two HUD characters for it:
+
+| routine | `Gear` | HUD at `$1FC6`/`$1FC7` |
+|---|---|---|
+| `SetGearLo` rom:C47A | `$00` | `$9F $A2` = LO |
+| `SetGearHi` rom:C489 | `$10` | `$9D $9E` = HI |
+
+That closes an open question that had eleven candidate bytes and no way to
+choose between them. The value is not a flag, it is *an index*: rom:C2F6 forms
+`(Speed >> 4) + Gear` and reads `dat_AccelCurves`, so LO uses entries 0-15 and
+HI uses 16-31 of one 32-byte table.
+
+    LO  03 05 07 08 07 06 05 04 03 02 00 00 FF FF FE FC
+    HI  01 01 01 02 03 05 07 06 05 04 03 02 01 01 01 01
+
+LO pulls hardest at 48-63mph and then goes **negative** above about 192, so it
+actively brakes the car -- a top speed near 176. HI barely moves off the line
+at +1 but never stops pulling, which is the only way to reach the 255 the HUD
+saturates at. The whole gearbox is thirty-two bytes.
+
+### Every way the car loses speed
+
+| mechanism | amount | where |
+|---|---|---|
+| accelerator held | `+dat_AccelCurves[(Speed>>4)+Gear]` | rom:C2F6 |
+| accelerator released | **-5** | rom:C340 |
+| brake (`InputBrake`) | **-10** | rom:C352 |
+| skidding | **-((Speed>>5) & 3)** | `SkidDrag` rom:C3B2 |
+| puddle | **-Speed/8** | `SpeedDecay` rom:C92F |
+| clock expired | **-15** | rom:C2E0 |
+| crashing | **-25** | rom:C2C0 |
+| scripted stop | **-16 or -17** | rom:D6EE |
+
+The scripted stop is worth a note: `LDA Speed / SBC #$10` has **no `SEC`** in
+front of it, so with carry clear it subtracts 17, not 16. That is exactly the
+`-17` ramp measured off the qualifying and time-out stops, and it means the
+routine's name is a slight lie in a way the listing makes obvious.
+
+## Skidding, and dragging along the edge
+
+`SteerAndLimits` at rom:C4F7 does two things. Steering is speed-scaled: rom:C515
+walks an eight-entry threshold table and accumulates the input once per
+threshold the current speed clears, so the car moves further sideways per frame
+the faster it goes. Then rom:C537 applies the track limits:
+
+| `PlayerX` | zone |
+|---|---|
+| \|x\| < 60 (`$3C`/`$C4`) | on the road |
+| 60 to 103 | off the road, on the verge |
+| 104 (`$68`/`$98`) | hard clamp, **and `LateralVel` is zeroed** |
+
+In `run-02` the clamp never engages -- the furthest out is 102 -- so the outer
+wall is never reached. There were eight verge excursions.
+
+### The drag is the skid, not the verge
+
+`SkidCheck` at rom:C269 takes `X = Speed >> 5` (0-7), and skids the car when
+`|LateralVel - RoadCurve|` reaches `dat_SkidThresholds[X]`: **24, 24, 22, 20,
+19, 18, 16, 14**. The wheels are pointing one way and the car is going another,
+and the faster it goes the less divergence it takes. On a skid rom:C297 starts
+sound 3, the screech, and sets `SkidFlag`; rom:C2A4 then calls `SkidDrag`, which
+is the only caller path that costs speed. rom:C2AA is the exit, stopping sounds
+3 and 4.
+
+Measured across `run-02`: 234 frames of skidding in eight episodes, **every one
+of which loses speed**.
+
+    f5145 ..5168   24 fr  verge   0%   229 -> 223   (-6)
+    f5349 ..5408   60 fr  verge  38%   239 -> 188  (-51)
+    f6819 ..6842   24 fr  verge   0%   253 -> 247   (-6)
+    f7227 ..7238   12 fr  verge   0%   253 -> 251   (-2)
+    f7449 ..7478   30 fr  verge  77%   234 -> 217  (-17)
+    f9123 ..9134   12 fr  verge   0%   224 -> 222   (-2)
+    f9537 ..9560   24 fr  verge   0%   253 -> 247   (-6)
+    f9723 ..9764   42 fr  verge   5%   248 -> 180  (-68)
+
+**79% of the skidding happens on the road.** So skidding is a cornering
+mechanic and the verge is where a bad one puts you, not its cause -- there is
+no separate off-road drag anywhere in the speed code. The apparent one is real
+but indirect: with the throttle held and crashes excluded, speed falls on 6.2%
+of verge frames against 0.56% on the road, an eleven-fold difference, and the
+skid accounts for it.
+
+The episode at f7449-7478 makes the chain explicit. It is 77% on the verge and
+ends **one frame before the crash at f7479** -- the slide ran the car off the
+road and into the sign. The two are one event, not two.
+
 ## What's open
 
 * `SpeedPenalty16` at rom:D6E8 subtracts a flat 16 from speed, clamped at
