@@ -345,6 +345,38 @@ The names sit in a table with a digit and a `$B0` separator after each:
 lap completion is not quite what was described from memory, and the ROM is the
 authority.
 
+## The HUD, read off the screen
+
+A snapshot mid-race settles what the templates say and what each field is:
+
+    TOP    23400        UNIT      LAP   80:62
+    SCORE  23400          51      SPEED 255mph
+                          HI
+
+Which confirms the decode exactly, including the odd part. **The timer is
+labelled `UNIT`.** The bytes are `A8 A1 9E A7` and there is no other reading;
+the screen agrees. A racing game whose clock is captioned "UNIT" is peculiar
+enough to look like a decoding error, and it is not one -- worth recording
+before someone "corrects" it later.
+
+The fields, and what each confirms:
+
+| field | template | confirms |
+|---|---|---|
+| TOP / SCORE | `dat_C976` / `dat_C98A` | both read 23400 -- equal, because the score IS the high score |
+| UNIT | in `dat_C976` | shows 51 at frame 7000, and `$DF` measured 54 at f6900 and 45 at f7200 |
+| HI | | the gear, under the timer |
+| LAP | `dat_C9A2` | 80:62, the lap timer, separate from the race clock |
+| SPEED | `dat_AE24` | 255mph -- and `{AC}{AD}` in that template are the "mph" glyphs |
+
+The UNIT value cross-checking against `$DF` is the useful one: the clock was
+found by a RAM search and the display was decoded from ROM templates, by
+different routes, and they agree on the same number at the same frame.
+
+A second snapshot at frame 9000 reads TOP/SCORE 31820, UNIT 55, LAP 136:14,
+SPEED 255mph -- so the score rose by 8,420 between the two, and the lap timer
+runs in a different format from the race clock (`136:14` rather than seconds).
+
 ## What's open
 
 * The road bands: how many there are, and where the run ends.

@@ -90,6 +90,12 @@
       "end": "rom:A0B8",
       "name": "dat_TrackNames",
       "note": "Track names as text: TEST, FUJI, SEASIDE, each followed by a digit and a $B0 separator; SUZUKA sits apart at $A4A4. Finding these is what proved J/K/Z live at $B1-$B3 rather than being absent from the font -- see docs/FINDINGS.md, including the retraction of the claim that these names were graphics."
+    },
+    {
+      "loc": "rom:AE24",
+      "end": "rom:AE2F",
+      "name": "dat_HudSpeedTemplate",
+      "note": "The SPEED field's template, copied to ram_1FBA by rom:F204. Reads 'SPEED  00' then $AC $AD, which render as the 'mph' unit on screen."
     }
   ],
   "notes": {
