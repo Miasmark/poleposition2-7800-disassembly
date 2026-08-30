@@ -44,7 +44,21 @@
   "rom:C1D3",
   "rom:C600",
   "rom:C705",
-  "rom:C3B2"
+  "rom:C3B2",
+  "rom:D2D3",
+  "rom:D305",
+  "rom:D31C",
+  "rom:D33C",
+  "rom:D582",
+  "rom:D83D",
+  "rom:D56E",
+  "rom:D3F7",
+  "rom:D4B6",
+  "rom:D540",
+  "rom:D602",
+  "rom:D69E",
+  "rom:D5E1",
+  "rom:D725"
  ],
  "ram_vectors": [],
  "bankat": {},
@@ -113,6 +127,12 @@
  "headers": {},
  "blocks": [
   {
+   "loc": "rom:9CCF",
+   "end": "rom:9CE3",
+   "name": "dat_StateHandlersHi",
+   "note": "High bytes of the state dispatch table; see dat_StateHandlersLo at rom:A7C2. States 2/16, 3/17, 4/5 and 6/7 share handlers."
+  },
+  {
    "loc": "rom:A0A0",
    "end": "rom:A0B8",
    "name": "dat_TrackNames",
@@ -123,6 +143,12 @@
    "end": "rom:A4A2",
    "name": "dat_DliHandlerTable",
    "note": "The display-interrupt handler table, found live then read statically. The NMI entry at rom:EBEF indexes TWO PARALLEL TABLES by ram_00FF -- low bytes at $A48A, high bytes at $A496, twelve entries -- builds the vector in ram_00FD/FE and does JMP (ram_00FD) at rom:EC06. Eleven targets are in ROM and are now entries; index 0 is $2456, which is RAM, so that handler is code copied there at run time and cannot be reached statically. This table is the first structure identified inside the 16,805-byte block at $8000, and it was found because --check-gaps flagged the indirect jump rather than letting it pass."
+  },
+  {
+   "loc": "rom:A7C2",
+   "end": "rom:A7D6",
+   "name": "dat_StateHandlersLo",
+   "note": "Low bytes of the main game-state dispatch table, twenty entries. sub_D253 at rom:D25E indexes this and dat_StateHandlersHi by the state in $9D, builds the vector in $40/$41 and does JMP ($0040) at rom:D26A. The tracer cannot follow that, so sixteen of the twenty handlers sat in gaps -- several landing exactly on a gap start address, which is what confirmed the table. Entry 11 is rom:D3F7, QualifyingPosition, which had already been identified independently. Entry 20 reads $00AA, out of ROM, so the table is exactly twenty long."
   },
   {
    "loc": "rom:AE24",
@@ -147,6 +173,12 @@
    "end": "rom:C9AD",
    "name": "dat_HudTemplates",
    "note": "The HUD text, copied into the display buffer by rom:F204: $C976 (19 bytes) -> ram_1F8A, $C98A (19) -> ram_1FA8, $C9A2 (11) -> ram_1F9D, and dat_AE24 (11) -> ram_1FBA. Decoding these against the labels on screen -- TOP, SCORE, LAP, SPEED -- is what gave the character set."
+  },
+  {
+   "loc": "rom:D3A0",
+   "end": "rom:D3A4",
+   "name": "dat_D3A0",
+   "note": "Four bytes, 01 05 09 0D -- an arithmetic sequence, step 4, so a small index or offset table rather than code. Flagged by --check-gaps as a gap stepped over by rom:D39D JMP $D713, which is the shape that hid the physics at rom:D701; decoding it by hand settled it as data. Nothing traced references it yet, so which routine indexes it is still open."
   },
   {
    "loc": "rom:DBA0",

@@ -726,6 +726,66 @@ The episode at f7449-7478 makes the chain explicit. It is 77% on the verge and
 ends **one frame before the crash at f7479** -- the slide ran the car off the
 road and into the sign. The two are one event, not two.
 
+## The game-state machine, and sixteen handlers behind an indirect jump
+
+`sub_D253` at rom:D253 is the main loop's dispatcher. It waits for the frame
+tick, then:
+
+    LDX $9D                    ; the game state
+    LDA dat_StateHandlersLo,X / STA $40
+    LDA dat_StateHandlersHi,X / STA $41
+    JMP ($0040)
+
+Two parallel tables again -- low bytes at rom:A7C2, high bytes at rom:9CCF --
+the same shape as the DLI handler table at rom:A48A. A tracer cannot follow
+`JMP ($0040)`, so **sixteen of the twenty handlers were sitting in gaps**.
+
+Three of the targets land exactly on a gap's start address (`$D2D3`, `$D4B6`,
+`$D725`), which is what confirms the table rather than merely suggesting it --
+a random 16-bit read has no reason to hit a boundary the coverage map drew
+independently. Entry 11 is `$D3F7`, `QualifyingPosition`, identified months
+earlier from screen behaviour and never connected to a caller until now. Entry
+20 reads `$00AA`, outside ROM, so the table is exactly twenty long.
+
+States 2/16, 3/17, 4/5 and 6/7 share handlers. Declaring all sixteen took
+coverage from 30.3% to **33.5%** and emptied every dark gap in the `$D` page:
+`$D4B6` (562 bytes), `$D2D3` (209), `$D9D5` (97), `$D82B` (93), `$DB40` (60)
+and `$D725` (30) were all state handlers.
+
+### What is left, and what kind of thing it is
+
+21,412 bytes remain in 21 ranges, but they are not all the same kind of
+unknown. Sorting them by whether traced code already reads into them:
+
+**Data the code demonstrably uses** -- these are understood in role if not in
+detail, and closing them is declaration work, not discovery:
+
+| range | bytes | reads from traced code |
+|---|---|---|
+| `$AE2F-$C17D` | 4943 | 107 reads, 36 addresses |
+| `$A7D6-$AE23` | 1614 | part of the 89-read `$A4A2` region |
+| `$8000-$9CCE` | 7375 | the graphics block; the display list names `$87xx`-`$8Bxx`, `$9Exx`, `$AAxx`, `$B0xx` |
+| `$DE0D-$DEC7` | 187 | 48 reads, 24 addresses -- dense, likely the sound tables around `sub_DED6`/`sub_DEF3` |
+| `$DBB0-$DBDE` | 47 | 14 reads |
+
+**Silent** -- nothing traced touches these at all, which is exactly where the
+physics and the state handlers were both found:
+
+| range | bytes | note |
+|---|---|---|
+| `$F281-$FFFF` | 3455 | includes the 6502 vectors at `$FFFA` |
+| `$E049-$E285` | 573 | the largest silent range left |
+| `$E80F-$E8AB` | 157 | |
+| `$EA41-$EAB8` | 120 | |
+| `$EB07-$EB55` | 79 | sits between the two perspective tables |
+| `$EBA4-$EBEE` | 75 | runs up to the NMI at `$EBEF` |
+| `$C955-$C964`, `$C96D-$C975` | 25 | either side of `dat_SkidThresholds` |
+
+`--check-gaps` now reports no gap stepped over by a JMP, no real call site into
+any gap, and two `JMP ($xxxx)` through RAM pointers: rom:D26A, which is the
+dispatcher above and now resolved, and rom:EC06, the DLI table, whose index-0
+handler at `$2456` remains the one entry nothing selects.
+
 ## What's open
 
 * `SpeedPenalty16` at rom:D6E8 subtracts a flat 16 from speed, clamped at
