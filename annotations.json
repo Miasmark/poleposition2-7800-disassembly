@@ -61,7 +61,10 @@
     "rom:ECA1": "DLI_ECA1",
     "rom:ED2B": "DLI_ED2B"
   },
-  "ram": {},
+  "ram": {
+    "00DE": "RaceClockHi",
+    "00DF": "RaceClock"
+  },
   "comments": {},
   "headers": {},
   "blocks": [

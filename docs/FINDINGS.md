@@ -4,6 +4,28 @@ Day one. Almost everything below is a measurement or an explicitly-flagged
 hypothesis, and the two are kept distinct: where something is read from the
 code but never watched running, it says so.
 
+## The manual, as a source of numbers to look for
+
+The AtariAge manual scan gives concrete values, which is what makes it useful
+here: they are things to find in the ROM rather than claims to repeat.
+
+| | |
+|---|---|
+| tracks | four: TEST, FUJI, SEASIDE, SUZUKA |
+| qualifying | 120 driving seconds; 73"00 or better to qualify |
+| lap allowance | 75 seconds for the first, 60 for each after |
+| race length | 5 laps |
+| score | 10,000 a lap, 50 a car passed, 200 a second left at the finish |
+| qualifying bonus | 4,000 at 58"50 down to 200 at 73"00 |
+| hazards | signs cause a wipeout, puddles slow you considerably, skidding cuts speed |
+| controls | joystick back for low gear, forward for high; left button accelerates, right brakes |
+
+FUJI is listed as the track with billboards, puddles and other cars, which
+matches `run-02` exactly.
+
+Nothing above is a finding. Every one of those numbers is a hypothesis about
+what is in the ROM until it is located there.
+
 ## The cartridge
 
 | | |
@@ -178,6 +200,55 @@ and `$B0xx`, all inside the same block. So it is graphics throughout, reached
 from many display-list entries rather than one table -- which is why a static
 search for references into it finds so little.
 
+## The race clock
+
+`$DF` is the clock, in BCD, counting down. `$DE` extends it above 99 -- it
+holds `01` through the 120-second qualifying run and borrows to `00` at the
+100-to-99 boundary, which is what proves the two are coupled. For every
+two-digit allowance it is `00`.
+
+**It ticks every 30 frames**, so a driving second is half a real one and the
+clock runs at twice real time. Measured on a clean running stretch: 64 -> 60
+across frames 6540 to 6660, four units in 120 frames, exactly. During
+qualifying it looked closer to 36 frames a unit, which is not asserted here --
+that window spans a phase change and is the less trustworthy measurement.
+
+The clock also stops. Between phases (`$DD` = `$08`) both bytes sit at `$75`
+and nothing moves for hundreds of frames. That reading is not a clock value at
+all, and decoding it as a 16-bit pair produces a nonsensical 7575 -- which is
+exactly what happened here before the frozen interval was recognised for what
+it is.
+
+### Laps extend the clock, they do not reset it
+
+Watching for upward jumps found four, and calling them "resets" was wrong:
+
+    f684     0 -> 120     qualifying allowance, set
+    f3402    0 ->  75     race start allowance, set
+    f6504    5 ->  65     EXTENSION: 5 remaining, 60 added
+    f8814    1 ->  60     extension
+    f10974        -> 0    time out, and the recording ends at f11942
+
+`5 -> 65` is a clean sixty added to what was left, not a reset to a fixed
+value, and that is how the game behaves: completing a lap extends the clock
+and announces **EXTENDED TIME!**, except the last, which announces **FINAL
+LAP!** and extends anyway. So the manual's "60 seconds each" is an allowance
+added per lap rather than a fresh countdown -- a distinction the manual's
+wording does not make and the RAM does.
+
+Against the manual: 120 confirmed, 75 confirmed, 60 confirmed as the extension
+amount, and the clock reaching zero where the recording ends.
+
+### The messages are not findable by search
+
+`EXTENDED TIME` and `FINAL LAP` appear nowhere as ASCII, and nowhere as a run
+of bytes whose letter-to-letter spacing matches -- but that second search
+assumes the tile codes run alphabetically and that there is no separate space
+character, and neither is established. So this is a weak negative, of the kind
+`pitfalls.md` warns about: text in a tile-based game is not ASCII and greps
+for it come back empty. Finding the messages means finding the routine that
+draws them.
+
 ## What's open
 
 * The road bands: how many there are, and where the run ends.
@@ -185,9 +256,13 @@ search for references into it finds so little.
   `$A3xx`, `$AAxx`, `$B0xx`; nothing yet says what they draw.
 * The RAM handler at `$2456`: nothing selects index 0 and nothing writes
   that address during `run-01`. Settle whether any mode does.
-* `run-01` (17,115 frames) is the only recording: the "Test" track, a rounded
+* `run-01` (17,115 frames): the TEST track, a rounded
   rectangle, driven to completion. It includes a crash and a stretch where a
   system dialog took the controls, so input during that window is not the
   player's and should not be read as intent.
+* `run-02` (11,942 frames): the FUJI track -- puddles, a sign struck, a lot of
+  skidding, and the run ends when the clock runs out rather than at a finish
+  line. So it exercises every hazard the manual names, and ends on the timer,
+  which makes it the recording to find the clock in.
 * The game is nearly silent without input, so the audio tooling that dominated
   the sibling projects will contribute little here.

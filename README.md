@@ -53,6 +53,19 @@ the findings that cite them stay reproducible.
 ./"Play Recording.command" run-01 # watch a recording play back
 ```
 
+Probe runs go through MAME directly, and **`-skip_gameinfo` is not optional**:
+without it MAME holds on its information screen waiting for a keypress, so an
+unattended or backgrounded probe simply sits there until somebody notices and
+presses a button. The launcher scripts above already pass it; anything invoked
+by hand needs it too.
+
+```
+mame a7800 -rompath ../bios -cart "<rom>" -skip_gameinfo \
+     -input_directory "$(pwd)" -playback run-02.inp \
+     -autoboot_script tools/<probe>.lua \
+     -window -nomax -nothrottle -sound none -video soft
+```
+
 ## Layout
 
 | | |
