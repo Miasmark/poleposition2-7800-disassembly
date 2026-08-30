@@ -255,7 +255,7 @@ run -- it counts down at its normal 36 frames a tick all the way to `00` at
 f10971 -- so nothing here converts time into points. Testing that rule needs a
 recording that finishes a race with time left.
 
-### The messages are not findable by search
+### The messages, found (superseded -- see above)
 
 `EXTENDED TIME` and `FINAL LAP` appear nowhere as ASCII, and nowhere as a run
 of bytes whose letter-to-letter spacing matches -- but that second search
@@ -264,6 +264,57 @@ character, and neither is established. So this is a weak negative, of the kind
 `pitfalls.md` warns about: text in a tile-based game is not ASCII and greps
 for it come back empty. Finding the messages means finding the routine that
 draws them.
+
+## The character set, and the text
+
+The HUD is four fields of display data in RAM, filled from ROM templates by
+`rom:F204`:
+
+    dat_C976  19 bytes -> ram_1F8A   row 1, left
+    dat_C98A  19 bytes -> ram_1FA8   row 2, left
+    dat_C9A2  11 bytes -> ram_1F9D   row 1, right
+    dat_AE24  11 bytes -> ram_1FBA   row 2, right
+
+Those templates are the labels on screen, and knowing what they say -- TOP,
+SCORE, LAP, SPEED -- gives the encoding directly. Every shared letter agrees
+across all four words, which is what makes it a solution rather than a guess:
+`$A6` is the S of both SCORE and SPEED, `$A3` the P of SPEED and LAP, `$A2`
+the O of TOP and SCORE, `$9A` the E of three of them.
+
+    $8C-$95   digits 0-9
+    $96-$A8   A B C D E F G H I . . L M N O P Q R S T U
+    $A9 $AA   X Y
+    $AB       space
+    $B4       V
+
+**The letters are not one contiguous run.** J and K are absent between I and
+L, W and Z are absent, and V sits by itself at `$B4` -- found because
+`9C 96 A0 9A AB A2 B4 9A A5` is GAME OVER and nothing else fits. A font with
+the common letters packed and the rare ones appended elsewhere.
+
+This is why the earlier search failed and was right to be called a weak
+negative: it assumed alphabetical codes with no gaps, and the encoding has
+three.
+
+### What the ROM says
+
+    $A0A0   TEST                  $B1ED   EXTENDED PLAY
+    $A0AC   SEASIDE               $B1FB   TIME
+    $A372   PASSING BONUS         $B2F2   POLE POSITION
+    $AC25   1984 ATARI            $C96D   GAME OVER
+    $AD25   1982 NAMCO            $C9A2   ...FINAL LAP
+    $BED6   QUALIFYING POSITION 1 2 3 4 5 6 7 8
+
+`QUALIFYING POSITION 1 2 3 4 5 6 7 8` confirms the manual's eight-place bonus
+table exists, and locates the text for it.
+
+**FUJI and SUZUKA cannot be spelled** -- no J, K or Z in the font -- so those
+two track names are not text. They must be drawn as graphics, which also
+explains why only TEST and SEASIDE turn up in a string search.
+
+`EXTENDED PLAY` rather than `EXTENDED TIME`: the message this game shows on a
+lap completion is not quite what was described from memory, and the ROM is the
+authority.
 
 ## What's open
 
