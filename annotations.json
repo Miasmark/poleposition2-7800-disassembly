@@ -60,7 +60,8 @@
     "rom:EC9E": "DLI_EC9E",
     "rom:ECA1": "DLI_ECA1",
     "rom:ED2B": "DLI_ED2B",
-    "rom:F204": "DrawHud"
+    "rom:F204": "DrawHud",
+    "rom:D3F7": "QualifyingPosition"
   },
   "ram": {
     "00DE": "RaceClockHi",
@@ -68,7 +69,10 @@
     "1F8A": "HudRow1Left",
     "1F9D": "HudRow1Right",
     "1FA8": "HudRow2Left",
-    "1FBA": "HudRow2Right"
+    "1FBA": "HudRow2Right",
+    "00BC": "LapTimeHundredths",
+    "00BD": "LapTimeSeconds",
+    "00BE": "LapTimeHundreds"
   },
   "comments": {},
   "headers": {},
@@ -96,6 +100,12 @@
       "end": "rom:AE2F",
       "name": "dat_HudSpeedTemplate",
       "note": "The SPEED field's template, copied to ram_1FBA by rom:F204. Reads 'SPEED  00' then $AC $AD, which render as the 'mph' unit on screen."
+    },
+    {
+      "loc": "rom:DBA0",
+      "end": "rom:DBB0",
+      "name": "dat_QualifyThresholds",
+      "note": "The eight qualifying thresholds, as TWO PARALLEL TABLES: dat_DBA0 holds the seconds and dat_DBA8 the hundredths, both BCD, indexed by position 0-7. rom:D3F7 walks them comparing LapTimeSeconds then LapTimeHundredths, stopping at the first the lap beats. Reads 58.50, 60.00, 62.00, 64.00, 66.00, 68.00, 70.00, 73.00 seconds -- the manual gives only the first and last of those and both match. Searching for the pair 58 50 as adjacent bytes finds nothing, because it is split across the two tables eight bytes apart."
     }
   ],
   "notes": {

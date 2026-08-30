@@ -377,6 +377,55 @@ A second snapshot at frame 9000 reads TOP/SCORE 31820, UNIT 55, LAP 136:14,
 SPEED 255mph -- so the score rose by 8,420 between the two, and the lap timer
 runs in a different format from the race clock (`136:14` rather than seconds).
 
+## The lap timer, and the qualifying thresholds
+
+The lap timer is three BCD bytes in zero page, found by reading two values off
+a screenshot and searching for exactly those bytes:
+
+    $BE  hundreds     $BD  seconds     $BC  hundredths
+
+        00 80 62  ->  080:62  at frame 7000
+        01 36 14  ->  136:14  at frame 9000
+
+`rom:D9B5` clears all three. `rom:D3F7` is the qualifying check:
+
+    LDX #$00
+    LDA LapTimeHundreds
+    BNE ...                  100 seconds or more: no position
+    LDA LapTimeSeconds
+    CMP dat_DBA0,X           thresholds, seconds
+    BMI got_it
+    BNE next
+    LDA LapTimeHundredths
+    CMP dat_DBA8,X           thresholds, hundredths
+    BMI got_it
+    INX / CPX #$08 / BNE     eight positions
+
+**Two parallel tables** -- `dat_DBA0` seconds, `dat_DBA8` hundredths -- walked
+until the lap beats one:
+
+    1st  58.50      5th  66.00
+    2nd  60.00      6th  68.00
+    3rd  62.00      7th  70.00
+    4th  64.00      8th  73.00
+
+The manual gives the first and the last and nothing between. Both match, and
+the six middle thresholds are now known -- which is the useful direction for a
+reference to be checked in: it confirmed the ends and the ROM supplied the
+rest.
+
+**Why the first search for this failed.** Looking for the pair `58 50` as
+adjacent bytes returns nothing, and that was reported as no qualifying table
+being present. The pair is split across two tables eight bytes apart; both
+bytes were there all along. The sibling Asteroids project's score table has the
+same shape, two parallel BCD arrays, so a value a manual states as one number
+is quite likely stored as two -- and "not found" should be read as "not found
+in the layout I assumed".
+
+The lap timer also advances at the same 1.667x rate as the race clock (80.62 at
+f7000 to 136.14 at f9000 is 55.52 units in 33.3 real seconds), so the two share
+one prescaler.
+
 ## What's open
 
 * The road bands: how many there are, and where the run ends.
