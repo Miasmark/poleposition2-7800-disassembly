@@ -465,23 +465,114 @@ threshold gates a call:
 So something -- plausibly the crash effect or its sound -- happens only when
 the impact is above 90.
 
-### Events in run-02
+### Events in run-02, and a retraction
 
-Watching `$CE` for sharp losses across the recording gives eleven, of which
-two have the shape of a collision -- a slowdown, then a stop about fifty
-frames later:
+An earlier reading of this recording called five of the drops "identical,
+mechanical drops of exactly 31 from a saturated 255 to 224" and guessed that
+224 being `$E0` pointed at a mask. That was wrong, and the arithmetic on this
+very page says so: `$FF >> 3` is 31, so `255 - 255/8` is exactly 224. Each of
+those five is one perfectly ordinary application of `SpeedDecay` at saturated
+speed. There is no mask. The lesson is the flat one -- a number that looks
+significant in hex was already explained by the formula in the paragraph above
+it.
 
-    f7485  215 -> 187     f7533   39 -> 0
-    f9753  237 -> 208     f9807   43 -> 0
+With the decay understood, the events classify themselves:
 
-and five are identical, mechanical drops of exactly 31 from a saturated 255
-to 224, at f6537, f7263, f8379, f9105 and f10965. A collision would vary with
-approach speed; a fixed subtraction from a fixed value is code. Not yet
-identified, and `224` being `$E0` suggests a mask rather than a subtraction.
+    f3132  DECAY  136 -> 119        f9105  DECAY  255 -> 224
+    f6537  DECAY  255 -> 224        f9747  CRASH  slot 06  type 3
+    f7263  DECAY  255 -> 224        f9753  DECAY  237 -> 208
+    f7479  CRASH  slot 01  type 1   f10137 -16 flat 146 -> 130
+    f8379  DECAY  255 -> 224        f10965 DECAY  255 -> 224
+                                    f11007 DECAY  140 -> 123
 
-The run contains one sign strike, puddles and a lot of skidding, so the two
-collision-shaped events are the sign and one other thing. Which is which is
-not established.
+## The collision system
+
+`ObjectCollision` at rom:C86E walks sixteen object slots each frame, reached
+through the indirection `ObjSlotList,Y`, and every slot carries:
+
+| table | meaning |
+|---|---|
+| `ObjType,X` (`$19B4`) | flags; the low three bits are the type |
+| `ObjZLo`/`ObjZHi` (`$19C4`/`$19D4`) | 16-bit distance up the road |
+| `ObjLateral,X` (`$1A00`) | position across the road |
+| `ObjLatOffset,X` (`$1A2E`) | per-object lateral correction |
+
+A slot is in range only if the high byte of Z is `$00` with a low byte under
+`$4E`, or `$FF` with a low byte of `$D3` or more -- that is, just ahead or just
+behind. Then rom:C8AA walks Y down from `$4D` through the 78-entry perspective
+table (`dat_PerspectiveZHi`, `dat_PerspectiveZLo`) to convert Z into the screen
+row the object draws on, rom:C8D0 forms
+
+    | scaled_x - ObjLatOffset,X - $40 - PlayerX |
+
+and compares it against `$1E` (30) when the object is near and `$1A` (26) when
+it is far. Under the threshold is a contact, and `CollisionContact` at rom:C907
+dispatches on the type:
+
+| type | stamped at | what it is | on contact |
+|---|---|---|---|
+| 0 | -- | empty slot | -- |
+| 1 | rom:CF54, from track data at `$18B4` | roadside sign, lateral 35/36 | **crash** |
+| 2 | rom:D010 (`LDA #$C2`) | **puddle**, lateral 15-18 | `SpeedDecay` |
+| 3 | rom:CA0A (`LDA #$43`) | rival car | **crash** |
+| 7 | rom:CB0E (`LDA #$FF`) | sentinel, always slots 7 and 8 at negative Z | -- |
+
+Only type 2 decays. Everything else falls into `CrashStart` at rom:C93E, which
+records the slot in `CrashSlot`, sets `CrashTimer` to `$20`, and fires sounds 7
+and 8. The recovery is at rom:C5E8: `CrashTimer` counts down, and at zero the
+speed is restored and `CrashSlot` is put back to `$FF`.
+
+### Type 2 is the puddle, and one dodge proves it
+
+`SpawnObjectCommon` at rom:D015 gives every object it places a lateral of
+`($B9 >> 1 AND 3) + $0F` -- 15 to 18, the middle of the road, where type 1
+roadside furniture sits at 35/36. Photographing a type-2 object at close range
+shows a blue patch on the road surface, on a frame with no rival car nearby to
+confuse it.
+
+The timing settles it. Sampling every frame where a type-2 object is about 250
+units out gives six approaches, and five produce a decay exactly 18 frames
+later:
+
+| puddle at z~250 | PlayerX | event |
+|---|---|---|
+| f6519 | `$00` | DECAY f6537 |
+| f7245 | `$16` (22) | DECAY f7263 |
+| f8361 | `$07` | DECAY f8379 |
+| f9087 | `$FB` (-5) | DECAY f9105 |
+| f10113 | **`$D1` (-47)** | none |
+| f10947 | `$11` (17) | DECAY f10965 |
+
+The puddle sits at lateral 17. On five approaches the player was within about
+twenty of it and hit it; on the sixth the player was 47 to the left and missed.
+The exception is the confirmation, not a hole in it -- the lateral threshold is
+doing exactly what rom:C8E0 says it does.
+
+### Which crash is the sign
+
+The two crashes are different types, so the question answers itself:
+
+* **f7479** is slot 1, **type 1** -- the sign. Every type-1 object in every
+  dump sits at lateral 35 or 36 with a zero offset, at the road edge, recurring
+  at regular Z spacing (1022, 2022, 4022 on one lap; 941, 3441, 8441 on
+  another). That is roadside furniture, and the screenshot has the car off the
+  road on the grass at 217mph.
+* **f9747** is slot 6, **type 3** -- a rival car, at Z `$FFEF` (-17), right on
+  top of the player. The screenshot shows the player's car overlapping the car
+  ahead. A rear-end, not the sign.
+
+### Finding the events reliably
+
+`tools/probe-events2.lua` and `tools/probe-events3.lua` detect and classify
+every event from per-frame polling of state the game itself maintains --
+`Speed`, `CrashSlot`, `CrashTimer` and the object tables -- with no write taps
+anywhere. A drop of precisely `speed >> 3` is a puddle by construction, since
+`SpeedDecay` has exactly two xrefs and both are inside `CollisionContact`.
+
+One ambiguity is worth stating: when speed is 128 to 135, `speed >> 3` is 16,
+which cannot be told apart from the flat `-16` at `SpeedPenalty16`. Outside
+that band the two are distinct.
+
 
 ### A note on the instrument, not the game
 
@@ -497,6 +588,14 @@ has not been -- and it should be the first place looked, not the fallback.
 
 ## What's open
 
+* `SpeedPenalty16` at rom:D6E8 subtracts a flat 16 from speed, clamped at
+  zero, and is reached only from rom:D419, gated on `CrashTimer | Speed` being
+  non-zero. It fired once in `run-02`, at f10137 -- the same moment the player
+  was out at `$D1` (-47) dodging a puddle, which points at the verge. Not
+  established.
+* The decay at f3132 has no type-2 object in the table at the end of that
+  frame, unlike the other seven. Either the slot was recycled before the
+  sample or something else reaches `SpeedDecay`. Worth one more look.
 * The road bands: how many there are, and where the run ends.
 * The rest of `$8000-$C1A4`. The display list names `$87xx`-`$8Bxx`, `$9Exx`,
   `$A3xx`, `$AAxx`, `$B0xx`; nothing yet says what they draw.

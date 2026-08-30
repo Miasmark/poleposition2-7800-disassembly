@@ -1,116 +1,142 @@
 {
-  "_README": [
-    "Started by init.py from Pole Position II (NTSC) (Atari) (1987) (A85FB962).a78.",
-    "",
-    "Every human judgement about this ROM lives in this file; the",
-    "generated listings are disposable, so renaming is free.",
-    "",
-    "What to do next, roughly in order:",
-    "",
-    "  1. python tools/disasm.py Pole Position II (NTSC) (Atari) (1987) (A85FB962).a78 -c annotations.json",
-    "     Read the coverage it reports. Low coverage is normal at",
-    "     first and is the number you are trying to move.",
-    "",
-    "  2. Every unresolved indirect jump it reports is a hole. Add the",
-    "     target to `entries`, or the pointer pair to `ram_vectors` if",
-    "     the handler is installed into RAM.",
-    "",
-    "  3. python tools/audiotrace.py Pole Position II (NTSC) (Atari) (1987) (A85FB962).a78 -c annotations.json",
-    "     Finds the sound code and the tables feeding it.",
-    "",
-    "  4. Name things in `labels` as soon as you know what they are.",
-    "",
-    "See docs/method.md for the working order and docs/pitfalls.md for",
-    "the traps that each cost real time."
-  ],
-  "entries": [
-    "rom:D205",
-    "rom:D26D",
-    "rom:D3A4",
-    "rom:EBEF",
-    "rom:EC0E",
-    "rom:EC10",
-    "rom:EC57",
-    "rom:EC76",
-    "rom:EC87",
-    "rom:EC8C",
-    "rom:EC9E",
-    "rom:ECA1",
-    "rom:ED2B",
-    "rom:ED30",
-    "rom:ED4A",
-    "rom:ED4F"
-  ],
-  "ram_vectors": [],
-  "bankat": {},
-  "labels": {
-    "rom:EC0E": "ENTRY_Irq",
-    "rom:EBEF": "ENTRY_Nmi",
-    "rom:D205": "ENTRY_Reset",
-    "rom:D26D": "VEC40_D26D",
-    "rom:D3A4": "VEC40_D3A4",
-    "rom:EC10": "DLI_EC10",
-    "rom:EC57": "DLI_EC57",
-    "rom:EC76": "DLI_EC76",
-    "rom:EC87": "DLI_EC87",
-    "rom:EC8C": "DLI_EC8C",
-    "rom:ED30": "DLI_ED30",
-    "rom:ED4A": "DLI_ED4A",
-    "rom:ED4F": "DLI_ED4F",
-    "rom:EC9E": "DLI_EC9E",
-    "rom:ECA1": "DLI_ECA1",
-    "rom:ED2B": "DLI_ED2B",
-    "rom:F204": "DrawHud",
-    "rom:D3F7": "QualifyingPosition",
-    "rom:C92F": "SpeedDecay"
+ "_README": [
+  "Started by init.py from Pole Position II (NTSC) (Atari) (1987) (A85FB962).a78.",
+  "",
+  "Every human judgement about this ROM lives in this file; the",
+  "generated listings are disposable, so renaming is free.",
+  "",
+  "What to do next, roughly in order:",
+  "",
+  "  1. python tools/disasm.py Pole Position II (NTSC) (Atari) (1987) (A85FB962).a78 -c annotations.json",
+  "     Read the coverage it reports. Low coverage is normal at",
+  "     first and is the number you are trying to move.",
+  "",
+  "  2. Every unresolved indirect jump it reports is a hole. Add the",
+  "     target to `entries`, or the pointer pair to `ram_vectors` if",
+  "     the handler is installed into RAM.",
+  "",
+  "  3. python tools/audiotrace.py Pole Position II (NTSC) (Atari) (1987) (A85FB962).a78 -c annotations.json",
+  "     Finds the sound code and the tables feeding it.",
+  "",
+  "  4. Name things in `labels` as soon as you know what they are.",
+  "",
+  "See docs/method.md for the working order and docs/pitfalls.md for",
+  "the traps that each cost real time."
+ ],
+ "entries": [
+  "rom:D205",
+  "rom:D26D",
+  "rom:D3A4",
+  "rom:EBEF",
+  "rom:EC0E",
+  "rom:EC10",
+  "rom:EC57",
+  "rom:EC76",
+  "rom:EC87",
+  "rom:EC8C",
+  "rom:EC9E",
+  "rom:ECA1",
+  "rom:ED2B",
+  "rom:ED30",
+  "rom:ED4A",
+  "rom:ED4F"
+ ],
+ "ram_vectors": [],
+ "bankat": {},
+ "labels": {
+  "rom:EC0E": "ENTRY_Irq",
+  "rom:EBEF": "ENTRY_Nmi",
+  "rom:D205": "ENTRY_Reset",
+  "rom:D26D": "VEC40_D26D",
+  "rom:D3A4": "VEC40_D3A4",
+  "rom:EC10": "DLI_EC10",
+  "rom:EC57": "DLI_EC57",
+  "rom:EC76": "DLI_EC76",
+  "rom:EC87": "DLI_EC87",
+  "rom:EC8C": "DLI_EC8C",
+  "rom:ED30": "DLI_ED30",
+  "rom:ED4A": "DLI_ED4A",
+  "rom:ED4F": "DLI_ED4F",
+  "rom:EC9E": "DLI_EC9E",
+  "rom:ECA1": "DLI_ECA1",
+  "rom:ED2B": "DLI_ED2B",
+  "rom:F204": "DrawHud",
+  "rom:D3F7": "QualifyingPosition",
+  "rom:C92F": "SpeedDecay",
+  "rom:C86E": "ObjectCollision",
+  "rom:C907": "CollisionContact",
+  "rom:C93E": "CrashStart",
+  "rom:D015": "SpawnObjectCommon",
+  "rom:D6E8": "SpeedPenalty16"
+ },
+ "ram": {
+  "00DE": "RaceClockHi",
+  "00DF": "RaceClock",
+  "1F8A": "HudRow1Left",
+  "1F9D": "HudRow1Right",
+  "1FA8": "HudRow2Left",
+  "1FBA": "HudRow2Right",
+  "00BC": "LapTimeHundredths",
+  "00BD": "LapTimeSeconds",
+  "00BE": "LapTimeHundreds",
+  "00CE": "Speed",
+  "00D1": "PlayerX",
+  "00D3": "CrashSlot",
+  "00D4": "CrashTimer",
+  "19A4": "ObjSlotList",
+  "19B4": "ObjType",
+  "19C4": "ObjZLo",
+  "19D4": "ObjZHi",
+  "1A00": "ObjLateral",
+  "1A2E": "ObjLatOffset"
+ },
+ "comments": {},
+ "headers": {},
+ "blocks": [
+  {
+   "loc": "rom:A0A0",
+   "end": "rom:A0B8",
+   "name": "dat_TrackNames",
+   "note": "Track names as text: TEST, FUJI, SEASIDE, each followed by a digit and a $B0 separator; SUZUKA sits apart at $A4A4. Finding these is what proved J/K/Z live at $B1-$B3 rather than being absent from the font -- see docs/FINDINGS.md, including the retraction of the claim that these names were graphics."
   },
-  "ram": {
-    "00DE": "RaceClockHi",
-    "00DF": "RaceClock",
-    "1F8A": "HudRow1Left",
-    "1F9D": "HudRow1Right",
-    "1FA8": "HudRow2Left",
-    "1FBA": "HudRow2Right",
-    "00BC": "LapTimeHundredths",
-    "00BD": "LapTimeSeconds",
-    "00BE": "LapTimeHundreds",
-    "00CE": "Speed"
+  {
+   "loc": "rom:A48A",
+   "end": "rom:A4A2",
+   "name": "dat_DliHandlerTable",
+   "note": "The display-interrupt handler table, found live then read statically. The NMI entry at rom:EBEF indexes TWO PARALLEL TABLES by ram_00FF -- low bytes at $A48A, high bytes at $A496, twelve entries -- builds the vector in ram_00FD/FE and does JMP (ram_00FD) at rom:EC06. Eleven targets are in ROM and are now entries; index 0 is $2456, which is RAM, so that handler is code copied there at run time and cannot be reached statically. This table is the first structure identified inside the 16,805-byte block at $8000, and it was found because --check-gaps flagged the indirect jump rather than letting it pass."
   },
-  "comments": {},
-  "headers": {},
-  "blocks": [
-    {
-      "loc": "rom:A48A",
-      "end": "rom:A4A2",
-      "name": "dat_DliHandlerTable",
-      "note": "The display-interrupt handler table, found live then read statically. The NMI entry at rom:EBEF indexes TWO PARALLEL TABLES by ram_00FF -- low bytes at $A48A, high bytes at $A496, twelve entries -- builds the vector in ram_00FD/FE and does JMP (ram_00FD) at rom:EC06. Eleven targets are in ROM and are now entries; index 0 is $2456, which is RAM, so that handler is code copied there at run time and cannot be reached statically. This table is the first structure identified inside the 16,805-byte block at $8000, and it was found because --check-gaps flagged the indirect jump rather than letting it pass."
-    },
-    {
-      "loc": "rom:C976",
-      "end": "rom:C9AD",
-      "name": "dat_HudTemplates",
-      "note": "The HUD text, copied into the display buffer by rom:F204: $C976 (19 bytes) -> ram_1F8A, $C98A (19) -> ram_1FA8, $C9A2 (11) -> ram_1F9D, and dat_AE24 (11) -> ram_1FBA. Decoding these against the labels on screen -- TOP, SCORE, LAP, SPEED -- is what gave the character set."
-    },
-    {
-      "loc": "rom:A0A0",
-      "end": "rom:A0B8",
-      "name": "dat_TrackNames",
-      "note": "Track names as text: TEST, FUJI, SEASIDE, each followed by a digit and a $B0 separator; SUZUKA sits apart at $A4A4. Finding these is what proved J/K/Z live at $B1-$B3 rather than being absent from the font -- see docs/FINDINGS.md, including the retraction of the claim that these names were graphics."
-    },
-    {
-      "loc": "rom:AE24",
-      "end": "rom:AE2F",
-      "name": "dat_HudSpeedTemplate",
-      "note": "The SPEED field's template, copied to ram_1FBA by rom:F204. Reads 'SPEED  00' then $AC $AD, which render as the 'mph' unit on screen."
-    },
-    {
-      "loc": "rom:DBA0",
-      "end": "rom:DBB0",
-      "name": "dat_QualifyThresholds",
-      "note": "The eight qualifying thresholds, as TWO PARALLEL TABLES: dat_DBA0 holds the seconds and dat_DBA8 the hundredths, both BCD, indexed by position 0-7. rom:D3F7 walks them comparing LapTimeSeconds then LapTimeHundredths, stopping at the first the lap beats. Reads 58.50, 60.00, 62.00, 64.00, 66.00, 68.00, 70.00, 73.00 seconds -- the manual gives only the first and last of those and both match. Searching for the pair 58 50 as adjacent bytes finds nothing, because it is split across the two tables eight bytes apart."
-    }
-  ],
-  "notes": {
-    "rom": "Pole Position II (NTSC) (Atari) (1987) (A85FB962).a78\nmapper linear, 32 KB, NTSC\nno POKEY declared; audio is the TIA's two voices\n\nVectors: IRQ $EC0E  NMI $EBEF  RESET $D205\n\nWritten by init.py. Everything here is read from the cartridge; the\njudgement calls are yours to add."
+  {
+   "loc": "rom:AE24",
+   "end": "rom:AE2F",
+   "name": "dat_HudSpeedTemplate",
+   "note": "The SPEED field's template, copied to ram_1FBA by rom:F204. Reads 'SPEED  00' then $AC $AD, which render as the 'mph' unit on screen."
+  },
+  {
+   "loc": "rom:C976",
+   "end": "rom:C9AD",
+   "name": "dat_HudTemplates",
+   "note": "The HUD text, copied into the display buffer by rom:F204: $C976 (19 bytes) -> ram_1F8A, $C98A (19) -> ram_1FA8, $C9A2 (11) -> ram_1F9D, and dat_AE24 (11) -> ram_1FBA. Decoding these against the labels on screen -- TOP, SCORE, LAP, SPEED -- is what gave the character set."
+  },
+  {
+   "loc": "rom:DBA0",
+   "end": "rom:DBB0",
+   "name": "dat_QualifyThresholds",
+   "note": "The eight qualifying thresholds, as TWO PARALLEL TABLES: dat_DBA0 holds the seconds and dat_DBA8 the hundredths, both BCD, indexed by position 0-7. rom:D3F7 walks them comparing LapTimeSeconds then LapTimeHundredths, stopping at the first the lap beats. Reads 58.50, 60.00, 62.00, 64.00, 66.00, 68.00, 70.00, 73.00 seconds -- the manual gives only the first and last of those and both match. Searching for the pair 58 50 as adjacent bytes finds nothing, because it is split across the two tables eight bytes apart."
+  },
+  {
+   "loc": "rom:EAB9",
+   "end": "rom:EB07",
+   "name": "dat_PerspectiveZHi",
+   "note": "High bytes of the 78-entry perspective table. ObjectCollision at rom:C86E walks Y from $4D down, subtracting this and dat_PerspectiveZLo from the object 16-bit Z distance, to find the screen row an object at that distance draws on. Read as a pair with the low table at rom:EB56; note the high table sits at the LOWER address. Also used from rom:CC68, rom:CE42 and rom:CECD."
+  },
+  {
+   "loc": "rom:EB56",
+   "end": "rom:EBA4",
+   "name": "dat_PerspectiveZLo",
+   "note": "Low bytes of the 78-entry perspective table; see dat_PerspectiveZHi at rom:EAB9."
   }
+ ],
+ "notes": {
+  "rom": "Pole Position II (NTSC) (Atari) (1987) (A85FB962).a78\nmapper linear, 32 KB, NTSC\nno POKEY declared; audio is the TIA's two voices\n\nVectors: IRQ $EC0E  NMI $EBEF  RESET $D205\n\nWritten by init.py. Everything here is read from the cartridge; the\njudgement calls are yours to add."
+ }
 }
