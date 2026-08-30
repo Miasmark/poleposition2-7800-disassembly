@@ -141,9 +141,31 @@ race, and the lower half of it is the road:
 
 **The bands are packed end to end by width.** `$8000`+6 = `$8006`, +8 =
 `$800E`, +12 = `$801A`, +30 = `$8038`. Where a zone draws two objects the
-first is a fixed 16 and lands 15 bytes on -- an off-by-one in either the width
-decode or the packing, not yet run down -- while the second grows steadily:
-19, 21, 25, 29, and its successor follows exactly.
+second grows steadily -- 19, 21, 25, 29 -- and its successor follows exactly.
+
+### The off-by-one, resolved
+
+The paired zones looked wrong: the first object reports width 16 but the next
+address is 15 bytes on. That was written down as a possible decode error. It
+is not one. Reading the horizontal positions as well as the widths settles it:
+
+    zone 28   $8038 w16 x15  ends at pixel 79  |  $8047 w19 x75
+    zone 29   $805A w16 x14  ends at pixel 78  |  $8069 w21 x74
+    zone 30   $807E w16 x8   ends at pixel 72  |  $808D w25 x68
+    zone 31   $80A6 w16 x2   ends at pixel 66  |  $80B5 w29 x62
+
+Each pair overlaps by exactly four pixels -- one byte in 160A -- and the
+overlapping byte is **the same ROM address drawn at the same screen position
+by both objects**. `$8038`'s sixteenth byte is `$8047`, which is `$8047`'s
+first byte, and both land on pixels 75-78. The same is true of all four.
+
+So the width decode is right, the packing is right, and the game deliberately
+overlaps the two halves of each wide road strip by one byte. It costs nothing
+and it cannot show a seam, because the shared byte is drawn twice in the same
+place with the same value.
+
+The apparent contradiction came from comparing addresses without positions.
+Widths alone said 16 and 15 at once; adding x said both, consistently.
 
 Widths increasing down the screen is a road in perspective: narrow at the
 horizon, wide at the car. So **the block at `$8000` opens with the road
@@ -158,8 +180,7 @@ search for references into it finds so little.
 
 ## What's open
 
-* The road bands: how many, where the run ends, and what the fixed-16 first
-  object in each paired zone is. The off-by-one above wants settling first.
+* The road bands: how many there are, and where the run ends.
 * The rest of `$8000-$C1A4`. The display list names `$87xx`-`$8Bxx`, `$9Exx`,
   `$A3xx`, `$AAxx`, `$B0xx`; nothing yet says what they draw.
 * The RAM handler at `$2456`: nothing selects index 0 and nothing writes

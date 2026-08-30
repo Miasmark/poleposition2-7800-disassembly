@@ -33,14 +33,17 @@ emu.register_frame_done(function()
       if e1 == 0 then break end
       local glo = mem:read_u8(dl + i)
       local w, ghi
+      local x, raw
       if (e1 & 0x1F) == 0 then
         ghi = mem:read_u8(dl + i + 2)
-        w = 32 - (mem:read_u8(dl + i + 3) & 0x1F); i = i + 5
+        raw = mem:read_u8(dl + i + 3) & 0x1F
+        w = 32 - raw; x = mem:read_u8(dl + i + 4); i = i + 5
       else
         ghi = mem:read_u8(dl + i + 2)
-        w = 32 - (e1 & 0x1F); i = i + 4
+        raw = e1 & 0x1F
+        w = 32 - raw; x = mem:read_u8(dl + i + 3); i = i + 4
       end
-      parts[#parts+1] = string.format("$%02X%02X/w%d", ghi, glo, w)
+      parts[#parts+1] = string.format("$%02X%02X/w%d/raw%d/x%d", ghi, glo, w, raw, x)
     end
     if #parts > 0 then
       print(string.format("  zone %2d  %2d lines  flags $%02X  %s",
