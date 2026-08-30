@@ -478,12 +478,36 @@ it.
 
 With the decay understood, the events classify themselves:
 
-    f3132  DECAY  136 -> 119        f9105  DECAY  255 -> 224
-    f6537  DECAY  255 -> 224        f9747  CRASH  slot 06  type 3
-    f7263  DECAY  255 -> 224        f9753  DECAY  237 -> 208
-    f7479  CRASH  slot 01  type 1   f10137 -16 flat 146 -> 130
-    f8379  DECAY  255 -> 224        f10965 DECAY  255 -> 224
-                                    f11007 DECAY  140 -> 123
+    f6537  puddle  255 -> 224       f9747  CRASH   slot 06  type 3, a car
+    f7263  puddle  255 -> 224       f9753  decay   237 -> 208, during the crash
+    f7479  CRASH   slot 01  type 1  f10137 -16 flat 146 -> 130
+    f8379  puddle  255 -> 224       f10965 puddle  255 -> 224
+    f9105  puddle  255 -> 224
+
+    f3132 and f11007 are NOT decays -- see the ramp below.
+
+### The scripted stop, and two false positives
+
+Two more events first read as decays, at f3132 (136 -> 119) and f11007
+(140 -> 123). They are not. Sampling every frame through those windows shows a
+constant step, not a proportional one:
+
+    f3126  153 136 119 102 85 68 51 34 17 0      -17 every 6 frames
+    f10990 174 157 140 123 106 89 72 55 38 21 4 0
+
+`153 - 153/8` is 134, not 136, so the formula does not describe the sequence.
+This is a **scripted deceleration of 17 per step, every six frames, to a dead
+stop** -- `153` is `9 x 17` and lands exactly on zero. A screenshot at f3185
+shows the car stopped under QUALIFYING POSITION 1 2 3 4 5 6 7 8, and the
+second ramp runs out the end of the recording when the clock expires. It is
+the stop at the end of qualifying and at time-out.
+
+Both were flagged only because `136 >> 3` and `140 >> 3` are both 17, the same
+as the ramp's step. So the aliasing band matters more than first stated: a drop
+of `speed >> 3` is a puddle **except** at speed 136-143, where it cannot be told
+from the scripted ramp, and at 128-135, where it cannot be told from the flat
+-16 at `SpeedPenalty16`. Outside 128-143 the classification is unambiguous, and
+all five confirmed puddle hits are at a saturated 255, well clear of it.
 
 ## The collision system
 
@@ -569,9 +593,10 @@ every event from per-frame polling of state the game itself maintains --
 anywhere. A drop of precisely `speed >> 3` is a puddle by construction, since
 `SpeedDecay` has exactly two xrefs and both are inside `CollisionContact`.
 
-One ambiguity is worth stating: when speed is 128 to 135, `speed >> 3` is 16,
-which cannot be told apart from the flat `-16` at `SpeedPenalty16`. Outside
-that band the two are distinct.
+The one ambiguity is the band at speed 128-143, described above, where the
+proportional drop collides with the flat `-16` and with the scripted ramp's
+`-17`. A detector that cares about the difference should check whether the
+step repeats at a constant value before calling it a puddle.
 
 
 ### A note on the instrument, not the game
@@ -593,9 +618,6 @@ has not been -- and it should be the first place looked, not the fallback.
   non-zero. It fired once in `run-02`, at f10137 -- the same moment the player
   was out at `$D1` (-47) dodging a puddle, which points at the verge. Not
   established.
-* The decay at f3132 has no type-2 object in the table at the end of that
-  frame, unlike the other seven. Either the slot was recycled before the
-  sample or something else reaches `SpeedDecay`. Worth one more look.
 * The road bands: how many there are, and where the run ends.
 * The rest of `$8000-$C1A4`. The display list names `$87xx`-`$8Bxx`, `$9Exx`,
   `$A3xx`, `$AAxx`, `$B0xx`; nothing yet says what they draw.
