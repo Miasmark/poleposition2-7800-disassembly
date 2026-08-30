@@ -24,21 +24,54 @@
     "the traps that each cost real time."
   ],
   "entries": [
-    "rom:EC0E",
+    "rom:D205",
+    "rom:D26D",
+    "rom:D3A4",
     "rom:EBEF",
-    "rom:D205"
+    "rom:EC0E",
+    "rom:EC10",
+    "rom:EC57",
+    "rom:EC76",
+    "rom:EC87",
+    "rom:EC8C",
+    "rom:EC9E",
+    "rom:ECA1",
+    "rom:ED2B",
+    "rom:ED30",
+    "rom:ED4A",
+    "rom:ED4F"
   ],
   "ram_vectors": [],
   "bankat": {},
   "labels": {
     "rom:EC0E": "ENTRY_Irq",
     "rom:EBEF": "ENTRY_Nmi",
-    "rom:D205": "ENTRY_Reset"
+    "rom:D205": "ENTRY_Reset",
+    "rom:D26D": "VEC40_D26D",
+    "rom:D3A4": "VEC40_D3A4",
+    "rom:EC10": "DLI_EC10",
+    "rom:EC57": "DLI_EC57",
+    "rom:EC76": "DLI_EC76",
+    "rom:EC87": "DLI_EC87",
+    "rom:EC8C": "DLI_EC8C",
+    "rom:ED30": "DLI_ED30",
+    "rom:ED4A": "DLI_ED4A",
+    "rom:ED4F": "DLI_ED4F",
+    "rom:EC9E": "DLI_EC9E",
+    "rom:ECA1": "DLI_ECA1",
+    "rom:ED2B": "DLI_ED2B"
   },
   "ram": {},
   "comments": {},
   "headers": {},
-  "blocks": [],
+  "blocks": [
+    {
+      "loc": "rom:A48A",
+      "end": "rom:A4A2",
+      "name": "dat_DliHandlerTable",
+      "note": "The display-interrupt handler table, found live then read statically. The NMI entry at rom:EBEF indexes TWO PARALLEL TABLES by ram_00FF -- low bytes at $A48A, high bytes at $A496, twelve entries -- builds the vector in ram_00FD/FE and does JMP (ram_00FD) at rom:EC06. Eleven targets are in ROM and are now entries; index 0 is $2456, which is RAM, so that handler is code copied there at run time and cannot be reached statically. This table is the first structure identified inside the 16,805-byte block at $8000, and it was found because --check-gaps flagged the indirect jump rather than letting it pass."
+    }
+  ],
   "notes": {
     "rom": "Pole Position II (NTSC) (Atari) (1987) (A85FB962).a78\nmapper linear, 32 KB, NTSC\nno POKEY declared; audio is the TIA's two voices\n\nVectors: IRQ $EC0E  NMI $EBEF  RESET $D205\n\nWritten by init.py. Everything here is read from the cartridge; the\njudgement calls are yours to add."
   }
