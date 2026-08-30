@@ -84,6 +84,12 @@
       "end": "rom:C9AD",
       "name": "dat_HudTemplates",
       "note": "The HUD text, copied into the display buffer by rom:F204: $C976 (19 bytes) -> ram_1F8A, $C98A (19) -> ram_1FA8, $C9A2 (11) -> ram_1F9D, and dat_AE24 (11) -> ram_1FBA. Decoding these against the labels on screen -- TOP, SCORE, LAP, SPEED -- is what gave the character set."
+    },
+    {
+      "loc": "rom:A0A0",
+      "end": "rom:A0B8",
+      "name": "dat_TrackNames",
+      "note": "Track names as text: TEST, FUJI, SEASIDE, each followed by a digit and a $B0 separator; SUZUKA sits apart at $A4A4. Finding these is what proved J/K/Z live at $B1-$B3 rather than being absent from the font -- see docs/FINDINGS.md, including the retraction of the claim that these names were graphics."
     }
   ],
   "notes": {

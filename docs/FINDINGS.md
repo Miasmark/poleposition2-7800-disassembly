@@ -285,12 +285,16 @@ the O of TOP and SCORE, `$9A` the E of three of them.
     $96-$A8   A B C D E F G H I . . L M N O P Q R S T U
     $A9 $AA   X Y
     $AB       space
-    $B4       V
+    $B1-$B4   J K Z V
 
-**The letters are not one contiguous run.** J and K are absent between I and
-L, W and Z are absent, and V sits by itself at `$B4` -- found because
-`9C 96 A0 9A AB A2 B4 9A A5` is GAME OVER and nothing else fits. A font with
-the common letters packed and the rare ones appended elsewhere.
+**The letters are not one contiguous run**, but none are missing. The common
+ones are packed at `$96`, and J, K, Z and V -- the four the run skips -- are
+appended at `$B1`-`$B4`. V turned up first, because `9C 96 A0 9A AB A2 B4 9A
+A5` is GAME OVER and nothing else fits; the other three came from searching
+for the track names with the gaps as wildcards.
+
+This is why the earlier search failed and was right to be called a weak
+negative: it assumed alphabetical codes with no gaps, and there are four.
 
 This is why the earlier search failed and was right to be called a weak
 negative: it assumed alphabetical codes with no gaps, and the encoding has
@@ -308,9 +312,34 @@ three.
 `QUALIFYING POSITION 1 2 3 4 5 6 7 8` confirms the manual's eight-place bonus
 table exists, and locates the text for it.
 
-**FUJI and SUZUKA cannot be spelled** -- no J, K or Z in the font -- so those
-two track names are not text. They must be drawn as graphics, which also
-explains why only TEST and SEASIDE turn up in a string search.
+### A retraction: the track names are text after all
+
+An earlier version of this section said FUJI and SUZUKA "cannot be spelled --
+no J, K or Z in the font -- so those two track names are not text. They must
+be drawn as graphics." **Wrong, and wrong for a reason worth keeping.**
+
+The reasoning ran: the letters are missing, therefore the words are missing,
+therefore they are drawn some other way. The step that failed is the first
+one. The letters were never missing -- they were somewhere I had not looked,
+because I had assumed the alphabet was one contiguous block and stopped
+mapping at the end of it.
+
+Searching for the names with the unknown letters as wildcards finds them at
+once:
+
+    $A0A6   9B A8 B1 9E              F U J I
+    $A4A4   A6 A8 B3 A8 B2 96        S U Z U K A
+
+and that yields J, K and Z. The prompt for it was the observation that
+graphics cost more space than text, so a handful of single-use characters is
+the cheaper thing to store -- which is exactly what the ROM does.
+
+The names sit in a table with a digit and a `$B0` separator after each:
+
+    $A0A0   TEST 2 $B0
+    $A0A6   FUJI 3 $B0
+    $A0AC   SEASIDE
+    $A4A4   4 $B0 SUZUKA
 
 `EXTENDED PLAY` rather than `EXTENDED TIME`: the message this game shows on a
 lap completion is not quite what was described from memory, and the ROM is the
