@@ -945,23 +945,47 @@ which is the seam where the lap joins.
 
 ## What's open
 
-* `SpeedPenalty16` at rom:D6E8 subtracts a flat 16 from speed, clamped at
-  zero, and is reached only from rom:D419, gated on `CrashTimer | Speed` being
-  non-zero. It fired once in `run-02`, at f10137 -- the same moment the player
-  was out at `$D1` (-47) dodging a puddle, which points at the verge. Not
-  established.
-* The road bands: how many there are, and where the run ends.
-* The rest of `$8000-$C1A4`. The display list names `$87xx`-`$8Bxx`, `$9Exx`,
-  `$A3xx`, `$AAxx`, `$B0xx`; nothing yet says what they draw.
-* The RAM handler at `$2456`: nothing selects index 0 and nothing writes
-  that address during `run-01`. Settle whether any mode does.
-* `run-01` (17,115 frames): the TEST track, a rounded
-  rectangle, driven to completion. It includes a crash and a stretch where a
-  system dialog took the controls, so input during that window is not the
-  player's and should not be read as intent.
+Corrections to earlier versions of this list are noted where they apply, since
+two items on it turned out to be wrong rather than merely unfinished.
+
+* **The score.** Still not located -- not the storage, not the tally
+  arithmetic. Three search strategies have failed: monotonic scanning (defeated
+  by BCD carries), packed-BCD adjacency (defeated by parallel tables), and
+  alphabetical text (defeated by relocated letters). The tally adds points for
+  cars passed and for seconds remaining; `run-02` cannot test the seconds rule
+  because its clock reached zero, so only cars-passed contributed. `run-01`
+  finishes with time remaining and is the recording to use.
+* **The fourth track.** Tracks 2 and 3 are 85 and 89 segments; only TEST and
+  FUJI have been decoded and driven. SUZUKA is track 2 by name order, but the
+  fourth name has not been read out of the ROM.
+* **The RAM handler at `$2456`.** Nothing selects DLI index 0 and nothing
+  writes that address during `run-01`. Settle whether any mode does.
+* **`$8000-$9CCE`, 7,375 bytes.** The graphics block. The display list names
+  `$87xx`-`$8Bxx`, `$9Exx`, `$AAxx`, `$B0xx`; nothing yet says what they draw.
+* **`$AE2F-$C17D`, 4,943 bytes**, which traced code reads from 36 distinct
+  addresses. Understood in role, undeclared in detail.
+* **The silent ranges**, where nothing traced reads at all -- `$F281-$FFFF`
+  (which includes the 6502 vectors), `$E085-$E1CA`, `$DE0D-$DEC7`. Both the
+  physics and the state handlers were found in ranges that looked exactly like
+  these, so they are the place to look next, not the place to assume is data.
+
+Two entries that used to sit here have been resolved and should not be
+reintroduced:
+
+* `SpeedPenalty16` at rom:D6E8 was "not established". It is the scripted stop,
+  and its `SBC #$10` has no `SEC`, so it subtracts 17 rather than 16 -- which
+  is exactly the ramp measured at the end of qualifying and at time-out.
+* This list used to say the game is "nearly silent without input, so the audio
+  tooling that dominated the sibling projects will contribute little here."
+  That was wrong on both counts: there are twenty sounds, each driving three
+  independent streams, under a priority scheme worth the read on its own.
+
+## The recordings
+
+* `run-01` (17,115 frames): the TEST track, driven to completion. It includes a
+  crash and a stretch where a system dialog took the controls, so input during
+  that window is not the player's and should not be read as intent.
 * `run-02` (11,942 frames): the FUJI track -- puddles, a sign struck, a lot of
   skidding, and the run ends when the clock runs out rather than at a finish
-  line. So it exercises every hazard the manual names, and ends on the timer,
-  which makes it the recording to find the clock in.
-* The game is nearly silent without input, so the audio tooling that dominated
-  the sibling projects will contribute little here.
+  line. It exercises every hazard the manual names, which is why most of the
+  live findings here cite it.

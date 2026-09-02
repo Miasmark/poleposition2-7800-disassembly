@@ -15,16 +15,55 @@ command (below).
 ## Start here
 
 [`docs/FINDINGS.md`](docs/FINDINGS.md) is the real deliverable: a narrative of
-what's been confirmed live in MAME, what's still just a hint, and what was
-actively distrusted rather than assumed. **This is day one**, so read it as a
-starting map: most of the cartridge is currently one very large unexplained
-block.
+what has been confirmed live in MAME, what is still a hint, and what was
+actively distrusted, tested, and in several cases retracted rather than
+assumed. [`annotations.json`](annotations.json) is the machine-readable form of
+the same knowledge.
+
+**This is a partial disassembly, and the number is the honest one: 33.5% of the
+cartridge is reached as code.** Around 21,000 bytes remain unclassified, most
+of it the graphics block at `$8000` and a large data region at `$AE2F` that
+traced code demonstrably reads from but which is not broken down here. What is
+mapped is the machinery rather than the artwork.
+
+Solved and live-verified on the gameplay side:
+
+* **The driving model.** Two 16-entry acceleration curves selected by gear --
+  LO goes negative above about 192 and tops out near 176, HI pulls +1 forever
+  and is the only way to reach 255. Coast, brake, crash and clock-expiry
+  deceleration; the skid test against eight speed-banded traction thresholds,
+  and the drag it applies.
+* **The collision system.** Sixteen object slots, a 78-entry perspective table
+  turning distance into a screen row, lateral thresholds of 30 near and 26 far,
+  and a type dispatch that separates puddles (which slow you) from signs and
+  rival cars (which end your run).
+* **The track format.** Four courses stored as nibble-packed segment lists --
+  low nibble indexes a menu of fourteen lengths, high nibble is curvature. TEST
+  decodes to a literal rounded rectangle of four identical eased corners.
+* **The sound engine.** Twenty sounds, each driving three independent byte
+  streams into the TIA's two voices, arbitrated by a priority table that puts
+  the engine at the bottom so every effect simply borrows a voice.
+* **The state machine**, the display-interrupt chain, the race clock, the lap
+  timer, the qualifying thresholds, the character set and the HUD.
+
+The wrong turns are deliberately left next to the corrections, because several
+were the most instructive part of the work: five speed drops called
+"mechanical" that were one ordinary application of a formula printed in the
+paragraph above the guess; a puddle detector built from that formula that
+aliased against a scripted ramp and produced two false positives; and a
+coverage tool reporting "no missed code" about a region it had no way to enter.
+
+**No reference source was used.** Unlike some of the sibling projects, no
+private or unlicensed historical source was consulted for this game at any
+point -- every finding here comes from the ROM, the recordings, and MAME.
 
 Working discipline, same as the sibling projects: every claim about what a byte
-range does should be checked live before it's trusted, not pattern-matched from
-a probe script carried over from a previous project. Every `annotations.json`
-change is followed by JSON validation, `disasm.py` regeneration, and a
-`verify.py` byte-identical round-trip check.
+range does should be checked live before it is trusted, not pattern-matched
+from a probe script carried over from a previous project. Every
+`annotations.json` change is followed by JSON validation, `disasm.py`
+regeneration, and a `verify.py` byte-identical round-trip check.
+
+![ROM coverage map](docs/img/coverage-map.png)
 
 ## Reproducing it
 
