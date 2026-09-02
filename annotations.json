@@ -100,7 +100,8 @@
   "rom:DEF3": "SoundStart",
   "rom:DF3D": "SoundUpdate",
   "rom:E03E": "SoundPitchPtr",
-  "rom:C38D": "EngineNote"
+  "rom:C38D": "EngineNote",
+  "rom:D917": "LoadTrack"
  },
  "ram": {
   "00DE": "RaceClockHi",
@@ -135,7 +136,16 @@
   "2108": "SndAudvIdx",
   "210C": "EngineRate",
   "210D": "EnginePitch",
-  "210E": "RumbleVol"
+  "210E": "RumbleVol",
+  "00C1": "TrackLenA",
+  "00C2": "TrackLenB",
+  "00C4": "TrackIndex",
+  "1800": "SegLenLo",
+  "185A": "SegLenHi",
+  "1900": "SegCurve",
+  "18D7": "ObjSegLenLo",
+  "195A": "ObjSegLenHi",
+  "18B4": "SegObjDesc"
  },
  "comments": {},
  "headers": {},
@@ -151,6 +161,12 @@
    "end": "rom:A0B8",
    "name": "dat_TrackNames",
    "note": "Track names as text: TEST, FUJI, SEASIDE, each followed by a digit and a $B0 separator; SUZUKA sits apart at $A4A4. Finding these is what proved J/K/Z live at $B1-$B3 rather than being absent from the font -- see docs/FINDINGS.md, including the retraction of the claim that these names were graphics."
+  },
+  {
+   "loc": "rom:A197",
+   "end": "rom:A1B3",
+   "name": "dat_SegLengths",
+   "note": "The segment-length menu: fourteen 16-bit lengths, low bytes at $A197 and high bytes at $A1A5. Read as pairs they are round decimal numbers -- 300, 500, 900, 1000, 1500, 2000, 2500, 3000, 5000, 5300, 10000, 1200, 600, 800 -- which is what identifies them; the road accumulates the pair as a 16-bit quantity at rom:C4E7. LoadTrack indexes this by the LOW nibble of each track byte."
   },
   {
    "loc": "rom:A48A",
@@ -181,6 +197,12 @@
    "end": "rom:C3E1",
    "name": "dat_AccelCurves",
    "note": "Two 16-entry acceleration curves, indexed at rom:C2F6 by (Speed >> 4) + Gear, where Gear is 0 for LO and $10 for HI. Entries are signed and ADDED to Speed at rom:C33A.\\n\\nLO  03 05 07 08 07 06 05 04 03 02 00 00 FF FF FE FC\\nHI  01 01 01 02 03 05 07 06 05 04 03 02 01 01 01 01\\n\\nLO pulls hardest at index 3 (speed 48-63) and then goes NEGATIVE from index 12, actively braking the car above about 192 -- so LO has a top speed near 176. HI barely moves the car off the line at +1 but never stops pulling, which is the only way to reach the 255 the HUD tops out at. That is the real Pole Position gearbox, in sixteen bytes each."
+  },
+  {
+   "loc": "rom:C955",
+   "end": "rom:C965",
+   "name": "dat_TrackStreamPtrs",
+   "note": "Four 4-byte tables, so four tracks: stream A pointer low at $C955 and high at $C959, stream B pointer low at $C95D and high at $C961. LoadTrack rom:D917 indexes all four by TrackIndex ($C4) and puts the results in $40/$41 and $42/$43. Lengths come from $AAD4 (stream A) and $A4AA (stream B), and the initial object cursor from $ABD4. This sixteen-byte range was an unexplained gap until the loader was read."
   },
   {
    "loc": "rom:C965",

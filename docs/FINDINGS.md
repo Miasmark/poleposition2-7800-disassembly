@@ -867,6 +867,82 @@ at f72. All of them are before the cartridge owns that RAM: the BIOS runs about
 133 frames first, so anything sampled by frame number that early is measuring
 the logo screen, not the game. They are init garbage, not a twenty-first sound.
 
+## The track format
+
+`LoadTrack` at rom:D917 is fully parameterised by `TrackIndex` (`$C4`), and
+every table it touches is indexed by it:
+
+| table | per track |
+|---|---|
+| `dat_TrackStreamPtrs` rom:C955/rom:C959 | stream A pointer |
+| `dat_TrackStreamPtrs` rom:C95D/rom:C961 | stream B pointer |
+| `$AAD4` / `$A4AA` | length of stream A / stream B |
+| `$ABD4` | initial object cursor |
+
+Four entries in each, so **four tracks**. The sixteen bytes at `$C955` were an
+unexplained gap until the loader was read.
+
+### One byte per segment, two nibbles
+
+Each byte of a track stream packs two fields, expanded at rom:D949:
+
+    low nibble  -> index into dat_SegLengths, a menu of 14 lengths
+    high nibble -> curvature, minus 5, so -5 to +10
+
+The length menu is what identifies the format. Read as 16-bit pairs -- low
+bytes at `$A197`, high at `$A1A5`, which the road code accumulates as a pair at
+rom:C4E7 -- they come out as round decimal numbers:
+
+    300  500  900  1000  1500  2000  2500  3000  5000  5300  10000  1200  600  800
+
+Nothing else about the encoding is ambiguous once those are recognised. A first
+reading had the nibbles the other way round; the round numbers settle it.
+
+Stream B is a second, shorter list with its own length, using the same length
+menu but packing a roadside-object descriptor into the high bits instead of a
+curvature: bits 7-5 and bit 4 are recombined at rom:D97E into `SegObjDesc`
+(`$18B4`), which is exactly what rom:CF54 later reads to build the type-1
+roadside signs the car can crash into.
+
+### The four tracks, decoded
+
+| track | segments | total length | recording |
+|---|---|---|---|
+| 0 TEST | 27 | 42,500 | `run-01` |
+| 1 FUJI | 41 | 45,000 | `run-02` |
+| 2 SUZUKA | 85 | -- | |
+| 3 (fourth) | 89 | -- | |
+
+Both recordings confirm the static read exactly: sampling `TrackIndex` live gives
+track 0 with lengths 26/17 for `run-01` and track 1 with 40/16 for `run-02`,
+matching `dat_AAD4`/`dat_A4AA` byte for byte.
+
+TEST decodes as a literal rounded rectangle:
+
+    straight 5000    CORNER 2500 [-1/-2/-3/-2/-1]
+    straight 5000    CORNER 2500 [-1/-2/-3/-2/-1]
+    straight 10000   CORNER 2500 [-1/-2/-3/-2/-1]
+    straight 5000    CORNER 2500 [-1/-2/-3/-2/-1]
+    straight 5000    CORNER 2500 [-5]
+
+Four identical corners, all turning the same way, separated by straights, and a
+fifth closing corner joining back to the start. That is the track as described
+from playing it, recovered from the ROM without reference to the screen.
+
+FUJI is a real circuit by comparison -- corners of differing severity including
+a nine-segment hairpin:
+
+    straight 7500    CORNER 3500 [+1/+2/+3/+4/+3/+2/+1]
+    straight 1000    CORNER 3000 [-1/-2/-1]
+    straight 1000    CORNER 3500 [+1/+2/+3/+4/+3/+2/+1]
+    straight 1000    CORNER 3200 [-1/-2/-3/-4/-5/-4/-3/-2/-1]
+    straight 300     CORNER 13500 [+1/+2/+1/+2/+3/+2/+1]
+    straight 2500    CORNER 5000 [+4]
+
+The curvature ramps symmetrically in and out of every corner rather than
+stepping, so the road eases. Each closing corner is a single unramped value,
+which is the seam where the lap joins.
+
 ## What's open
 
 * `SpeedPenalty16` at rom:D6E8 subtracts a flat 16 from speed, clamped at
