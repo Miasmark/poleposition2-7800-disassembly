@@ -786,6 +786,87 @@ any gap, and two `JMP ($xxxx)` through RAM pointers: rom:D26A, which is the
 dispatcher above and now resolved, and rom:EC06, the DLI table, whose index-0
 handler at `$2456` remains the one entry nothing selects.
 
+## The sound engine
+
+No POKEY on this cartridge, so everything is the TIA two voices. `$2102` and
+`$2103` hold the sound id playing on voice 0 and voice 1, `$FF` meaning free --
+which retrospectively explains the `ram_2102,X` reads inside the collision
+handler that looked unmotivated when the puddles were found. That code was
+asking whether the splash was already playing before retriggering it.
+
+Three entry points: `SoundStart` rom:DEF3 (id in A), `SoundStop` rom:DED6, and
+`SoundSilenceAll` rom:DEC8. `SoundUpdate` rom:DF3D runs the sequencer each
+frame and does nothing in states 1 and $13.
+
+**Each sound has three independent byte streams**, not one -- pitch to `AUDF`,
+waveform to `AUDC`, and a volume envelope to `AUDV`, each advanced by its own
+per-voice index (`SndPitchIdx`, `SndAudcIdx`, `SndAudvIdx`). The pointers live
+in four parallel 20-byte tables at `dat_SndStreamPtrs` rom:A558 plus two more at
+`dat_SndVolPtrs` rom:E049. In a stream, `$FF` ends the sound and frees the voice,
+`$FE` and `$FD` are escapes, and a byte with bit 7 set means hold rather than
+advance (rom:E017 does `BPL` then `DEY`).
+
+### Priority, and why the engine never wins
+
+With only two voices, `SoundStart` arbitrates: when both are busy it compares
+`dat_SndPriority` for the incoming sound against what is playing and takes the
+voice only if it outranks it. The whole scheme reads off the table at a glance:
+
+| sound | priority | what it is |
+|---|---|---|
+| `$0F` | **0** | the engine -- anything at all steals its voice |
+| `$0E` | 2 | |
+| `$02` | 3 | puddle splash |
+| `$10` | 4 | road rumble |
+| `$03`,`$04` | 5 | skid screech, two voices |
+| `$08` | 6 | crash |
+| `$07` | 7 | crash |
+| `$0B` | 8 | |
+| `$01`,`$06`,`$0D` | 9 | |
+| `$00`,`$05`,`$09`,`$0A`,`$0C`,`$11`,`$12` | 10 | |
+| `$13` | **20** | race-start fanfare -- nothing interrupts it |
+
+Putting the engine at zero is the whole trick. It is the one sound that plays
+continuously, so making it the weakest means every effect simply borrows a voice
+and the drone resumes underneath when the effect ends -- no ducking logic
+anywhere.
+
+### The engine note is computed, not sequenced
+
+Sounds `$0F` and `$10` do not read their streams at all; rom:DF56 special-cases
+`$0F`, and both point at dummy addresses in the graphics block. They are driven
+by `EngineNote` at rom:C38D instead:
+
+    EnginePitch ($210D) = 30 - (Speed >> 4),  minus 3 more in LO gear
+    EngineRate  ($210C) =  8 - (Speed >> 5)
+
+`AUDF` is a divisor, so as speed rises the value falls and the pitch rises, and
+the rate value falls too so the sound pulses faster. LO gear sits three lower --
+revving higher at the same road speed, which is what a real gearbox does. The
+whole engine is nine instructions.
+
+### What actually plays in run-02
+
+Sampling both voice slots every frame:
+
+    $10  30 starts   road rumble
+    $0F  14 starts   engine (restarted each time an effect steals its voice)
+    $03  11 starts   skid screech      -- matches the eight skid episodes
+    $04  10 starts   skid, second voice
+    $02   7 starts   puddle splash
+    $07   2 starts   crash  }  exactly the two crashes at f7479 and f9747
+    $08   2 starts   crash  }
+    $0C   2 starts   score tally  } both at f11061, just after the clock
+    $0D   2 starts   score tally  } expired at f11055
+    $13   1 start    race-start fanfare, once
+    $05   1 start    } f11547, after the tally -- the game-over music
+    $06   1 start    }
+
+Four impossible ids also appeared -- `$55` at f1, `$AC` at f17, `$64` and `$E3`
+at f72. All of them are before the cartridge owns that RAM: the BIOS runs about
+133 frames first, so anything sampled by frame number that early is measuring
+the logo screen, not the game. They are init garbage, not a twenty-first sound.
+
 ## What's open
 
 * `SpeedPenalty16` at rom:D6E8 subtracts a flat 16 from speed, clamped at

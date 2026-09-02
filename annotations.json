@@ -94,7 +94,13 @@
   "rom:C489": "SetGearHi",
   "rom:C4F7": "SteerAndLimits",
   "rom:D701": "PhysicsUpdate",
-  "rom:C17E": "ReadController"
+  "rom:C17E": "ReadController",
+  "rom:DEC8": "SoundSilenceAll",
+  "rom:DED6": "SoundStop",
+  "rom:DEF3": "SoundStart",
+  "rom:DF3D": "SoundUpdate",
+  "rom:E03E": "SoundPitchPtr",
+  "rom:C38D": "EngineNote"
  },
  "ram": {
   "00DE": "RaceClockHi",
@@ -121,7 +127,15 @@
   "00D7": "InputAccel",
   "00D8": "InputBrake",
   "00DA": "RoadCurve",
-  "00DB": "Gear"
+  "00DB": "Gear",
+  "2100": "SndDuration",
+  "2102": "SndVoiceId",
+  "2104": "SndPitchIdx",
+  "2106": "SndAudcIdx",
+  "2108": "SndAudvIdx",
+  "210C": "EngineRate",
+  "210D": "EnginePitch",
+  "210E": "RumbleVol"
  },
  "comments": {},
  "headers": {},
@@ -143,6 +157,12 @@
    "end": "rom:A4A2",
    "name": "dat_DliHandlerTable",
    "note": "The display-interrupt handler table, found live then read statically. The NMI entry at rom:EBEF indexes TWO PARALLEL TABLES by ram_00FF -- low bytes at $A48A, high bytes at $A496, twelve entries -- builds the vector in ram_00FD/FE and does JMP (ram_00FD) at rom:EC06. Eleven targets are in ROM and are now entries; index 0 is $2456, which is RAM, so that handler is code copied there at run time and cannot be reached statically. This table is the first structure identified inside the 16,805-byte block at $8000, and it was found because --check-gaps flagged the indirect jump rather than letting it pass."
+  },
+  {
+   "loc": "rom:A558",
+   "end": "rom:A5A8",
+   "name": "dat_SndStreamPtrs",
+   "note": "Four parallel 20-byte tables, indexed by sound id: pitch stream low at $A558 and high at $A56C (loaded by SoundPitchPtr rom:E03E), waveform stream low at $A580 and high at $A594 (loaded at rom:E020). Each sound has three INDEPENDENT byte streams -- pitch to AUDF, waveform to AUDC, volume to AUDV -- advanced by their own per-voice indices SndPitchIdx, SndAudcIdx and SndAudvIdx."
   },
   {
    "loc": "rom:A7C2",
@@ -185,6 +205,24 @@
    "end": "rom:DBB0",
    "name": "dat_QualifyThresholds",
    "note": "The eight qualifying thresholds, as TWO PARALLEL TABLES: dat_DBA0 holds the seconds and dat_DBA8 the hundredths, both BCD, indexed by position 0-7. rom:D3F7 walks them comparing LapTimeSeconds then LapTimeHundredths, stopping at the first the lap beats. Reads 58.50, 60.00, 62.00, 64.00, 66.00, 68.00, 70.00, 73.00 seconds -- the manual gives only the first and last of those and both match. Searching for the pair 58 50 as adjacent bytes finds nothing, because it is split across the two tables eight bytes apart."
+  },
+  {
+   "loc": "rom:E049",
+   "end": "rom:E071",
+   "name": "dat_SndVolPtrs",
+   "note": "Volume-envelope stream pointers, low at $E049 and high at $E05D, twenty entries; loaded at rom:E008 and read into AUDV. Third of the three streams per sound -- see dat_SndStreamPtrs at rom:A558."
+  },
+  {
+   "loc": "rom:E071",
+   "end": "rom:E085",
+   "name": "dat_SndDurations",
+   "note": "Frames per step for each of the twenty sounds, read at rom:DF65 into SndDuration. Ranges from 1 (the engine and the short effects) to 64 (sound $09)."
+  },
+  {
+   "loc": "rom:E1CB",
+   "end": "rom:E1DF",
+   "name": "dat_SndPriority",
+   "note": "Priority per sound id, consulted by SoundStart at rom:DF0A when both voices are busy: the incoming sound takes a voice only if it outranks what is already there. The scheme is legible at a glance -- the engine $0F is priority 0, so anything at all steals its voice, and the race-start fanfare $13 is priority 20, far above the 2-10 of everything else, so nothing interrupts it. NOTE the last byte at $E1DE is also the first note of the pitch stream for sound 3; both want the value $14, so the tables abut and share it."
   },
   {
    "loc": "rom:EAB9",
