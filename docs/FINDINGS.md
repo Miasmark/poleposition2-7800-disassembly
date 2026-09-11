@@ -1125,6 +1125,55 @@ The curvature ramps symmetrically in and out of every corner rather than
 stepping, so the road eases. Each closing corner is a single unramped value,
 which is the seam where the lap joins.
 
+## Phase 1 prototyping: a second static view, and a real MARIA timing rule
+
+Not reverse-engineering in the usual sense -- this is notes from actually
+patching the ROM, in service of the two-player split-screen research -- but
+a genuine hardware fact came out of it that belongs here.
+
+**The mechanism is proven.** Repointing zone 0 and zone 1's selectors (in
+`dat_BC7E`, the boot-time template) from the shared empty terminator to a
+new, hand-written object list dropped into free ROM space at `$F400` gets
+MARIA to draw content that didn't exist before -- confirmed by screenshot,
+with the game's score and timing byte-identical to the unpatched run at the
+same frame (the input recording stayed in sync; nothing about gameplay
+changed). Zero new instructions were needed for this part.
+
+**Object height must match the zone's line count, not be chosen freely.**
+`docs/graphics.md` in the shared toolkit already said why: MARIA fetches
+scanline *n* of an object from *page* `base + n`, not from a contiguous
+block, so a zone declaring more lines than the graphic was authored for
+reads into whatever ROM happens to sit at the following pages. Zones 20-32
+each declare exactly as many lines as their graphic is tall (6-8); the first
+prototype attempt didn't match this (16 and 10 lines against 6- and
+8-line-tall graphics) and produced a plausible-but-wrong shape as a result.
+Matching the line count to the graphic's real height fixed it immediately.
+
+**A zone's display-interrupt bit fires at the *end* of that zone, not the
+start.** Byte 0 bit 7 of a zone selector is documented (`docs/hardware.md`)
+as "trigger a display interrupt at the end of this zone" -- easy to read
+past, and easy to assume means "at the start" instead, which is what this
+session did. The practical consequence: zone 0's own DLI (`DLI_EC10`)
+configures the palette for zone 1 onward, never for zone 0 itself. Zone 0
+draws under whatever palette the *previous frame's last-firing DLI* left
+behind. Chasing a correct grey for a test object placed in zone 0 turned
+into chasing exactly this: two other handlers were found along the way --
+`DLI_ECA1` (fires later, around zone 7) explicitly zeroes `P2C1-C3`, and
+`DLI_ED4F` (fires later still, near the real road at zone 19) sets them to
+the road's actual grey, `$89`/`$8B`/`$8D`. Editing `DLI_EC10` to set those
+same values (a clean, zero-displacement patch -- its 7-byte tail relocated
+to free space, the freed slot repurposed for the missing `P2C3` write) is
+confirmed live to execute exactly as written, every frame, and still had no
+visible effect on zone 0's own colour -- consistent with the "fires at the
+end" rule once it was found, not a sign the patch failed.
+
+**The design implication for a second camera:** new content placed in
+whichever zone a chosen DLI's effect actually reaches (the zone *after* it,
+not the zone carrying it) can be coloured reliably; content placed in the
+same zone as its own trigger inherits an inter-frame carry-over state that
+is harder to control. This wasn't understood at the start of this
+prototyping pass and would have cost more time later if left unrecorded.
+
 ## What's open
 
 Corrections to earlier versions of this list are noted where they apply, since
