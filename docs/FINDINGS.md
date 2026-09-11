@@ -200,6 +200,42 @@ and `$B0xx`, all inside the same block. So it is graphics throughout, reached
 from many display-list entries rather than one table -- which is why a static
 search for references into it finds so little.
 
+### How often the road's display list actually changes
+
+Raised by a question about whether a second, independent road view is
+feasible at all (split-screen two-player) -- the CPU-side cost of that
+depends on whether the road's zone list is something rebuilt every frame or
+something closer to static.
+
+Tapping every write into `$2200-$226B` across 5,000 frames of `run-01`
+answers it directly: **almost every byte in the block is written exactly 15
+times in 5,000 frames** -- once every ~333 frames, roughly 5.5 seconds. That
+is not a per-frame cost; it reads as a per-track-segment rebuild (segments in
+this kind of game commonly last several seconds), triggered occasionally, not
+a routine that runs every frame and happens to reproduce the same bytes.
+
+Two small exceptions, both far cheaper than a rebuild:
+
+* `$2224-$222C` (9 bytes) update 18 times instead of 15 -- some inner zone
+  refreshed slightly more often, not yet chased down.
+* `$225F`/`$2262` update **460** times in the same 5,000 frames -- roughly
+  once every 11 frames. This is `rom:E7E9`, gated purely on `PlayerX`: past
+  `$45` one way or `$CE` the other, it patches those two bytes (a zone's
+  graphics-pointer low/high) to a different pair of ROM addresses. It reads
+  as a lane/verge graphic swapped in when the car drifts off the road's
+  center, not a curvature recompute.
+
+The implication for a second camera: **the CPU-side cost of maintaining a
+second zone list is close to free.** A full rebuild happening a few times a
+second, for two players instead of one, does not compete meaningfully for
+CPU time. What this does *not* settle is MARIA's per-frame DMA cost -- every
+zone's *graphics* bytes (the widths documented above, fetched from `$8000`
+onward) are fetched fresh every single frame regardless of how often the
+zone list's header bytes change, since that fetch is what actually draws the
+screen. Whether two half-height camera views fit in one frame's DMA budget
+is a question about that fetch total, not about this list -- and is still
+open.
+
 ## The race clock
 
 `$DF` is the clock, in BCD, counting down. `$DE` extends it above 99 -- it
