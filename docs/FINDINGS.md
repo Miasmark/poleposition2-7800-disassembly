@@ -1208,6 +1208,49 @@ palette lives in *byte 3* instead (moved there in the 5-byte layout), and
 reads as palette 2 for all three HUD rows checked -- the same palette the
 road itself uses, not a separate one.
 
+## Phase 1: the top display, mirroring player 1
+
+The first working second view. Thirteen bytes, no new instructions.
+
+**The trick is that the road's zones don't own their object lists.** Zones
+20-32 point at sub-lists in RAM (`$2300`, `$2326`, `$234C`, ...) which the
+per-scanline DLI chain rewrites every frame with fresh curve-driven `x`
+positions (see the curve section above). Pointing a *sky* zone's selector at
+one of those same RAM addresses makes it draw the same band, tracking the
+same curve, for free -- no second copy of anything, no new code.
+
+Zones 8, 9 and 10 were the candidates: 8 lines each, contiguous, empty, and
+well clear of the HUD rows. Repointed at road zones 20/21/22's sub-lists,
+with their line counts cut 8->6 to match the graphics' real height (the rule
+recorded above), and zone 11 grown 3->9 to absorb the six freed lines so
+nothing below shifts:
+
+    zone  8   n=8 dl=$22C7  ->  n=6 dl=$2300
+    zone  9   n=8 dl=$22D1  ->  n=6 dl=$2326
+    zone 10   n=8 dl=$22DB  ->  n=6 dl=$234C
+    zone 11   n=3           ->  n=9          (DLI bit preserved)
+
+**Colour needed three more bytes, and the reason is worth recording.** Road
+objects declare palette 1, but palette 1 holds different values at the top of
+the screen than at the road: `DLI_ECA1` (governing zones 1-19) sets
+`P1C1/C2/C3` = `$24`/`$28`/`$80`, while `DLI_ED4F` (governing the road at
+zones 20+) sets them to `$34`/`$04`/`$04`. Same objects, same palette number,
+different colours -- the `$80` is why the first mirror rendered navy blue.
+Matching `DLI_ECA1`'s palette 1 to the road's fixed it: `rom:ECCB` `$24`->`$34`,
+`rom:ECC7` `$28`->`$04`, and `rom:ECB5` `$80`->`$04` (that last one is a load
+shared with `P0C3`/`P4C3`/`P5C3`; changing all four showed no visible harm to
+the HUD, sky or hills).
+
+Verified against `run-01` at two frames: at 3000 the mirrored band is skewed,
+at 8000 it is a symmetric perspective trapezoid -- it tracks the live curve,
+because it is literally reading player 1's own sub-lists. Score, lap and speed
+readouts are byte-identical to the unpatched run at both frames, so nothing
+about gameplay is disturbed.
+
+Still cosmetic, and left alone deliberately: the roadside-sign objects carried
+in those same sub-lists mirror too, in the wrong palette (green rather than
+white), for the same class of reason as the road strips did.
+
 ## What's open
 
 Corrections to earlier versions of this list are noted where they apply, since
