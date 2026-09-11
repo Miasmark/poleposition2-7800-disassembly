@@ -1153,26 +1153,60 @@ Matching the line count to the graphic's real height fixed it immediately.
 start.** Byte 0 bit 7 of a zone selector is documented (`docs/hardware.md`)
 as "trigger a display interrupt at the end of this zone" -- easy to read
 past, and easy to assume means "at the start" instead, which is what this
-session did. The practical consequence: zone 0's own DLI (`DLI_EC10`)
-configures the palette for zone 1 onward, never for zone 0 itself. Zone 0
-draws under whatever palette the *previous frame's last-firing DLI* left
-behind. Chasing a correct grey for a test object placed in zone 0 turned
-into chasing exactly this: two other handlers were found along the way --
-`DLI_ECA1` (fires later, around zone 7) explicitly zeroes `P2C1-C3`, and
-`DLI_ED4F` (fires later still, near the real road at zone 19) sets them to
-the road's actual grey, `$89`/`$8B`/`$8D`. Editing `DLI_EC10` to set those
-same values (a clean, zero-displacement patch -- its 7-byte tail relocated
-to free space, the freed slot repurposed for the missing `P2C3` write) is
-confirmed live to execute exactly as written, every frame, and still had no
-visible effect on zone 0's own colour -- consistent with the "fires at the
-end" rule once it was found, not a sign the patch failed.
+session did at first. The practical consequence: zone 0's own DLI
+configures the palette for zone 1 onward, never for zone 0 itself.
 
-**The design implication for a second camera:** new content placed in
-whichever zone a chosen DLI's effect actually reaches (the zone *after* it,
-not the zone carrying it) can be coloured reliably; content placed in the
-same zone as its own trigger inherits an inter-frame carry-over state that
-is harder to control. This wasn't understood at the start of this
-prototyping pass and would have cost more time later if left unrecorded.
+**The DLI-index dispatch table has 12 slots, and which ones actually run
+changes with game state -- confirmed by tracing it live, not by reading the
+table once.** `dat_DliHandlerTable`/`dat_A496` (`rom:A48A`/`A496`) map
+`ram_00FF` to a handler address; index 0 is the long-documented dead entry
+(`$2456`, never installed). Tracing every write to `ram_00FF` around frame
+212 (just after race setup) shows the chain looping **1->2->3->4->6->1**
+(`DLI_EC10` is index 1) -- and tapping `$EC10` as an executed address
+across the whole race shows it fetched 1,051 times, **last at frame 1260,
+never again**. Tracing the same chain again at frame 3000 shows a
+completely different loop, **7->8->9->10->11**, with `ram_00FF` forced to 7
+every frame by an unrelated routine (`rom:F169`, part of the per-frame
+setup that also reads the controller) -- `DLI_EC10` never enters the chain
+at all once real driving starts. The first attempt at this fix spent
+considerable effort editing `DLI_EC10` -- confirmed live to execute exactly
+as written, every frame, right up until frame 1260 -- and correctly saw no
+effect on a frame-3000 screenshot, because by then that handler is simply
+not running. Not a failed patch; the wrong handler, identified before this
+was traced and corrected after.
+
+**The real handler is `DLI_ECA1` (index 7), and the fix is one byte.**
+Reading it fully: it re-reads the controller, sets `ram_00FF=8` (chaining
+to the next handler), sets `BACKGRND`, then does `LDA #$00 / STA P2C1 /
+STA P2C2 / STA P2C3` -- all three registers zeroed from a single shared
+load. Changing that one immediate (`rom:ECAD`, `$00`->`$8B`) turns a test
+object drawn under palette 2 from solid black to solid grey, confirmed by
+screenshot, with score and timing still untouched. A full three-tone grey
+(matching the road's real `$89`/`$8B`/`$8D`) would need three separate
+loads where the original has one shared load -- a small instruction-count
+increase, not attempted here, since a single flat tone was enough to
+confirm the mechanism.
+
+**The design implication for a second camera:** *which* DLI actually governs
+a given zone during real gameplay cannot be read off the static table or
+assumed from a zone's own trigger bit -- it depends on which state the
+12-slot chain is in, which itself changes with game phase (qualifying vs.
+race, confirmed here as one concrete example). The only reliable way to
+find the *active* handler for a specific frame is to trace `ram_00FF`
+writes live at that frame, the same way this session eventually did.
+Assuming zone 0's own DLI (`DLI_EC10`) governs zone 0's neighbourhood at an
+arbitrary point in a race turned out to be wrong twice over: wrong end of
+the zone, and -- separately -- wrong handler for that point in the game.
+
+**A smaller correction from the same pass:** the HUD text object decoded
+earlier in this document was read as palette 3, from its header byte's
+upper three bits. That byte (`$60`) has bit 5 set, which `docs/hardware.md`
+identifies as the indirect/character-mode flag for the 5-byte DL entry
+format -- meaning those bits are not a palette at all in this format, and
+the HUD text is in character mode, not direct mode as assumed. Its real
+palette lives in *byte 3* instead (moved there in the 5-byte layout), and
+reads as palette 2 for all three HUD rows checked -- the same palette the
+road itself uses, not a separate one.
 
 ## What's open
 
