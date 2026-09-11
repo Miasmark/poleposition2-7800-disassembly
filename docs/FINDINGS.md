@@ -1286,6 +1286,49 @@ them.
 Total: 43 bytes, no new instructions. Score, lap and speed readouts remain
 byte-identical to the unpatched run at both frames checked.
 
+## Relocating the HUD: a real two-viewport screen
+
+With the mirror proven, the next structural step was moving the HUD out of the
+top of the screen so the two views could sit above and below it. The result is
+a screen that is genuinely laid out as split-screen:
+
+    zone  0        16   blank top margin
+    zones 1-11     67   player 2's view (ten bands + a gap)
+    zones 12-14    21   HUD, three rows -- the centre divider
+    zones 15-17    15   blank
+    zones 18-19    20   horizon decoration
+    zones 20-32    78   player 1's road
+    zones 33-34    32   blank
+
+**The HUD had to go to zones 12/13/14 specifically**, because those are the
+three the banner tables (`dat_A6BB`/`dat_A6CD`) rewrite at run time -- anywhere
+else and the banner code would stamp over it. Putting the HUD there
+co-locates the two things that share those slots, which is what the layout
+wanted anyway. Zones 2, 4 and 6, freed by the move, become view bands.
+
+**Read mode has to follow the layout.** The HUD's text objects are character
+mode and render under CTRL read mode 3; both road views render under mode 0.
+So the mode now switches with the structure rather than against it:
+`DLI_ECA1`'s tail changed from `ORA #$03` to `AND #$FC` (zones 1+ = mode 0 for
+player 2's view), zone 11's DLI back to `sub_EC67` (zones 12+ = mode 3 for the
+HUD band), and zone 15's DLI already returns mode 0 for everything below. Get
+this wrong in either direction and the symptom is not obvious -- the HUD
+garbles, or road bands decode as the sawtooth-edged wrong shape described
+below.
+
+`BACKGRND` likewise moved: `DLI_ECA1` now loads the road's ground colour
+(`$1B`) rather than sky, so player 2's view sits on ground like player 1's.
+
+Line budget is unchanged at 139 lines before the road, so player 1's view and
+everything below it is untouched; score, lap and speed still read identically
+to the unpatched game.
+
+Known rough edges, all understood rather than mysterious: player 2's bands
+still stair-step for the reason in the next section; the three HUD rows are
+adjacent with no gaps between them (the originals were spaced by separate
+zones that no longer sit between them); and the view is still a mirror, not an
+independent camera.
+
 ## Why a mirror can never be smooth: the curve is injected per scanline
 
 The ten-band mirror still rendered a sawtooth left edge where the road below
