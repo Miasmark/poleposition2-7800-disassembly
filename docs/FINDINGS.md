@@ -233,8 +233,49 @@ zone's *graphics* bytes (the widths documented above, fetched from `$8000`
 onward) are fetched fresh every single frame regardless of how often the
 zone list's header bytes change, since that fetch is what actually draws the
 screen. Whether two half-height camera views fit in one frame's DMA budget
-is a question about that fetch total, not about this list -- and is still
-open.
+is a question about that fetch total, not about this list.
+
+### The road's actual DMA weight, and where the estimate gets soft
+
+`tools/probe-dlgfx.lua` (already in the repo) decodes the live zone list
+rather than guessing at it, and running it against `run-01` at frame 3000
+gives the full picture: 17 zones, covering 113 scanlines total (some zones
+carry 6-10 identical lines before the next header takes over), with between
+1 and 9 objects apiece -- most of the padding is a `$0000/w1` dummy object at
+a fixed off-screen `x`, sitting in unused slots of what looks like a
+fixed-size per-band object table.
+
+Summing what's actually declared: **3,683 bytes of pixel data** across those
+113 lines (32.6 bytes/scanline average) if a zone's object list is fetched
+once and held for its line count. Objects also carry their own header bytes
+(address lo/hi, width/palette, x -- 4 bytes per object in every case seen
+here, since none of the width-encoding bytes hit the 5-byte "extra-wide"
+case) -- if MARIA instead re-fetches every object's full header *every*
+scanline of a zone rather than holding it, the real total is closer to
+**6,559 bytes** (58.0 bytes/scanline). That is a real gap, not rounding: it
+hinges on a detail of MARIA's own DMA behavior (does a zone's declared line
+count mean "hold this fetch" or "re-fetch this every line, only the jump
+target changes") that reading the game's code cannot settle, because the
+game just writes the zone list either way and MARIA behaves however it
+behaves in hardware.
+
+What isn't in question either way: the same total scanline count and the
+same per-scanline byte density would apply whether the road is one 113-line
+view or two ~56-line views stacked for two players. Splitting the *existing*
+budget between two cameras doesn't obviously add to it -- two half-height
+views draw the same number of total scanlines as one full-height view. What
+would add to it: more zone transitions if the two halves' curvature doesn't
+land on shared bands (each zone header is its own small DMA cost, paid once
+per zone-of-lines rather than per-line), and whatever it costs to draw a
+second player's car into the *other* player's half via the object-slot
+system documented above. Neither of those is measured yet.
+
+The right next experiment isn't more arithmetic on this data -- it's finding
+out, empirically, whether the game already has DMA slack: a frame where the
+CPU is measurably starved (stalled waiting on MARIA) would be visible as a
+gap between "CPU cycles this frame" and "CPU cycles available in a 60Hz
+frame", which MAME can report directly rather than inferred from a byte
+count. That measurement hasn't been taken.
 
 ## The race clock
 
