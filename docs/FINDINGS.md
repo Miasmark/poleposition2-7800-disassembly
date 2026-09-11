@@ -1251,6 +1251,41 @@ Still cosmetic, and left alone deliberately: the roadside-sign objects carried
 in those same sub-lists mirror too, in the wrong palette (green rather than
 white), for the same class of reason as the road strips did.
 
+## The full mirror: ten bands, and why three were not enough
+
+Extending the three-band mirror to ten (sky zones 8-17 -> road zones 20-29)
+settles a question raised looking at the short version: the mirrored bands
+looked wrong during a curve -- the real road's edges both lean one way, while
+the three mirrored bands seemed to slant toward the middle.
+
+They were faithful. The road's curvature is carried entirely by the `x` byte
+(see the curve section above), and **the offsets are not monotonic down the
+screen.** At a left-curving frame the near bands step left going down
+(zone 28-32 `x` = 15, 14, 8, 2, 253) while the far bands step *right*
+(zone 20-22 `x` = 10, 19, 22). Three far bands therefore show a short
+right-leaning wedge -- correct, and nothing like a curve, because a curve only
+emerges once enough bands' offsets accumulate. With ten bands the mirror bends
+the same way as the road below it, and the player's car, the rumble strips and
+the dashed centreline all appear.
+
+**Zone budget, for anyone extending this further.** The sky has room but it is
+fragmented. Zones 8-17 are ten usable slots (63 lines) once the HUD rows
+(2, 4, 6) are avoided, which is enough for ten 6-line bands with three lines
+left over -- parked on blank zone 1 (`n` 10 -> 13) so the total stays at 249
+and nothing below shifts. Zones 11 and 15 carry DLI bits that must be
+preserved when their line counts change (`$82` -> `$85`, not `$05`).
+
+**Zones 12, 13 and 14 are not in the boot template.** Their selectors are
+rewritten at run time from two ROM tables, `dat_A6BB` (`rom:A6BB`) and
+`dat_A6CD` (`rom:A6CD`), nine bytes each, by the pair of routines that drive
+the "POLE POSITION!" banner -- whichever ran last wins, and both paths occur
+during a normal race. Patching only `dat_BC7E` leaves those three zones
+reverting. Patching both tables holds, at the cost of the banner, which shares
+them.
+
+Total: 43 bytes, no new instructions. Score, lap and speed readouts remain
+byte-identical to the unpatched run at both frames checked.
+
 ## How the road's stripes animate: palette switching, not palette cycling
 
 Raised as a hypothesis while reviewing the mirrored top display -- that the
