@@ -60,7 +60,10 @@
   "rom:D5E1",
   "rom:D725"
  ],
- "ram_vectors": [],
+ "ram_vectors": [
+  ["0x0040", "0x0041"],
+  ["0x00FD", "0x00FE"]
+ ],
  "bankat": {},
  "labels": {
   "rom:EC0E": "ENTRY_Irq",
