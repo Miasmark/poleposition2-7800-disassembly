@@ -200,82 +200,80 @@ and `$B0xx`, all inside the same block. So it is graphics throughout, reached
 from many display-list entries rather than one table -- which is why a static
 search for references into it finds so little.
 
-### How often the road's display list actually changes
+### The road doesn't compute a curve. It's a two-shape swap.
 
 Raised by a question about whether a second, independent road view is
-feasible at all (split-screen two-player) -- the CPU-side cost of that
-depends on whether the road's zone list is something rebuilt every frame or
-something closer to static.
+feasible at all (split-screen two-player). The first pass at this (below,
+corrected rather than deleted, since the wrong turn is worth keeping visible)
+tapped `$2200-$226B` for 5,000 frames and found almost every byte written
+exactly 15 times, and concluded that was a periodic per-segment rebuild
+"once every ~5.5 seconds". **That conclusion was wrong.** Extending the same
+tap across the *entire* 17,115-frame race shows all 15 writes to a
+representative byte (`$2210`) land in the first 211 frames and never
+recur -- `sub_F171` (`rom:F171-F187`) copies two fixed ROM templates
+(`dat_BC7E`->`$2200`, `dat_BD7E`->`$226B`, 107 and 92 bytes) once, at race
+setup, and is never called again. The "15 times" was three overlapping init
+passes on boot, not fifteen separate rebuilds.
 
-Tapping every write into `$2200-$226B` across 5,000 frames of `run-01`
-answers it directly: **almost every byte in the block is written exactly 15
-times in 5,000 frames** -- once every ~333 frames, roughly 5.5 seconds. That
-is not a per-frame cost; it reads as a per-track-segment rebuild (segments in
-this kind of game commonly last several seconds), triggered occasionally, not
-a routine that runs every frame and happens to reproduce the same bytes.
+That raised a real puzzle: screenshots at frames 3000, 8000 and 12000 of
+`run-01` show visibly different road shapes -- a curve, then straight, then
+a gentler curve -- so *something* changes. Every graphics address the zones
+reference (`$8000`, `$9ED2`, `$AA00`, ...) is ROM on this linear, unbanked
+cart, so it cannot be the pixels. Diffing a full `$2200-$226B` dump at frame
+3000 against one at frame 8000 finds exactly one differing region:
+`$2220-$222F`. Tapping that region for the whole race finds exactly two
+writers, `rom:D81A` and `rom:DA91`, each stamping the **same fixed 9-byte
+pattern** into `$2224-$222C` every time it fires -- not a computed value,
+a constant. `DA91` writes `F6 24 00 BD 1C 07 AB 1C 07`; `D81A` writes
+`15 1D 06 F6 24 02 09 1D 06`. Across the race: `DA91` at f1260 and f4367,
+`D81A` at f3861, f7079, f8969, f10865, f12755, f15713, f16488 -- `D81A` wins
+and holds for long stretches, which is exactly why frames 8000 and 12000
+(both inside a `D81A` stretch) show a straighter road than frame 3000 (inside
+the one `DA91` stretch).
 
-Two small exceptions, both far cheaper than a rebuild:
+So the mechanism is a **binary toggle between two pre-baked 9-byte zone
+snippets** -- one shaped like TEST's one corner, one shaped like its
+straights -- patched into a fixed slot in an otherwise-static, copied-once
+display list. Consistent with TEST's own shape (a rounded rectangle: one
+corner radius, reused four times, per the track-format section below) not
+needing more than two shapes. FUJI, with corners of differing severity,
+almost certainly needs more than two snippets in the equivalent table, and
+that table hasn't been located yet -- the next concrete thread if the full
+curve system matters later.
 
-* `$2224-$222C` (9 bytes) update 18 times instead of 15 -- some inner zone
-  refreshed slightly more often, not yet chased down.
-* `$225F`/`$2262` update **460** times in the same 5,000 frames -- roughly
-  once every 11 frames. This is `rom:E7E9`, gated purely on `PlayerX`: past
-  `$45` one way or `$CE` the other, it patches those two bytes (a zone's
-  graphics-pointer low/high) to a different pair of ROM addresses. It reads
-  as a lane/verge graphic swapped in when the car drifts off the road's
-  center, not a curvature recompute.
+**Why this matters for a second camera:** building a second player's road
+view does not require reverse-engineering a curvature algorithm, because
+there isn't one to find. It requires a second copy of the same fixed
+template (trivial -- it's one more `sub_F171`-style blit at setup) and the
+same kind of small-snippet patch, driven by player 2's own track position
+instead of player 1's. That is a substantially easier Phase 1 target than
+"parameterize the zone generator" implied.
 
-The implication for a second camera: **the CPU-side cost of maintaining a
-second zone list is close to free.** A full rebuild happening a few times a
-second, for two players instead of one, does not compete meaningfully for
-CPU time. What this does *not* settle is MARIA's per-frame DMA cost -- every
-zone's *graphics* bytes (the widths documented above, fetched from `$8000`
-onward) are fetched fresh every single frame regardless of how often the
-zone list's header bytes change, since that fetch is what actually draws the
-screen. Whether two half-height camera views fit in one frame's DMA budget
-is a question about that fetch total, not about this list.
+### The road's DMA weight, measured properly with `dmabudget.py`
 
-### The road's actual DMA weight, and where the estimate gets soft
+The project's own `tools/dmabudget.py` (MAME-calibrated cycle costs per
+zone/object/byte, not reasoned about from scratch) settles the budget
+question the previous write-up in this section had flagged as open.
+`tools/probe-dlgfx.lua` decodes the live zone list at frame 3000 of
+`run-01`: the race DLL (`$2200`) is 17 zones / 113 scanlines / 1-9 objects
+each; the HUD DLL (`$226B`) is 21 zones / 146 scanlines. Feeding both,
+object-by-object, through `dmabudget.py`'s constants:
 
-`tools/probe-dlgfx.lua` (already in the repo) decodes the live zone list
-rather than guessing at it, and running it against `run-01` at frame 3000
-gives the full picture: 17 zones, covering 113 scanlines total (some zones
-carry 6-10 identical lines before the next header takes over), with between
-1 and 9 objects apiece -- most of the padding is a `$0000/w1` dummy object at
-a fixed off-screen `x`, sitting in unused slots of what looks like a
-fixed-size per-band object table.
+    road DLL:     4,901 cycles  (16.4% of an NTSC frame)
+    HUD DLL:      4,010 cycles  (13.4%)
+    combined:     8,911 cycles  (29.8%)
+    left for CPU: 20,957 cycles (70.2%)
 
-Summing what's actually declared: **3,683 bytes of pixel data** across those
-113 lines (32.6 bytes/scanline average) if a zone's object list is fetched
-once and held for its line count. Objects also carry their own header bytes
-(address lo/hi, width/palette, x -- 4 bytes per object in every case seen
-here, since none of the width-encoding bytes hit the 5-byte "extra-wide"
-case) -- if MARIA instead re-fetches every object's full header *every*
-scanline of a zone rather than holding it, the real total is closer to
-**6,559 bytes** (58.0 bytes/scanline). That is a real gap, not rounding: it
-hinges on a detail of MARIA's own DMA behavior (does a zone's declared line
-count mean "hold this fetch" or "re-fetch this every line, only the jump
-target changes") that reading the game's code cannot settle, because the
-game just writes the zone list either way and MARIA behaves however it
-behaves in hardware.
-
-What isn't in question either way: the same total scanline count and the
-same per-scanline byte density would apply whether the road is one 113-line
-view or two ~56-line views stacked for two players. Splitting the *existing*
-budget between two cameras doesn't obviously add to it -- two half-height
-views draw the same number of total scanlines as one full-height view. What
-would add to it: more zone transitions if the two halves' curvature doesn't
-land on shared bands (each zone header is its own small DMA cost, paid once
-per zone-of-lines rather than per-line), and whatever it costs to draw a
-second player's car into the *other* player's half via the object-slot
-system documented above. Neither of those is measured yet.
-
-The right next experiment isn't more arithmetic on this data -- it's finding
-out, empirically, whether the game already has DMA slack: a frame where the
-CPU is measurably starved (stalled waiting on MARIA) would be visible as a
-gap between "CPU cycles this frame" and "CPU cycles available in a 60Hz
-frame", which MAME can report directly rather than inferred from a byte
-count. That measurement hasn't been taken.
+**Comfortable headroom, not a tight budget.** And the same reasoning as
+before still holds, now on firmer ground: splitting the existing 113 road
+scanlines between two ~56-line camera views doesn't add to this total --
+same scanline count, same object density, whichever way it's apportioned.
+What would add a little: a handful of extra zone-boundary transitions if
+the two halves' bands don't line up (each is `PER_ZONE` = 1.7 cycles, noise
+at this scale), and drawing the other player's car into each viewport via
+the object-slot system documented above (a ~15-line, ~15-byte-wide sprite
+costs on the order of 200 cycles by this model -- also noise against a
+21,000-cycle surplus).
 
 ## The race clock
 
