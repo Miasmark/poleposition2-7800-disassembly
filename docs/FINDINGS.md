@@ -1251,6 +1251,46 @@ Still cosmetic, and left alone deliberately: the roadside-sign objects carried
 in those same sub-lists mirror too, in the wrong palette (green rather than
 white), for the same class of reason as the road strips did.
 
+## How the road's stripes animate: palette switching, not palette cycling
+
+Raised as a hypothesis while reviewing the mirrored top display -- that the
+red/white rumble strips and the dashed centreline might be animated by cycling
+palette colours. Close, and the real mechanism is worth writing down exactly.
+
+The palette *registers* do not cycle. `DLI_ED4F` sets the road's colours from
+literals, and the two it takes from RAM (`ram_00FA`/`FB` for `BACKGRND`,
+`ram_00FC` for `P0C2`) are flat across thirty consecutive frames at full
+speed -- measured, not assumed.
+
+What changes is *which palette each object declares*. Logging the road
+sub-lists across consecutive frames shows the palette|width byte alternating
+by exactly `$20`, which is bit 5 of the palette field:
+
+    zone 20   3A 3A 3A 3A 1A 1A 3A 3A 1A 1A 3A 3A
+    zone 27   22 22 02 02 22 22 02 02 02 02 22 22
+    zone 31   30 30 10 10 30 30 10 10 10 10 30 30
+
+`$3A` is palette 1 width 6; `$1A` is palette **0**, same width. Identical
+graphics, flipped between two palettes frame to frame. At the road those
+palettes are deliberately dissimilar -- `DLI_ED4F` sets palette 0 bright
+(`P0C1`/`P0C2` = `$0F`/`$0F`) and palette 1 dark (`P1C1`/`P1C2` = `$34`/`$04`)
+-- so the strip pixels flash light/dark and read as motion. The alternation is
+not a simple every-frame toggle; it holds for a frame or two at a time, which
+is what makes the apparent speed of the stripes track road speed.
+
+The x positions shift on the same frames, from the curve pipeline documented
+above. The graphics addresses never change: `$8000` is the zone-20 strip on a
+hard curve and on a straight alike. **All of the road's apparent curvature and
+all of its apparent motion are carried by two things only -- the x byte and the
+palette bit.** The pixels are constant.
+
+**Consequence for a mirrored or second view:** faithfully reproducing the road
+elsewhere on screen means matching *both* palettes 0 and 1 in whichever DLI
+governs that region, not just one. Matching only palette 1 leaves every
+"palette 0" frame rendering in the host region's unrelated colours, which
+looks like a flicker or a wrong-coloured centreline rather than an obvious
+palette bug.
+
 ## What's open
 
 Corrections to earlier versions of this list are noted where they apply, since
