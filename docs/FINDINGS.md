@@ -268,6 +268,63 @@ its own `PlayerX`-equivalent -- but the static pavement backdrop is generic
 enough (it's not curve-specific ROM art) that it may not need duplicating
 at all, only reusing from a second camera offset.
 
+### The last piece: the curve is injected live, scanline by scanline, by a DLI chain
+
+One gap remained even after `ram_1A31` was confirmed: diffing the *complete*
+decoded zone list (all 35 zones, not the object-bearing subset) between
+frame 3000 and frame 8000 shows more than `PlayerX` and other objects
+moving. Zone 19 -- five small objects sitting right at the horizon line,
+lines 129-139 in the layout above -- keeps the *same five graphics
+addresses* at both frames but at entirely different `x` positions (e.g.
+`$B04F` at `x122` when curved, `x111` when straight). That is the skybox:
+noticed live in play and confirmed here in the data. The road zones
+(20-32) show the same pattern, and several of their padding
+`$0000/w1` slots become real small objects in one frame and not the other.
+
+None of that lives in the RAM this doc had already tapped. `$2300-$2500`
+(the *target* sub-lists the static zone selectors point to, not the
+selectors themselves) turned out to be rewritten **every single frame** --
+1,010 writes across 1,000 frames tapping just one representative byte,
+`$2303`. The writer is `rom:EDA0` (`AccumulateRowCurveOffset`'s neighbor,
+not yet named), and reading it settles the mechanism completely: it is a
+**display interrupt handler** -- `STA WSYNC` between every couple of
+instructions, the classic per-scanline raster-sync pattern -- that reads a
+staged per-row table (`ram_1B00`, `ram_1B4E`, ...) one entry at a time and
+pokes it straight into the live zone entries' `x` fields (`ram_2301`,
+`ram_2303`, ...) *as MARIA is actively drawing that scanline*.
+
+The staging table traces cleanly back to the same curvature pipeline:
+`sub_EA2C` (`rom:EA2C-EA3D`) copies `ram_1B9C,X` into `ram_1B00,X`, and
+`ram_1B9C` and `ram_1A31` are filled from the same accumulation -- both
+read `ram_1C56,X`, and `sub_EA16` (`rom:EA16-EA27`) seeds that accumulator
+from ROM tables (`dat_EA41`, `dat_EADE`), the same per-track curvature data
+family as `SegCurve`.
+
+So the complete picture, corrected one more time: the *structural* display
+list (which zones exist, what graphics they reference, how many lines each
+spans) really is static, copied once at boot, exactly as first found. What
+is not static, and runs every frame via a chain of per-scanline display
+interrupts, is the **`x` position of every object drawn** -- road strips,
+horizon markers, the lot -- live-injected from a table computed once per
+frame from the track's curvature. The pavement never bends; the interrupt
+chain sweeps every object sideways as MARIA draws it, scanline by scanline,
+and that sweep is what a human eye reads as the road curving.
+
+This changes the DMA accounting by a small, bounded amount not yet folded
+into the total above: `dmabudget.py` has a `dli=True` flag precisely for
+this (`DLI_COST` = 16.6 cycles per zone that raises one), and the zones
+this chain touches haven't been individually confirmed and marked. Given
+the surplus already measured (23,834 cycles), even a dozen such zones adds
+under 200 cycles -- not enough to change the headroom conclusion, but worth
+stating as unmeasured rather than silently folded in.
+
+**Why this matters for a second camera, revised:** duplicating curvature
+for player 2 means duplicating this whole small pipeline -- the
+accumulation (already scoped) *and* the per-scanline DLI injection, not
+just a value computed once per frame. That is more moving parts than the
+previous version of this section implied, though each part is small and
+already understood in isolation.
+
 ### The road's DMA weight and the full screen layout, measured properly
 
 Two mistakes in the same write-up, caught while double-checking before any

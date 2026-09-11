@@ -66,6 +66,9 @@
  ],
  "bankat": {},
  "labels": {
+  "rom:EDA0": "DLI_InjectRowCurveX",
+  "rom:EA2C": "StageRowCurveForDLI",
+  "rom:EA16": "SeedRowCurveAccumulator",
   "rom:E95C": "AccumulateRowCurveOffset",
   "rom:D31C": "EndOfRaceCheck",
   "rom:DB40": "DrawTrackNameThenStartCarTally",
@@ -114,6 +117,10 @@
   "rom:D917": "LoadTrack"
  },
  "ram": {
+  "1B00": "RowCurveXStaged",
+  "1B9C": "RowCurveXStagedSrc",
+  "1C56": "RowCurveAccumSeed",
+  "1B4E": "RowCurveYStaged",
   "1A31": "RowCurveOffset",
   "1C08": "RowCurveOffsetAlt",
   "009E": "CarsPassedCount",
