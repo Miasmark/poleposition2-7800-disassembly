@@ -948,13 +948,60 @@ which is the seam where the lap joins.
 Corrections to earlier versions of this list are noted where they apply, since
 two items on it turned out to be wrong rather than merely unfinished.
 
-* **The score.** Still not located -- not the storage, not the tally
-  arithmetic. Three search strategies have failed: monotonic scanning (defeated
-  by BCD carries), packed-BCD adjacency (defeated by parallel tables), and
-  alphabetical text (defeated by relocated letters). The tally adds points for
-  cars passed and for seconds remaining; `run-02` cannot test the seconds rule
-  because its clock reached zero, so only cars-passed contributed. `run-01`
-  finishes with time remaining and is the recording to use.
+* **The score and the cars-passed tally: located.** `run-01` (TEST, driven to
+  completion) is the recording that settles it, and a live tap confirms it
+  against the number that actually appears on the results screen: 23 cars
+  passed, 2 collided, 0 signs hit.
+
+  `ram_009E`/`009F` (a 2-byte BCD pair, zero-page) is the live cars-passed
+  counter. `rom:D08F`/`D091` zeroes both at race setup. `sub_CA90` (`rom:CA90`)
+  is the only place either byte is written during the race, and it is a plain
+  BCD `+1`. Tapping it across all 17,115 frames of `run-01` gives exactly 26
+  increments -- three of them boot-time noise before the cartridge owns that
+  RAM (matching the same init-garbage pattern documented for the sound IDs
+  above), 23 real ones, landing on `$23` (BCD 23) at the frame the race ends.
+  That is not a coincidence checked against a guess; it is the actual byte
+  read back at the moment the game itself consumes it.
+
+  What consumes it, read straight from the code: `sub_D31C` (`rom:D31C`) is
+  the end-of-race check -- clock expired or car stopped, then `LDA ram_009F /
+  ORA ram_009E`, and only if that is nonzero does it call `sub_D802` (draw the
+  results screen) and `sub_DB40` (draw the track name). `sub_DB40`'s tail
+  (`rom:DB5E-DB79`) is the handoff: `LDA ram_009F / STA ram_00AB`, `LDA
+  ram_009E / STA ram_00AC`, start sounds `$0C`/`$0D` ("score tally" in the
+  audio survey above), and fall into `sub_D253`'s state machine at mode `$08`.
+  That mode is `sub_D582`: every 18 frames, decrement `ram_00AC` by 1 (BCD)
+  and call `sub_D684` once, which adds `$50` (BCD 50) to a 3-byte accumulator
+  at `ram_1CA5-1CA7` -- **50 points a car**, exactly the manual's number, and
+  `ram_1CA5-1CA7` is therefore the score's real storage, found as a side
+  effect of chasing the counter rather than by any of the three approaches
+  that had failed against it directly (monotonic scanning defeated by BCD
+  carries, packed-BCD adjacency defeated by parallel tables, alphabetical
+  text defeated by relocated letters).
+
+  `ram_00AC` is reused, not dedicated: earlier in the same results sequence
+  (mode `$0E`, `sub_D69E`/`rom:D6B1`) it holds **seconds remaining** instead,
+  counted down the same way but calling `sub_D684` four times per decrement --
+  200 points a second, also exactly the manual's number. `run-01`'s log shows
+  this stage first (18 down to 0, frames 15713-16037), then the reload to 23
+  and the cars-passed stage (frames 16055-16469), back to back -- which is
+  why `run-02` (clock hit zero, no seconds bonus) only ever exercises the
+  second stage and looked like a smaller mystery than it was.
+
+  One thing about the trigger is understood in effect but not yet in full
+  mechanism: `sub_CA90` is reached from a type-independent check (`rom:CA76`,
+  gated on a slot being empty -- `ObjType,X AND $07 == 0` -- with its Z having
+  just gone negative, itself gated on an earlier flag set only when that same
+  empty slot's Z was small and positive). A direct lifecycle trace of every
+  slot in `run-01` finds only **two** genuine type-3 (rival car) events in the
+  whole race, and both are immediate crashes (`CrashSlot`/`CrashTimer` set on
+  the same frame) -- matching "2 collided" exactly, but meaning a *passed* car
+  never shows up in the object table as type 3 at all by the time this check
+  sees it. Something reclassifies a successfully-avoided car to empty before
+  it reaches this test; what does that, and where, is the next thread if the
+  full picture matters later. It does not change anything above: the counter,
+  its value, and its consumption are confirmed against the game's own results
+  screen, not inferred from the object-type theory.
 * **The fourth track.** Tracks 2 and 3 are 85 and 89 segments; only TEST and
   FUJI have been decoded and driven. SUZUKA is track 2 by name order, but the
   fourth name has not been read out of the ROM.

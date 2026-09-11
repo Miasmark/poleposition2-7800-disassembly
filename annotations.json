@@ -66,6 +66,12 @@
  ],
  "bankat": {},
  "labels": {
+  "rom:D31C": "EndOfRaceCheck",
+  "rom:DB40": "DrawTrackNameThenStartCarTally",
+  "rom:CA90": "IncCarsPassedCount",
+  "rom:D582": "TallyCarsPassed",
+  "rom:D69E": "TallySecondsRemaining",
+  "rom:D684": "AddScoreBonus50",
   "rom:EC0E": "ENTRY_Irq",
   "rom:EBEF": "ENTRY_Nmi",
   "rom:D205": "ENTRY_Reset",
@@ -107,6 +113,13 @@
   "rom:D917": "LoadTrack"
  },
  "ram": {
+  "009E": "CarsPassedCount",
+  "009F": "CarsPassedCountHi",
+  "00AB": "TallyValueHi",
+  "00AC": "TallyValue",
+  "1CA5": "ScoreBcdHi",
+  "1CA6": "ScoreBcdMid",
+  "1CA7": "ScoreBcdLo",
   "00DE": "RaceClockHi",
   "00DF": "RaceClock",
   "1F8A": "HudRow1Left",
