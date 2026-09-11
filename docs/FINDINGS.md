@@ -200,54 +200,73 @@ and `$B0xx`, all inside the same block. So it is graphics throughout, reached
 from many display-list entries rather than one table -- which is why a static
 search for references into it finds so little.
 
-### The road doesn't compute a curve. It's a two-shape swap.
+### The road surface is fixed. The curve is applied to everything drawn on it.
 
 Raised by a question about whether a second, independent road view is
-feasible at all (split-screen two-player). The first pass at this (below,
-corrected rather than deleted, since the wrong turn is worth keeping visible)
-tapped `$2200-$226B` for 5,000 frames and found almost every byte written
-exactly 15 times, and concluded that was a periodic per-segment rebuild
-"once every ~5.5 seconds". **That conclusion was wrong.** Extending the same
-tap across the *entire* 17,115-frame race shows all 15 writes to a
-representative byte (`$2210`) land in the first 211 frames and never
-recur -- `sub_F171` (`rom:F171-F187`) copies two fixed ROM templates
-(`dat_BC7E`->`$2200`, `dat_BD7E`->`$226B`, 107 and 92 bytes) once, at race
-setup, and is never called again. The "15 times" was three overlapping init
-passes on boot, not fifteen separate rebuilds.
+feasible at all (split-screen two-player). This took three passes to get
+right, and each wrong turn is kept below rather than deleted, since the
+dead ends are as informative as the answer.
 
-That raised a real puzzle: screenshots at frames 3000, 8000 and 12000 of
-`run-01` show visibly different road shapes -- a curve, then straight, then
-a gentler curve -- so *something* changes. Every graphics address the zones
-reference (`$8000`, `$9ED2`, `$AA00`, ...) is ROM on this linear, unbanked
-cart, so it cannot be the pixels. Diffing a full `$2200-$226B` dump at frame
-3000 against one at frame 8000 finds exactly one differing region:
-`$2220-$222F`. Tapping that region for the whole race finds exactly two
-writers, `rom:D81A` and `rom:DA91`, each stamping the **same fixed 9-byte
-pattern** into `$2224-$222C` every time it fires -- not a computed value,
-a constant. `DA91` writes `F6 24 00 BD 1C 07 AB 1C 07`; `D81A` writes
-`15 1D 06 F6 24 02 09 1D 06`. Across the race: `DA91` at f1260 and f4367,
-`D81A` at f3861, f7079, f8969, f10865, f12755, f15713, f16488 -- `D81A` wins
-and holds for long stretches, which is exactly why frames 8000 and 12000
-(both inside a `D81A` stretch) show a straighter road than frame 3000 (inside
-the one `DA91` stretch).
+**Pass 1 (wrong):** tapping `$2200-$226B` for 5,000 frames of `run-01` found
+almost every byte written exactly 15 times, read as a periodic per-segment
+rebuild "once every ~5.5 seconds". Extending the same tap across the full
+17,115-frame race showed all 15 writes landing in the first 211 frames and
+never recurring -- `sub_F171` (`rom:F171-F187`) copies two fixed ROM
+templates (`dat_BC7E`->`$2200`, `dat_BD7E`->`$226B`) once, at race setup,
+never again. True, but not the whole story.
 
-So the mechanism is a **binary toggle between two pre-baked 9-byte zone
-snippets** -- one shaped like TEST's one corner, one shaped like its
-straights -- patched into a fixed slot in an otherwise-static, copied-once
-display list. Consistent with TEST's own shape (a rounded rectangle: one
-corner radius, reused four times, per the track-format section below) not
-needing more than two shapes. FUJI, with corners of differing severity,
-almost certainly needs more than two snippets in the equivalent table, and
-that table hasn't been located yet -- the next concrete thread if the full
-curve system matters later.
+**Pass 2 (wrong):** screenshots at frames 3000, 8000 and 12000 show visibly
+different road shapes, so something changes. Diffing full `$2200-$226B`
+dumps at frame 3000 vs. frame 8000 found exactly one differing region,
+`$2220-$222F`, written by `rom:D81A`/`rom:DA91`. Read as a binary
+corner/straight zone-snippet toggle. **Wrong** -- bracketing the write at
+frame 3861 with screenshots immediately before and after shows the event is
+the "POLE POSITION! 4000" qualifying banner appearing (with the gear
+indicator flipping HI->LO and the car stopping), not a road change at all.
+`$2224-$222C` is a HUD panel slot, not part of the road.
 
-**Why this matters for a second camera:** building a second player's road
-view does not require reverse-engineering a curvature algorithm, because
-there isn't one to find. It requires a second copy of the same fixed
-template (trivial -- it's one more `sub_F171`-style blit at setup) and the
-same kind of small-snippet patch, driven by player 2's own track position
-instead of player 1's. That is a substantially easier Phase 1 target than
-"parameterize the zone generator" implied.
+**Pass 3 (confirmed):** `RoadCurve` (`$00DA`) reads -7 at frames 3000 and
+12000 (both curved) and 0 at frame 8000 (straight) -- the right signal, at
+last. Tracing every reader of `RoadCurve` finds only steering/skid physics
+(`SkidCheck` at `rom:C269`, a ramp-toward-target routine at `rom:C3E9`-`C43C`
+easing it by 7 per step -- matching "the curvature ramps symmetrically in
+and out of every corner" already documented below). None of that is
+rendering. The render-side consumer turned out to be a level deeper: the
+*track's* `SegCurve` table (`$1900`, per-segment curvature, not the smoothed
+per-frame `RoadCurve`) is read at `rom:E981`, inside a routine
+(`rom:E95C-E9D0`) that scales it by perspective -- more `ASL` doublings for
+rows further from the camera (`CPX #$40`/`#$20`/`#$10`/`#$06` gate
+successive doublings) -- and accumulates the result into two per-row
+tables, `ram_1A31` and `ram_1C08`.
+
+Both real consumers of that table are render-side, not gameplay:
+
+* `rom:D1FD`: `SBC ram_1A31,Y` (`Y=$48`, the player's row) directly computes
+  **`PlayerX`**. The car's on-screen lateral position *is* the curve offset
+  at the player's row, subtracted from a base.
+* `rom:E502`: inside the shared object-positioning code (the same system
+  documented above for rival cars, signs and puddles), `ram_1A31,Y` and
+  `ram_1A30,Y` are added into an object's screen-space X alongside its own
+  `ObjLateral`.
+
+So the mechanism is: **the base pavement graphic (zones 20-31, the fixed
+ROM trapezoid) never moves and is never curve-specific -- it's a permanent
+straight-ahead backdrop.** The curve is applied entirely to *everything
+drawn on top of it* -- the player's car, every rival car, every sign and
+puddle, and (almost certainly, though not directly traced) the centerline
+dashes and roadside border, all repositioned every frame by the same
+accumulated per-row offset. The road only *looks* like it bends because
+everything on it does.
+
+**Why this matters for a second camera:** this is better news than either
+wrong pass suggested. The curve computation (`rom:E95C-E9D0`) is compact,
+already perspective-scaled per row, and shares its output format with the
+object-positioning system already characterized above for drawing the
+other player's car. A second viewport needs its own curve-accumulation pass
+fed from player 2's own track position into the same `SegCurve` stream, and
+its own `PlayerX`-equivalent -- but the static pavement backdrop is generic
+enough (it's not curve-specific ROM art) that it may not need duplicating
+at all, only reusing from a second camera offset.
 
 ### The road's DMA weight, measured properly with `dmabudget.py`
 

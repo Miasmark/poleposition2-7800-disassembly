@@ -66,6 +66,7 @@
  ],
  "bankat": {},
  "labels": {
+  "rom:E95C": "AccumulateRowCurveOffset",
   "rom:D31C": "EndOfRaceCheck",
   "rom:DB40": "DrawTrackNameThenStartCarTally",
   "rom:CA90": "IncCarsPassedCount",
@@ -113,6 +114,8 @@
   "rom:D917": "LoadTrack"
  },
  "ram": {
+  "1A31": "RowCurveOffset",
+  "1C08": "RowCurveOffsetAlt",
   "009E": "CarsPassedCount",
   "009F": "CarsPassedCountHi",
   "00AB": "TallyValueHi",
