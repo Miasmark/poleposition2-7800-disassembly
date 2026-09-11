@@ -1286,6 +1286,46 @@ them.
 Total: 43 bytes, no new instructions. Score, lap and speed readouts remain
 byte-identical to the unpatched run at both frames checked.
 
+## Why a mirror can never be smooth: the curve is injected per scanline
+
+The ten-band mirror still rendered a sawtooth left edge where the road below
+is a smooth curve. The cause is the most important structural fact found so
+far for the split-screen work.
+
+`$2303` is zone 20's x byte. Tapping it shows **six writes per frame** -- one
+per scanline of that six-line band -- with values `FF 01 03 06 08 0A`, a clean
+two-units-per-scanline ramp. `$2301` (its palette/width byte) is likewise
+written six times. The road's DLI chain (`DLI_ED4F` onward, `rom:ED9D`-`EE60`,
+unrolled and `WSYNC`-paced) is rewriting each band's sub-list *between
+scanlines, while MARIA is drawing it*.
+
+So a band's entry in RAM is not "the band's position". It is a scratch slot
+that holds one scanline's position for as long as that scanline takes. Reading
+it at any other point in the frame gives whatever the last injection left
+there.
+
+That is exactly what a mirror does. Sky zones 8-17 render roughly eighty
+scanlines before the road, so each mirrored band reads one static x and holds
+it for all six of its lines. The result is correct to band resolution and
+wrong to scanline resolution: a stair-step where the original is a curve. It
+shows worst on the left edge because that edge *is* the x byte; the right edge
+is x plus width, and the per-band width changes partly mask the same stepping.
+
+**Consequence, and it is a firm one.** Pointing a second view at player 1's
+sub-lists gets geometry, colour and stripe animation for almost nothing --
+everything above -- but it cannot get smoothness, because smoothness is not
+stored anywhere. It is produced by code running in lockstep with the beam. A
+faithful second view needs its own injection pass over its own scanlines,
+fed from the staged row tables (`ram_1B00`/`ram_1B4E`), which is real
+WSYNC-paced code rather than a table edit.
+
+Scope, for planning: the existing injection is an unrolled run of roughly
+eighty writes with `STA WSYNC` between them, and `dmabudget.py` charges a
+display interrupt at 16.6 cycles plus whatever the handler itself costs.
+Doubling it is well inside the measured frame surplus (~23,800 cycles), but
+it is the first part of this project that has to be written rather than
+repointed.
+
 ## How the road's stripes animate: palette switching, not palette cycling
 
 Raised as a hypothesis while reviewing the mirrored top display -- that the
