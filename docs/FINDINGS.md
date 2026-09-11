@@ -268,31 +268,62 @@ its own `PlayerX`-equivalent -- but the static pavement backdrop is generic
 enough (it's not curve-specific ROM art) that it may not need duplicating
 at all, only reusing from a second camera offset.
 
-### The road's DMA weight, measured properly with `dmabudget.py`
+### The road's DMA weight and the full screen layout, measured properly
 
-The project's own `tools/dmabudget.py` (MAME-calibrated cycle costs per
-zone/object/byte, not reasoned about from scratch) settles the budget
-question the previous write-up in this section had flagged as open.
-`tools/probe-dlgfx.lua` decodes the live zone list at frame 3000 of
-`run-01`: the race DLL (`$2200`) is 17 zones / 113 scanlines / 1-9 objects
-each; the HUD DLL (`$226B`) is 21 zones / 146 scanlines. Feeding both,
-object-by-object, through `dmabudget.py`'s constants:
+Two mistakes in the same write-up, caught while double-checking before any
+Phase 1 layout work rather than after: `tools/probe-dlgfx.lua`'s zone walk
+was hardcoded to zones 0-31 and only printed zones with at least one object,
+so the first pass here summed 113 scanlines and missed every zone that
+draws nothing -- and separately treated `$226B` as if it ran *alongside*
+`$2200` and added their DMA costs together. Neither is right. `$2200` and
+`$226B` are the same kind of alternative this doc already established for
+DPPH/DPPL (one active list at a time): `$2200` is the race view, `$226B` is
+the results/qualifying screen, and the game is never driving with both DMA
+costs live at once. The 113-line figure and the "29.8% combined" figure are
+both wrong; corrected below rather than deleted.
 
-    road DLL:     4,901 cycles  (16.4% of an NTSC frame)
-    HUD DLL:      4,010 cycles  (13.4%)
-    combined:     8,911 cycles  (29.8%)
-    left for CPU: 20,957 cycles (70.2%)
+Walking all 35 zone-selector slots in the (fixed-size, 107-byte) race
+template and decoding every object chain, including the ones with none,
+gives the real picture: **249 of 262 NTSC scanlines**, not 113. In list
+order (which is screen order), the driving view is:
 
-**Comfortable headroom, not a tight budget.** And the same reasoning as
-before still holds, now on firmer ground: splitting the existing 113 road
-scanlines between two ~56-line camera views doesn't add to this total --
-same scanline count, same object density, whichever way it's apportioned.
-What would add a little: a handful of extra zone-boundary transitions if
-the two halves' bands don't line up (each is `PER_ZONE` = 1.7 cycles, noise
-at this scale), and drawing the other player's car into each viewport via
-the object-slot system documented above (a ~15-line, ~15-byte-wide sprite
-costs on the order of 200 cycles by this model -- also noise against a
-21,000-cycle surplus).
+    lines   0- 26  sky (zones 0-1, no objects -- solid colour via a DLI)
+    lines  26- 33  HUD row 1 (TOP / SCORE)
+    lines  33- 56  sky + gap zones (3,5,7)
+    lines  36- 43  HUD row 2 (UNIT / LAP)
+    lines  46- 53  HUD row 3 (SPEED / HI-LO)
+    lines  56- 83  more sky/gap zones (8,9,10,11) -- no objects
+    lines  83- 99  the "POLE POSITION!" banner's two zones -- empty
+                   at frame 3000, populated only around a qualifying finish
+    lines  99-119  more gap zones (14,15,16,17) -- no objects
+    lines 119-139  zones 18-19: small decorative objects (a marker, signs)
+    lines 139-217  **the paved road** -- zones 20-32, 78 lines, this is the
+                   part previously and correctly analyzed in detail above
+    lines 217-249  more sky/gap zones (33,34) -- no objects
+
+So the actual pavement is a **78-line band roughly in the vertical middle**
+of a 249-line view that is otherwise sky, HUD text, and a banner slot that's
+usually empty. This matters a great deal for where a second camera's view
+could physically go: the ~130 empty-object lines are cheap (each still
+costs `PER_LINE` per the model below, since MARIA times a scanline whether
+or not it draws anything, but none of them cost real per-line object
+fetches) and several are large contiguous runs (26, 27, and 32 lines) that
+are exactly the kind of "quiet, mostly unused vertical space" this
+investigation set out looking for.
+
+Feeding the complete, correct 35-zone list through `tools/dmabudget.py`:
+
+    race DLL (all 35 zones, complete): 6,034 cycles  (20.2% of an NTSC frame)
+    left for CPU logic:               23,834 cycles  (79.8%)
+
+**Even more headroom than the incomplete count suggested**, and now for
+the number that's actually relevant (the results screen's `$226B` DLL was
+never competing for the same frame in the first place). The reasoning
+about a second camera still holds and is on firmer ground now: the same
+total scanline count and object density applies whichever way it's
+apportioned between two camera views, and the large empty-sky runs are
+where a second player's own sky/road band has real room to live without
+displacing anything the current single-player view needs.
 
 ## The race clock
 
