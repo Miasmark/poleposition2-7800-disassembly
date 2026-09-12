@@ -80,6 +80,25 @@ Add `--gaps` for a report of every byte reached as neither code nor a declared
 block, `--check-gaps` to have each apparent call into one classified as real or
 coincidental, and `--map` for a heatmap (needs Pillow).
 
+## The split-screen patch
+
+`patches/splitscreen.py` rearranges the display list into a two-viewport
+layout -- player 2's view on top, the HUD moved to the centre as a divider,
+player 1's road below, unmoved. It ships no cartridge data: it's a list of
+addresses and the bytes to check for and replace, verified against your own
+dump before anything is written.
+
+```
+python patches/splitscreen.py "Pole Position II (NTSC) (Atari) (1987) (A85FB962).a78" -o pp2-split.a78
+```
+
+Player 2's view is currently a *mirror* of player 1's road, not an independent
+camera -- see "Phase 1" in `docs/FINDINGS.md` for what that buys for free
+(geometry, colour, the stripe animation) and why it can't yet be smooth (the
+real road's curve is injected scanline-by-scanline by a display interrupt,
+which a mirror rendered elsewhere on screen can't borrow). The patch script's
+own docstring has the zone-by-zone layout and the reasoning behind each edit.
+
 ## Recording a session
 
 Live findings come from replaying a MAME input recording -- a deterministic
@@ -112,6 +131,7 @@ mame a7800 -rompath ../bios -cart "<rom>" -skip_gameinfo \
 | `annotations.json` | The recipe. Feed it to `disasm.py` to get the listing. |
 | `docs/FINDINGS.md` | The narrative -- read this first. |
 | `tools/` | This project's own probe scripts. |
+| `patches/` | Byte-patch scripts that build a modified ROM from your own dump; see "The split-screen patch" above. |
 | `Play Recording.command`, `Record Session.command` | Double-click launchers (macOS + MAME on `PATH`). |
 
 Not committed (see `.gitignore`): the ROM, the generated `src/rom.asm` and
