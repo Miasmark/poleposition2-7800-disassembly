@@ -34,6 +34,12 @@ mode has to follow the layout (character mode for the HUD, the road's mode
 everywhere else), and BACKGRND has to carry the road's ground colour into
 player 2's view or every transparent pixel in the road graphics shows sky.
 
+It mirrors the *last* ten of player 1's thirteen road zones (real zones
+23-32), not the first ten -- the player's own car sprite lives in the last
+five of those (docs/FINDINGS.md, "a higher-detail car sprite"), so mirroring
+the first ten cut its bottom off. The three farthest bands go unmirrored
+instead; nothing important is out there to miss.
+
 ## Why .abp and not a single BPS or a bare byte-patcher
 
 A BPS is a delta between two *whole* files, with a CRC32 of the whole source
@@ -49,10 +55,71 @@ It also means this file ships less of the ROM than a naive "expected bytes"
 check would: a section's identity in the bundle is a CRC32 of its pre-image,
 never the pre-image itself. The one exception is real: `bps.create()` below
 necessarily encodes the *new* bytes an edit writes, because those bytes are
-this project's own work, not a copy of anything. If a future edit ever needs
-to relocate or repeat existing ROM code verbatim rather than write new bytes
-next to it, that is the case to stop and ask about before bundling it -- nothing
-here does that yet.
+this project's own work, not a copy of anything.
+
+## HudReassert: the one piece of new code this patch needs
+
+Everything above is a pure data edit -- existing bytes, replaced. The HUD's
+divider (zones 12-14) is different: those three zones are not in the boot
+template at all. They are rewritten at *run time*, from two ROM tables
+(`dat_A6BB`, `dat_A6CD`), by the stock routines that drive the start light
+and the "POLE POSITION! ####" qualifying banner -- whichever ran last wins,
+and both happen during a normal race. That sharing is stock behaviour, not
+something this patch introduced; the ORIGINAL always-on HUD lives at zones
+2/4/6, untouched by any of it. This patch's mirror needs zones 2-11 for the
+ten road bands, which is where that original HUD used to live, so the HUD
+has to move to the one place already wired to be a shared, overwritable
+divider: zones 12-14.
+
+Sharing it, though, means something has to give the HUD back once the light
+or the banner is done showing -- stock never needs to, because stock's real
+HUD lives elsewhere. Nothing else ever will on its own (confirmed live: the
+light's and banner's zone-selector writes are one-shot, and once the second
+light finishes, zones 12-14 sit on its leftover graphic for the rest of the
+race). So a tiny new routine (`hud_reassert_src` below) writes the HUD's
+three zone-selectors back in -- hooked in at *two* places, not one, which
+took counting to find: the obvious spot (rom:D848, in sub_D83D, reached
+whenever driving resumes after a per-lap event) turned out to only be one
+of two places the game enters normal driving from. The other, reached right
+as the start light itself finishes, is a completely different routine
+(rom:CBEB, a periodic state check unrelated to sub_D83D). Hooking only the
+first left the HUD not returning after the start light specifically --
+confirmed by having the new code count its own calls into a spare RAM byte
+across a full recording and comparing against exactly when zones 12-14
+changed. See docs/FINDINGS.md, "The mirror was missing the car, and the divider was missing the light".
+dat_A6BB and dat_A6CD themselves are NOT touched -- the light and the
+banner still display exactly as they always have; this only adds the "and
+now put the HUD back" step stock never needed.
+
+An earlier version of this patch instead overwrote dat_A6BB/dat_A6CD's own
+bytes to force the HUD into zones 12-14 permanently -- simpler, no new code,
+but it meant the light and the banner could never display again. That
+tradeoff turned out not to be worth it once asked to reconsider it; this is
+the fix. A second earlier version fixed that by also *relocating* zones
+12-14's role to zones 15-17 and moving the pair of DLI (display-interrupt)
+bits that switch character mode on and off to match -- which renders fine,
+but measurably desyncs an existing recording (see docs/FINDINGS.md, "The
+mirror was missing the car, and the divider was missing the light"): moving
+either of those two specific DLI bits shifts something in the frame's
+timing that a recorded race is
+sensitive to, even though the two zones the bits move *to* render correctly
+in isolation. HudReassert exists because it gets the same visible behaviour
+(HUD normally, light and banner over it at their moments) without moving
+either bit.
+
+Two more mistakes surfaced getting the CBEB hook right, both caught live
+rather than assumed correct: the first version called the shared HudWrite
+subroutine and then reloaded `A` with `#$03` *before* the call instead of
+after, so the value HudWrite left in `A` (a HUD byte, not 3) is what ended
+up in `ram_009D` -- a wrong-but-plausible race state that happened to look
+like a second start-light sequence on screen, which is what gave it away.
+Fixed by writing first and reloading `#$03` right before the jump back.
+The second: even fixed, a JSR to the shared subroutine plus its loop
+was enough alone to desync the recording from that point on -- rom:CBEB has
+far less cycle budget to spare than rom:D848 did. `_unrolled_hud_write()`
+replaces the loop with nine straight `LDA #imm`/`STA abs` pairs and drops
+the JSR, for this one call site only; rom:D848 still uses the shared,
+looped HudWrite, since that one was never the problem.
 
 ## Signing this and testing against a recording are two different needs
 
@@ -144,40 +211,132 @@ def zone(n):
     return ZONE_TABLE + n * 3
 
 
-# Road band sub-lists in RAM, far-to-near. The curve pipeline (docs/FINDINGS.md,
-# "the last piece") rewrites these every frame, which is why pointing a second
+# Road band sub-lists in RAM, far-to-near, for all thirteen of player 1's
+# own bands (real zones 20-32). The curve pipeline (docs/FINDINGS.md, "the
+# last piece") rewrites these every frame, which is why pointing a second
 # view at them tracks the road's curve at no extra cost.
-ROAD_BANDS = [0x2300, 0x2326, 0x234C, 0x2372, 0x2398,
-              0x23BE, 0x2400, 0x2426, 0x244C, 0x246E]
+ALL_ROAD_BANDS = [0x2300, 0x2326, 0x234C, 0x2372, 0x2398, 0x23BE, 0x2400,
+                  0x2426, 0x244C, 0x246E, 0x2490, 0x24B2, 0x24D4]
 
-# Zones carrying a display-interrupt bit. The DLI chain is positional -- which
-# handler fires depends on which zone ended -- so bit 7 must survive even when
-# a zone's contents change.
+# Only ten zones are safe to give player 2's view (docs/FINDINGS.md, "Two
+# zones safe to touch, two that are not") -- zones 2-11, ending right where
+# the stock display-interrupt chain already switches character mode on for
+# the HUD at zone 11. So this mirrors the *last* ten of the thirteen bands
+# (real zones 23-32) rather than the first ten: the player's own car sprite
+# lives across the last five of them ($8B10-family, docs/FINDINGS.md "a
+# higher-detail car sprite"), and mirroring the first ten cut its bottom two
+# zones' worth of lines off -- MARIA has no idea the object continues onto a
+# zone this mirror didn't include. The three farthest bands go unmirrored
+# instead, which costs nothing anyone would miss (docs/FINDINGS.md).
+ROAD_BANDS = ALL_ROAD_BANDS[3:13]
+
+# Zones carrying a display-interrupt bit. The DLI chain is positional in
+# effect even though it's index-driven in code (docs/FINDINGS.md): moving
+# either of these two specific bits to a later zone renders correctly on its
+# own but measurably desyncs an existing recording, so they stay exactly
+# where the stock game put them.
 DLI_ZONES = {0, 7, 11, 15, 19}
+
+# The three-row HUD. Written into zones 12-14 (see the module docstring) by
+# HudReassert once normal driving begins, sharing that divider with the
+# start light and the "POLE POSITION!" banner exactly as stock already did.
+HUD_ROWS = [0x06, 0x1D, 0x1C, 0x06, 0x1D, 0x28, 0x06, 0x1D, 0x34]
+
+# HudReassert lives here: $F3FF-$FF7E (2,945 bytes) is a run of untouched $FF
+# filler, confirmed via the toolkit's own --gaps report (disasm.py) and by
+# entropy (a real table wouldn't be one repeated byte for that long) -- well
+# clear of $FF80, where the cartridge signature starts. This is the first
+# code this project has ever added rather than edited in place, so it gets a
+# fixed, checked address rather than the bundle's dynamic float search:
+# there is exactly one of it, nothing else competes for the space, and
+# `expect=` on the write already proves the space is genuinely free on the
+# ROM being patched -- the property a float's auto-placement exists to give
+# when several options might collide over the same room.
+HUD_REASSERT_ADDR = 0xF900
+SOUNDSTOP = 0xDED6
+
+
+def hud_reassert_src(addr):
+    """Two hooks, one shared write, because there turned out to be two
+    places normal driving begins from, not one.
+
+    HudWrite is the 9-byte copy into zones 12-14 (ram $2224), shared by
+    both. HudReassert wraps it for rom:D848, where it replaces `LDA #$0B /
+    JSR SoundStop` at the end of sub_D83D -- the "resume driving after a
+    per-lap event" path (state $09 -> $03) -- and still makes that same
+    SoundStop call itself afterward, A restored to $0B first, so nothing
+    about the original behaviour changes beyond adding the HUD write.
+
+    StartDriveHud wraps it for rom:CBEB, where it replaces `LDA #$03 / BNE
+    L_CBF1` -- state $11 -> $03, the *other* path into normal driving, right
+    as the start light finishes, reached from a completely different
+    routine (a periodic ram_00A2/ram_00A3-gated state check, not sub_D83D
+    at all). Both were needed: hooking only rom:D848 (this patch's first
+    attempt) left the HUD not returning after the start light specifically,
+    confirmed live by counting how many times each actually ran across a
+    full recording -- see docs/FINDINGS.md, "Two places normal driving
+    begins from"."""
+    return [
+        ".org $%04X" % addr,
+        "SoundStop = $%04X" % SOUNDSTOP,
+        "HudWrite:",
+        "    LDX #$08",
+        "Loop:",
+        "    LDA HudTriplet,X",
+        "    STA $2224,X",
+        "    DEX",
+        "    BPL Loop",
+        "    RTS",
+        "HudReassert:",
+        "    JSR HudWrite",
+        "    LDA #$0B",
+        "    JSR SoundStop",
+        "    RTS",
+        "StartDriveHud:",
+    ] + _unrolled_hud_write() + [
+        "    LDA #$03",
+        "    JMP $CBF1",
+        "HudTriplet:",
+        "    .byte $%02X,$%02X,$%02X,$%02X,$%02X,$%02X,$%02X,$%02X,$%02X"
+        % tuple(HUD_ROWS),
+    ]
+
+
+def _unrolled_hud_write():
+    """StartDriveHud's write, inlined rather than a JSR to HudWrite: rom:CBEB
+    (docs/FINDINGS.md, "The mirror was missing the car, and the divider was missing the light") turned out
+    to have far less cycle budget to spare than rom:D848 -- the loop-based
+    write plus a JSR/RTS round trip was enough alone to desync a recording,
+    confirmed live the same way the signature-timing bug was (a recording
+    sensitive to a frame's exact cycle count, not merely to what the frame
+    displays). Nine straight LDA #imm/STA abs pairs, no loop, no call."""
+    lines = []
+    for i, b in enumerate(HUD_ROWS):
+        lines.append("    LDA #$%02X" % b)
+        lines.append("    STA $%04X" % (0x2224 + i))
+    return lines
+
+
+def _assemble(lines):
+    """Assemble `lines`; return (code, symbols) -- symbols is the label ->
+    address table the assembler built while resolving it, so a caller that
+    needs to JSR to one of several labels in the same blob (HudReassert
+    below has three) doesn't have to hand-compute offsets."""
+    import asm
+    a = asm.Assembler()
+    code = bytes(a.assemble(lines))
+    return code, dict(a.sym)
 
 
 def fix_mirror_split(p):
-    """Relocate the HUD to the centre; give player 2's view zones 1-11.
+    """Give player 2's view zones 1-11; let the start light and the banner
+    keep displaying at zones 12-14 as stock always has; bring the HUD back
+    there once normal driving begins.
 
     Ported from the hand-verified edits built up over several live sessions
-    (docs/FINDINGS.md, "Phase 1"). Nothing here is new code -- every edit
-    replaces existing bytes at a fixed address; nothing is relocated and
-    nothing needs a float.
+    (docs/FINDINGS.md, "Phase 1" onward). One piece *is* new code --
+    HudReassert -- and the module docstring explains what forced that.
     """
-    # -- HUD moves to zones 12/13/14 -----------------------------------------
-    # Those three are not served by the boot template at all: they are
-    # rewritten at run time from these two tables, by the routines that drive
-    # the "POLE POSITION!" banner, whichever ran last. Patching the template
-    # alone leaves them reverting mid-race, so the HUD has to live here --
-    # which co-locates banner and HUD, as the layout wants anyway.
-    hud_rows = [0x06, 0x1D, 0x1C,     # row 1: TOP / SCORE
-                0x06, 0x1D, 0x28,     # row 2: UNIT / LAP
-                0x06, 0x1D, 0x34]     # row 3: SPEED / HI-LO
-    p.put(0xA6BB, hud_rows,
-          expect=[0x06, 0x1D, 0x09, 0x02, 0x24, 0xF6, 0x06, 0x1D, 0x15])
-    p.put(0xA6CD, hud_rows,
-          expect=[0x07, 0x1C, 0xAB, 0x07, 0x1C, 0xBD, 0x00, 0x24, 0xF6])
-
     # -- player 2's view: a gap, then ten bands across zones 2..11 -----------
     p.put(zone(1), [0x06, 0x24, 0xF6], expect=[0x09, 0x24, 0xF6])
 
@@ -220,6 +379,38 @@ def fix_mirror_split(p):
     p.put(0xECCB, [0x34], expect=[0x24])                    # P1C1
     p.put(0xECC7, [0x04], expect=[0x28])                    # P1C2
     p.put(0xECB5, [0x04], expect=[0x80])                    # shared C3 load
+
+    # -- the one piece of new code this patch needs --------------------------
+    code, syms = _assemble(hud_reassert_src(HUD_REASSERT_ADDR))
+    p.put(HUD_REASSERT_ADDR, code, expect=[0xFF] * len(code))
+    reassert_addr = syms["HudReassert"]
+    start_drive_addr = syms["StartDriveHud"]
+
+    # -- and bring the HUD back once normal driving begins -------------------
+    # Two different places turn out to do that, not one (docs/FINDINGS.md,
+    # "The mirror was missing the car, and the divider was missing the light" -- found by counting how many
+    # times each hook actually ran across a full recording, after the first
+    # version of this fix left the HUD not returning after the start light).
+    #
+    # rom:D848 -- sub_D83D's "resume after a per-lap event" path (state $09
+    # -> $03): `LDA #$0B / JSR SoundStop` becomes a JSR to HudReassert, which
+    # does the HUD write and then makes the same SoundStop call itself (A
+    # restored to $0B first), so nothing about the original behaviour
+    # changes beyond adding the write.
+    p.put(0xD848, [0x20, reassert_addr & 0xFF, reassert_addr >> 8],
+          expect=[0x20, 0xD6, 0xDE])
+
+    # rom:CBEB -- the *other* path, state $11 -> $03 right as the start
+    # light finishes, reached from an entirely different routine (a
+    # periodic ram_00A2/ram_00A3-gated state check). `LDA #$03 / BNE
+    # L_CBF1` becomes a JMP to StartDriveHud, which does the HUD write
+    # *first* and only then reloads A with #$03 (HudWrite clobbers A and X
+    # -- reloading has to come after) before jumping back to $CBF1 to
+    # rejoin the original code -- the shared `STA ram_009D` that three
+    # different transitions funnel through, so the actual state store still
+    # happens exactly where the game always put it.
+    p.put(0xCBEB, [0x4C, start_drive_addr & 0xFF, start_drive_addr >> 8, 0xEA],
+          expect=[0xA9, 0x03, 0xD0, 0x02])
     return p
 
 
@@ -364,7 +555,10 @@ def build_bundle(out_path=None):
         "what": "Two-viewport layout: player 2's view (a mirror of player "
                 "1's road, not yet an independent camera) on top, the HUD "
                 "relocated to the centre as a divider, player 1's road "
-                "unmoved below.",
+                "unmoved below. The start light and the qualifying banner "
+                "still display at that same divider, as stock; a small new "
+                "routine (HudReassert) brings the HUD back once each one "
+                "finishes.",
         "target": {
             "what": os.path.basename(src),
             "body_size": len(rom),

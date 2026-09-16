@@ -1499,6 +1499,122 @@ themselves; a CRC32 can identify someone else's finished artwork but cannot
 describe how to draw it. That is the deliberate, credited exception to the
 policy in `patches/splitscreen.py`'s own docstring, not an oversight.
 
+## The mirror was missing the car, and the divider was missing the light
+
+Two follow-up requests against the working split-screen build: the player's
+own car was visibly cut off at the bottom of the mirrored top view, and the
+start light and "POLE POSITION! ####" banner had stopped appearing at all
+since the HUD relocation (above) took over their zones. Both are fixed now;
+the trail to get there is worth keeping, since two different wrong turns
+were caught live rather than shipped.
+
+**The car was cut off because the mirror simply didn't include the zones it
+lives in.** `docs/FINDINGS.md`'s "a higher-detail car sprite" section had
+already established that the confirmed car-sprite object spans five
+consecutive zones, six lines apart ($8B10/$9110/$9710/$9D10/$A310-family
+addresses). Dumping the live display list zone-by-zone (adapting
+`tools/probe-dlgfx.lua`) at frame 3000 found that chain sitting in real
+zones 27-31 -- but the mirror only ever pointed at real zones 20-29 (the
+*first* ten of player 1's thirteen road bands), missing 30 and 31 entirely.
+MARIA has no idea an object "continues" past a zone that doesn't reference
+it; the bottom two-fifths of the car simply never got asked for.
+
+The fix, once found, was one line: `ROAD_BANDS` now takes the *last* ten of
+the thirteen (`ALL_ROAD_BANDS[3:13]`, real zones 23-32) instead of the first
+ten. Verified by re-dumping the live DL: the car's full five-zone chain now
+lands in mirror zones 6-10, and a screenshot at frame 3000 shows both cars
+whole. Replayed against `run-01.inp`, byte-for-byte identical state-machine
+timing to the unpatched ROM (below) -- zero cost, in other words, once the
+right ten zones were chosen instead of extending to thirteen.
+
+**The first attempt at fixing this instead tried extending the mirror to
+all thirteen zones, and that is the wrong turn worth keeping.** It required
+moving which zone carries the display-interrupt bit that switches character
+mode on (for the HUD) and back off (for the road) -- from zones 11/15 to
+14/17, to make room. Read purely from the code, this looked safe: the DLI
+dispatch chain (`ENTRY_Nmi`, `dat_DliHandlerTable`) is index-driven, not
+zone-number-driven -- each handler sets `ram_00FF` to whatever the *next*
+handler should be before returning, and MARIA's interrupt doesn't tell the
+CPU which zone raised it. So which physical zone carries a given bit
+"shouldn't" matter to which handler runs, only to when.
+
+It renders correctly in isolation (confirmed: the divider and the road both
+decode in the right mode at the new positions). But replayed against
+`run-01.inp`, the qualifying phase -- which should end at frame 3766, same
+as the unpatched ROM -- instead ran until frame 13564: a real desync, not a
+rendering bug, caught by logging the race's own state byte (`ram_009D`)
+frame-by-frame rather than trusting the screenshot. Bisecting it (three
+isolated test builds, changing one variable at a time against the
+otherwise-untouched, proven-safe layout) placed the cause squarely on
+moving those two specific DLI bits: a build that extended the mirror the
+same way but left the bits at zones 11/15 (rendering wrong, HUD-mode
+content where road content should be) matched the unpatched timeline almost
+exactly, while the DLI-moved build didn't. Something about *which* zone
+ends up carrying that interrupt measurably changes the frame's timing in a
+way a recording is sensitive to, even though nothing about the bit's
+*effect* should differ by the reasoning above. Not fully explained -- just
+avoided, the same discipline the signature-timing bug (above) established:
+when a recording disagrees with a change that looks correct, trust the
+recording. `DLI_ZONES` stays exactly `{0, 7, 11, 15, 19}`, unmoved.
+
+**The light and the banner had stopped appearing because the HUD-relocation
+fix (above) overwrote the ROM tables that draw them, permanently.** Asked to
+bring them back without giving up the always-on HUD, the fix needed new
+code for the first time in this patch (docs/FINDINGS.md's `splitscreen.py`
+docstring has the full reasoning): `dat_A6BB` and `dat_A6CD` are restored to
+their original, untouched bytes, so the stock start-light and banner
+routines display exactly as they always have, and a new routine
+(`HudReassert`/`StartDriveHud`) reasserts the HUD in zones 12-14 once each
+one finishes, sharing the divider the same way stock code already shares it
+between the light and the banner ("whichever wrote last wins").
+
+Finding *where* to hook that back-in took three live corrections in a row:
+
+1. **The obvious hook only covered one of two places driving resumes from.**
+   `rom:D848` (in `sub_D83D`, the "resume after a per-lap event" check, state
+   $09 -> $03) is easy to find and works correctly there -- but instrumenting
+   the new code to count its own calls into a spare, unreferenced RAM byte
+   (`$1FFF`, confirmed unreferenced anywhere in the disassembly) and
+   comparing that count, frame-by-frame, against exactly when zones 12-14
+   changed showed it never firing at all around frame 5010, when the
+   *second* start light (the real race, not qualifying) finishes. A raw
+   byte-pattern search across every addressing mode 6502 supports for a
+   store to `ram_009D` (not just the `STA` instances the disassembler had
+   already labelled) turned up the real site: `rom:CBEB`, inside a
+   completely different, periodic state check gated on `ram_00A2` vs
+   `ram_00A3`, using `STY` rather than `STA` a few instructions upstream of
+   it. Two genuinely different places set state $03; both needed the hook.
+2. **The first version of the second hook stored the wrong value.** It
+   reloaded `A` with `#$03` *before* calling the shared write routine, not
+   after -- and the write routine clobbers `A` (it loads HUD bytes into it).
+   So the byte that actually reached `ram_009D` was a HUD byte, not 3. Live
+   symptom: the race state visibly cycled through the start-light sequence
+   *again* rather than beginning to drive, easy to mistake for "the light
+   fired twice" rather than "the state machine got fed the wrong number."
+   Fixed by writing first and reloading `#$03` immediately before jumping
+   back to rejoin the original code.
+3. **Even fixed, that hook alone measurably desynced the recording.** The
+   shared write routine is a loop plus a `JSR`/`RTS` round trip -- maybe 120
+   cycles where the original instruction pair took 5. At `rom:D848` that
+   was free; at `rom:CBEB` it was not, and the qualifying-completion frame
+   drifted again, the same signature as the DLI-bit mistake above: a
+   recording sensitive to a frame's exact cycle count, not to what that
+   frame displays. The fix was to stop sharing code at this one call site --
+   nine straight `LDA #imm`/`STA abs` pairs, inlined, no loop, no `JSR` --
+   which cut the added cost enough that the recording matches the unpatched
+   ROM's state-machine timing frame-for-frame again, checked by diffing the
+   full transition log rather than spot-checking a few frames.
+
+Verified end to end against both recordings in this repository: `run-01.inp`
+and `run-02.inp` both land on the exact unpatched score/gear/speed at frame
+8000, and `run-01.inp`'s full state-transition log (every `ram_009D` change,
+all seventeen thousand-odd frames) matches the unpatched ROM's frame numbers
+exactly, not approximately. Screenshots confirm the visible result: the
+light and the "POLE POSITION! 4000" banner both show correctly in the
+divider at their moments, and the HUD reappears there the instant each one
+finishes -- not 2,200-odd frames later, which is what the version with only
+the `rom:D848` hook left it doing.
+
 ## What's open
 
 Corrections to earlier versions of this list are noted where they apply, since

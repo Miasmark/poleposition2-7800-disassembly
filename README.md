@@ -108,6 +108,17 @@ real road's curve is injected scanline-by-scanline by a display interrupt,
 which a mirror rendered elsewhere on screen can't borrow). The patch script's
 own docstring has the zone-by-zone layout and the reasoning behind each edit.
 
+The mirror shows the player's own car whole (it mirrors the ten road zones
+closest to the camera, not the ten farthest, so the car's sprite isn't cut
+off), and the start light and the "POLE POSITION! ####" banner still show up
+at their usual moments -- centred in the same divider the HUD lives in, the
+HUD returning right after each one finishes. Getting that combination right
+took the one piece of new code (as opposed to edited-in-place bytes) this
+patch has needed so far; see "The mirror was missing the car, and the
+divider was missing the light" in `docs/FINDINGS.md` for the two wrong turns
+along the way, both caught by disagreement with a recording rather than
+assumed away.
+
 **One thing worth knowing if you test a build against a recording:**
 `--build` writes an *unsigned* image by default, on purpose -- see the
 "cartridge signature" entry in `docs/FINDINGS.md`. Signing is for real
