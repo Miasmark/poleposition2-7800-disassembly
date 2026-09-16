@@ -1786,6 +1786,82 @@ been audited for how far it can shrink -- but it's the direction that this
 investigation's evidence says is worth trying, not the direction that was
 tried and rejected.
 
+## Correction: it's zone COUNT, not direction -- and the ceiling is exactly ten
+
+Follow-up to "Why zone 11 specifically" above, asked to go further: could
+the trigger zone shrink to one line, move even earlier, or need to stay
+blank, since a future disconnected two-camera view might need to clone
+whatever makes it safe. That follow-up work found the previous section's
+conclusion -- "directional, proximity to zone 19" -- was the wrong
+explanation for a real observation, and it's worth being precise about
+which part was right.
+
+**What holds up:** a one-line trigger zone works exactly as well as a
+six-line one, and content versus blank makes no difference -- both
+confirmed by moving the shipped design's zone 11 to one line (freeing five
+lines elsewhere, zone 19 held fixed) with and without real mirror content
+in it. Neither changes the outcome. Zone size and zone content were never
+the mechanism, in either the earlier round or this one.
+
+**What didn't hold up: "later is worse."** Extending zone 11 in place --
+same zone *number*, just more lines, so still only ten zone-table entries
+between zone 1 and the trigger -- stayed safe all the way out to the exact
+scanline the original thirteen-band attempt used (101), and one line
+short of the scanline the original *ten*-band-plus-shrunk-zone-1 attempt
+used. That's a direct contradiction of "later is worse" at the same
+absolute position. The actual variable, isolated by holding zone 1 fixed
+and varying only how many *distinct* zones sit between it and the trigger:
+
+    K = 10 zones (2-11):  safe, zero controller-port divergence
+    K = 11 zones (2-12):  desyncs, frame 1265, identical symptom
+    K = 12 zones (2-13):  desyncs, frame 1265, identical symptom
+    K = 13 zones (2-14):  desyncs, frame 1265, identical symptom
+
+Ten is safe at any tested position from zone 9 through zone 11's own
+(extended) end. Eleven breaks it immediately, and stays broken the same
+way regardless of how much further it's pushed. The boundary is a zone
+*count*, not a scanline.
+
+**A real, separate bug was found and ruled out along the way.** With
+eleven or more mirrored zones, zone 12 becomes mirror content -- and the
+stock start-light/banner routines still copy their own bytes to a
+hardcoded `ram_2224` (zone 12's own slot) the moment either fires, because
+nothing had retargeted them yet in these test builds. Watching zone 12
+live confirmed it: real mirror data (`85 24 D4`) at frame 1250, overwritten
+with HUD-triplet data at frame 1261, one frame before the controller-port
+divergence starts. That looked, briefly, like the whole explanation -- a
+genuine content collision, independent of the earlier DLI-position theory.
+It wasn't: a version that retargets the light/banner's write destination
+away from zone 12 entirely (to zone 15, the real new divider, using the
+same `STA ram_2224,X` -> `STA ram_222D,X` operand patch this project's
+shipped patch already uses elsewhere) desyncs identically. The collision
+is real and worth avoiding on its own merits, but it isn't why the
+recording breaks.
+
+**So the mechanism is still not fully known** -- only its shape. Ten zone
+selectors between zone 1 and the mode-switch trigger is safe; eleven or
+more isn't, regardless of trigger position, zone size, content, or whether
+the light/banner collision is separately fixed. The precision of the
+boundary (exactly ten, not nine or twelve) suggests something in the ROM
+assumes a fixed-size structure here rather than a soft cycle budget --
+matching the "ten usable slots" already documented for this same sky
+region in "Phase 1 prototyping" above -- but what specifically enforces it
+hasn't been traced to an instruction. MAME's write-tap API remains
+unreliable for chasing it further (stops firing a few frames after boot,
+as before); anyone continuing this would likely need real breakpoints or
+cycle-exact tracing this investigation didn't have reliable access to.
+
+**Practical answer to the three questions asked:** the trigger zone can be
+one line, doesn't need to be blank, and can sit anywhere from zone 9
+through zone 11 safely -- but none of that lifts the real ceiling. Ten
+zone-table entries between zone 1 and the trigger is the hard limit this
+technique (mirroring the live road sub-lists directly) runs into, and nothing
+tested moves that number. A thirteen-band mirror isn't reachable this way.
+For a future independent second camera, the same limit likely applies to
+whatever its own equivalent boundary is -- at most ten zone entries in
+that view's own "before the divider" span, regardless of where in the
+frame it sits.
+
 ## What's open
 
 Corrections to earlier versions of this list are noted where they apply, since
