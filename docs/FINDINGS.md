@@ -1862,6 +1862,182 @@ whatever its own equivalent boundary is -- at most ten zone entries in
 that view's own "before the divider" span, regardless of where in the
 frame it sits.
 
+## Solved: the start light was erasing display-interrupt bits
+
+The two sections above both got this wrong, in different ways -- "proximity to
+zone 19", then "at most ten zone entries". Neither survives. The actual cause
+is mundane once seen, explains every result from all three rounds, and lifts
+the limit entirely: a **full thirteen-band mirror works**.
+
+**The start light and banner overwrite whole zone selectors, DLI bit
+included.** `sub_D80D` and `sub_DA7C` each copy *nine* bytes -- three
+complete three-byte zone selectors -- to wherever `STA ram_2224,X` points
+(zones 12, 13 and 14 by default). The first byte of a selector is its flags
+byte, and bit 7 of the flags byte is the display-interrupt bit. So the moment
+the light first appears, any DLI bit sitting on zone 12, 13 or 14 is
+**erased**. That link of the interrupt chain never fires again, the chain
+stalls, and everything downstream of it -- including the next frame's
+controller read -- goes wrong from that frame onward. Frame 1261 is when the
+light first writes; frame 1265 is where the controller value first diverges.
+
+A pure-position test settles it: with **every** zone blank and no content
+anywhere, moving index 10's bit to zone 13 desyncs, while leaving it at 15 or
+moving it to 5 or 17 stays clean. Nothing is drawn differently in any of
+those -- the only thing that changes is whether the bit sits inside the
+nine-byte overwrite window.
+
+Every earlier result fits:
+
+| build | DLI bits | light writes | verdict |
+|---|---|---|---|
+| shipped / `ext15` / `ext18` | 11, 15 | 12-14 | clean |
+| trigger moved earlier (zone 9) | 9, 15 | 12-14 | clean |
+| `K=11` / `K=12` / `K=13` | 12 / 13 / 14 | 12-14 | **wiped** |
+| 13 bands, DLI at 14/17 | 14, 17 | 12-14 | **wiped** |
+| same, retargeted to `$222D` | 14, 17 | 15-17 | **wiped** (17) |
+| HUD above mirror, retargeted to `$2209` | 2, 5 | 3-5 | **wiped** (5) |
+| same positions, all zones blank, no retarget | 2, 5 | 12-14 | clean |
+
+The retargeted builds are the giveaway: retargeting moves the *window*, so a
+bit that was safe at 17 becomes the one that gets erased. That is why "move
+the divider somewhere else" kept failing no matter where it went -- the
+divider and the interrupt were always moving together, so the bit stayed
+inside the window by construction.
+
+**The rule, stated usefully:** no DLI bit may sit on any of the three zones
+the light/banner routines write to. Everything else this investigation
+blamed -- zone count, scanline position, DMA cost, content, direction of
+travel -- is irrelevant on its own.
+
+**What it unlocks.** Park index 10 on a one-line spacer zone *outside* the
+window and the mirror can have all thirteen bands:
+
+    zone  0      16   sky                       DLI idx7
+    zone  1      13   sky
+    zones 2-14   78   full 13-band mirror       DLI idx8 on z7, idx9 on z14
+    zones 15-17  21   HUD divider               <- light/banner retargeted here
+    zone  18      1   spacer                    DLI idx10  (outside 15-17)
+    zone  19     10   decor                     DLI idx11
+    zones 20-32  78   player 1's road, unmoved
+
+Verified against `run-01.inp`: zero controller-port divergence across 4,200
+frames, and score/gear/speed at frame 8000 identical to the unpatched ROM
+(`028900` / `$10` / 255mph). The top view is now the same 78 lines as the
+road below it rather than 60 -- the two views are finally the same size.
+
+## The mirror was free; the interrupt positions were not
+
+The previous section ends with a full thirteen-band mirror that renders
+correctly and matches stock exactly across `run-01`. It was wrong to stop
+there. Replayed against `run-02` the same build scores 011040 where stock
+scores 026770, ends in gear `$00` instead of `$10`, and -- as the person
+testing it put it -- is "outright crashing."
+
+The harness is why that got through. `cmp.py` graded a build by counting
+frames where `InputAccel` or `InputBrake` differed from stock, on the theory
+that the controller read is the timing-sensitive thing and everything else
+follows from it. The full-mirror build reads the pad **perfectly**: zero input
+diffs across 4,200 frames, on both recordings. What it does is fall behind on
+physics. Stock accelerates `$46` -> `$4D` at frame 774 of `run-02`; the patched
+build does it at 776, and does the next step two frames late as well. The
+verdict said CLEAN because the thing it measured was genuinely fine. `cmp.py`
+now grades on the whole state vector, and `run.sh` takes a recording name
+instead of hardcoding `run-01`.
+
+Worth recording precisely because it is easy to over-correct: **no patched
+build has ever been bit-identical to stock, and that was never the bar.** The
+shipped ten-band patch drifts too -- 37 frames of `PlayerX` on `run-01`, 5 on
+`run-02` -- and lands on stock's exact final score. Drift in `PlayerX` that
+converges is normal. A two-frame lag in `Speed` that compounds is not.
+
+### Three things that were not the cause
+
+Bisecting the production build against `run-02`, each suspect removed alone:
+
+| build                                    | f8000 `run-02`      |
+|------------------------------------------|---------------------|
+| stock / shipped                          | 026770 `$10` 198    |
+| full mirror, production                  | 011040 `$00` 158    |
+| ...minus the `$A6BE`/`$A6D3` line fix    | 011040 `$00` 158    |
+| ...minus the `rom:CBE3` qualifying hook  | 011040 `$00` 158    |
+| layout only, every hook removed          | 026770 `$10` 198 ✅ |
+
+So the thirteen-band layout is innocent and the hooks are implicated. Adding
+them back one at a time separates them cleanly: `rom:CBE3`, `rom:ED48` and
+`rom:ED42` are each harmless; `rom:D848`, `rom:CBEB` and the line fix each
+break it on their own.
+
+That pattern has an obvious reading, and the obvious reading is wrong. The
+three harmful edits are exactly the three that keep the divider at its full
+21 lines, and the three harmless ones never touch a line count -- so the
+layout-only build "passes" only because the start light shrinks the divider
+to 17 and nothing ever puts it back, quietly running the frame at 135 active
+lines instead of 139. That reads as a DMA ceiling: the mirror costs too much,
+139 lines is over budget, shrink the mirror.
+
+It is not. Sweeping the band count against the full hook set, **8, 9, 10, 11
+and 12 bands all fail exactly like 13** -- including ten, which is what the
+shipped patch runs at 139 lines without trouble. Cost is not the variable.
+
+### What it actually was
+
+Dumping the zone tables side by side makes it visible in one line:
+
+| build   | DLI zones        | zone 18            |
+|---------|------------------|--------------------|
+| stock   | 0, 7, 11, 15, 19 | 10 lines, `$18FA`  |
+| shipped | 0, 7, 11, 15, 19 | 10 lines, `$18FA`  |
+| broken  | 0, **1**, 14, **18**, 19 | **1 line, blank** |
+
+The shipped patch never moved a display interrupt. The full-mirror layout
+moved two, and did it for a reason that seemed forced: the light and banner
+overwrite zones 15-17 wholesale, flags bytes included, so index 10 could not
+live there -- it went out to zone 18, which meant shrinking zone 18 to a
+single line and discarding its stock `$18FA` content, which meant moving
+index 8 down to zone 1 to rebalance the 139 lines.
+
+Every one of those was a real consequence of the first choice, and together
+they are what starves the 6502. The interrupt handlers are not free: each ends
+in `sub_EC67` or `sub_EC78`, both of which burn a `WSYNC`, and `DLI_ED4F` at
+zone 19 spends **six** `WSYNC`s on palette setup before it even reaches the
+road-curve injection at rom:ED9D. Where those handlers fire, and how much
+scanline is left between one and the next, is the budget that matters -- not
+how many bands the mirror draws.
+
+### The fix: let the templates carry the bit
+
+The premise was wrong. The light's nine-byte write is not destructive, it is
+just a *copy* -- so put the display-interrupt bit in the thing being copied.
+Setting bit 7 on the third selector of both templates makes the light and
+banner **preserve** index 10 rather than erase it:
+
+    dat_A6BB  06 1D 09  06 24 F6  86 1D 15     7+7+7 = 21, DLI on slot 3
+    dat_A6CD  07 1C AB  07 1C BD  84 24 F6     8+8+5 = 21, DLI on slot 3
+
+`HUD_ROWS` in the patch carries the same `$86`, because all three writers of
+those zones have to agree: whichever runs last is the one that decides whether
+the interrupt survives. With that in place index 10 stays on zone 17, the end
+of the divider group -- the same shape stock uses -- and zone 18 keeps its ten
+lines of `$18FA` untouched. Index 8 goes back to zone 7. The final layout:
+
+    zone  0       16   blank                        DLI index 7
+    zone  1        4   blank
+    zones 2-14    78   all thirteen mirror bands    DLI index 8 (z7), 9 (z14)
+    zones 15-17   21   HUD divider                  DLI index 10 (z17)
+    zone  18      10   $18FA, stock
+    zone  19      10   decoration                   DLI index 11
+    zones 20-32   78   player 1's road, unmoved
+
+139 lines in every divider state, DLIs at 0, 7, 14, 17, 19. Verified at frame
+8000 against both recordings: `run-01` 028900 `$10` 255 and `run-02` 026770
+`$10` 198, both matching stock exactly, with residual drift of 37 and 24
+frames of `PlayerX` -- the same class as the shipped patch's own.
+
+The general rule, which cost three wrong theories to reach: **a DLI bit inside
+the overwrite window is fine as long as every routine that writes that window
+carries it.** Moving the interrupt out is the expensive answer, and the cost
+does not show up where you would look for it.
+
 ## What's open
 
 Corrections to earlier versions of this list are noted where they apply, since

@@ -15,13 +15,23 @@ Rearranges the display list into a two-viewport layout -- player 2's view on
 top, the HUD relocated to the centre as a divider, player 1's road below,
 untouched:
 
-    zone  0        16 lines   blank top margin
-    zones 1-11     67         player 2's view (ten road bands + a gap)
-    zones 12-14    21         HUD, three rows -- the centre divider
-    zones 15-17    15         blank
-    zones 18-19    20         horizon decoration
+    zone  0        16 lines   blank top margin        DLI index 7
+    zone  1         4         blank gap
+    zones 2-14     78         player 2's view -- all thirteen road bands
+                                                      DLI index 8 on zone 7,
+                                                      index 9 on zone 14
+    zones 15-17    21         HUD, three rows -- the centre divider
+                                                      DLI index 10 on zone 17
+    zone  18       10         horizon decoration ($18FA, stock)
+    zone  19       10         decoration              DLI index 11
     zones 20-32    78         player 1's road (unmoved)
     zones 33-34    32         blank
+
+Zones 0-19 total exactly 139 lines in every state the divider can be in --
+HUD showing, start light showing, or per-lap banner showing. They have to:
+a mismatch there shifts everything below the divider for the mismatch's
+duration, which is what used to make the whole screen bump up for a lap
+message and drop back when it cleared.
 
 Player 2's view is currently a *mirror*: its bands point at the same RAM
 sub-lists player 1's road uses, so it tracks the same curve and the same
@@ -34,11 +44,14 @@ mode has to follow the layout (character mode for the HUD, the road's mode
 everywhere else), and BACKGRND has to carry the road's ground colour into
 player 2's view or every transparent pixel in the road graphics shows sky.
 
-It mirrors the *last* ten of player 1's thirteen road zones (real zones
-23-32), not the first ten -- the player's own car sprite lives in the last
-five of those (docs/FINDINGS.md, "a higher-detail car sprite"), so mirroring
-the first ten cut its bottom off. The three farthest bands go unmirrored
-instead; nothing important is out there to miss.
+It mirrors all thirteen of player 1's road zones, so the top view is the
+same 78 lines as the road below it. Earlier versions managed only ten, and
+two separate rounds of investigation blamed that on the wrong thing -- first
+on which zone the mirror sat next to, then on a supposed ten-zone ceiling.
+Both were wrong, and docs/FINDINGS.md keeps them on the record next to what
+actually turned out to be true: the start light was erasing display-interrupt
+bits, and the interrupts' *positions*, not the mirror's size, are what the
+6502's frame budget is sensitive to.
 
 ## Why .abp and not a single BPS or a bare byte-patcher
 
@@ -218,29 +231,52 @@ def zone(n):
 ALL_ROAD_BANDS = [0x2300, 0x2326, 0x234C, 0x2372, 0x2398, 0x23BE, 0x2400,
                   0x2426, 0x244C, 0x246E, 0x2490, 0x24B2, 0x24D4]
 
-# Only ten zones are safe to give player 2's view (docs/FINDINGS.md, "Two
-# zones safe to touch, two that are not") -- zones 2-11, ending right where
-# the stock display-interrupt chain already switches character mode on for
-# the HUD at zone 11. So this mirrors the *last* ten of the thirteen bands
-# (real zones 23-32) rather than the first ten: the player's own car sprite
-# lives across the last five of them ($8B10-family, docs/FINDINGS.md "a
-# higher-detail car sprite"), and mirroring the first ten cut its bottom two
-# zones' worth of lines off -- MARIA has no idea the object continues onto a
-# zone this mirror didn't include. The three farthest bands go unmirrored
-# instead, which costs nothing anyone would miss (docs/FINDINGS.md).
-ROAD_BANDS = ALL_ROAD_BANDS[3:13]
+# All thirteen get mirrored, so player 2's view is the same 78 lines as
+# player 1's road rather than a shortened 60. Earlier versions of this patch
+# could only manage ten, and three rounds of investigation blamed that on the
+# wrong thing twice (docs/FINDINGS.md, "Solved: the start light was erasing
+# display-interrupt bits" supersedes both). The real constraint turned out to
+# have nothing to do with how many zones the mirror uses -- see DLI_ZONES.
+ROAD_BANDS = ALL_ROAD_BANDS
 
-# Zones carrying a display-interrupt bit. The DLI chain is positional in
-# effect even though it's index-driven in code (docs/FINDINGS.md): moving
-# either of these two specific bits to a later zone renders correctly on its
-# own but measurably desyncs an existing recording, so they stay exactly
-# where the stock game put them.
-DLI_ZONES = {0, 7, 11, 15, 19}
+# Zones carrying a display-interrupt bit, and the one rule that governs where
+# they may go: **no DLI bit may sit on a zone the start light or the banner
+# writes to.** Those routines (sub_D80D, sub_DA7C) copy nine bytes -- three
+# whole zone selectors, flags byte included -- to wherever `STA ram_2224,X`
+# points. Bit 7 of a flags byte *is* the display-interrupt bit, so a bit
+# inside that window is simply erased the first time the light appears, that
+# link of the chain stops firing, and everything downstream of it (the next
+# frame's controller read included) breaks.
+#
+# There are two ways out of that, and only one of them is cheap. Parking the
+# bit outside the window works -- an earlier version put index 10 on a
+# one-line zone 18 -- but it costs zone 18's stock ten lines of $18FA, forces
+# index 8 down to zone 1 to rebalance, and the resulting DLI spacing starves
+# the 6502: speed falls behind stock from frame ~774 of run-02, the deficit
+# compounds, and the race ends early (docs/FINDINGS.md, "The mirror was free;
+# the interrupt positions were not"). The cheap way is to stop treating the
+# overwrite as destructive and make the templates *carry* the bit: set bit 7
+# on the third selector of dat_A6BB and dat_A6CD and the light and banner
+# preserve index 10 instead of erasing it. It then stays on zone 17, the end
+# of the divider group, which is the same shape stock uses -- and zone 18
+# keeps its stock content untouched.
+DLI_ZONES = {0, 7, 14, 17, 19}
 
-# The three-row HUD. Written into zones 12-14 (see the module docstring) by
-# HudReassert once normal driving begins, sharing that divider with the
-# start light and the "POLE POSITION!" banner exactly as stock already did.
-HUD_ROWS = [0x06, 0x1D, 0x1C, 0x06, 0x1D, 0x28, 0x06, 0x1D, 0x34]
+# Where the light and banner's nine bytes land, as a zone number and as the
+# low byte of the `STA ram_2224,X` operand that aims them. Zone 15 = $2200 +
+# 15*3 = $222D. The three zones from here are the divider, and must stay
+# clear of DLI_ZONES above.
+DIVIDER_ZONE = 15
+DIVIDER_ADDR = 0x2200 + DIVIDER_ZONE * 3
+
+# The three-row HUD, written into the divider by HudReassert once normal
+# driving begins, sharing those zones with the start light and the
+# "POLE POSITION!" banner exactly as stock already did at its own zones 12-14.
+# The third selector's flags byte is $86, not $06: seven lines *plus* the
+# DLI bit for index 10. Every writer of these three zones -- this table, the
+# light's dat_A6CD and the banner's dat_A6BB -- has to agree on that bit, or
+# whichever one runs last silently drops the interrupt.
+HUD_ROWS = [0x06, 0x1D, 0x1C, 0x06, 0x1D, 0x28, 0x86, 0x1D, 0x34]
 
 # HudReassert lives here: $F3FF-$FF7E (2,945 bytes) is a run of untouched $FF
 # filler, confirmed via the toolkit's own --gaps report (disasm.py) and by
@@ -259,7 +295,7 @@ SOUNDSTOP = 0xDED6
 def hud_reassert_src(addr):
     """Four routines sharing one write.
 
-    HudWrite is the 9-byte copy into zones 12-14 (ram $2224). HudReassert
+    HudWrite is the 9-byte copy into the divider (DIVIDER_ADDR). HudReassert
     wraps it for rom:D848, where it replaces `LDA #$0B / JSR SoundStop` at
     the end of sub_D83D -- the "resume driving after a per-lap event" path
     (state $09 -> $03) -- and still makes that same SoundStop call itself
@@ -314,7 +350,7 @@ def hud_reassert_src(addr):
         "    LDX #$08",
         "Loop:",
         "    LDA HudTriplet,X",
-        "    STA $2224,X",
+        "    STA $%04X,X" % DIVIDER_ADDR,
         "    DEX",
         "    BPL Loop",
         "    RTS",
@@ -380,7 +416,7 @@ def _unrolled_hud_write():
     lines = []
     for i, b in enumerate(HUD_ROWS):
         lines.append("    LDA #$%02X" % b)
-        lines.append("    STA $%04X" % (0x2224 + i))
+        lines.append("    STA $%04X" % (DIVIDER_ADDR + i))
     return lines
 
 
@@ -395,31 +431,57 @@ def _assemble(lines):
     return code, dict(a.sym)
 
 
+# Stock boot-template zone selectors, zones 1-18, so every edit below can
+# state what it expects to find without repeating it inline.
+STOCK_ZONES = {
+    1:  [0x09, 0x24, 0xF6], 2:  [0x06, 0x1D, 0x1C], 3:  [0x02, 0x24, 0xF6],
+    4:  [0x06, 0x1D, 0x28], 5:  [0x02, 0x24, 0xF6], 6:  [0x06, 0x1D, 0x34],
+    7:  [0x82, 0x24, 0xF6], 8:  [0x07, 0x22, 0xC7], 9:  [0x07, 0x22, 0xD1],
+    10: [0x07, 0x22, 0xDB], 11: [0x82, 0x24, 0xF6], 12: [0x06, 0x24, 0xF6],
+    13: [0x02, 0x24, 0xF6], 14: [0x06, 0x24, 0xF6], 15: [0x82, 0x24, 0xF6],
+    16: [0x07, 0x22, 0xE1], 17: [0x07, 0x22, 0xEB], 18: [0x09, 0x18, 0xFA],
+}
+
+
+def put_zone(p, z, lines, dl):
+    """One zone selector: line count, DL address, DLI bit from DLI_ZONES."""
+    flags = (lines - 1) | (0x80 if z in DLI_ZONES else 0x00)
+    p.put(zone(z), [flags, dl >> 8, dl & 0xFF], expect=STOCK_ZONES[z])
+
+
 def fix_mirror_split(p):
-    """Give player 2's view zones 1-11; let the start light and the banner
-    keep displaying at zones 12-14 as stock always has; bring the HUD back
-    there once normal driving begins.
+    """Give player 2's view all thirteen road bands across zones 2-14; put
+    the HUD divider at zones 15-17 where the start light and banner are
+    retargeted to draw; bring the HUD back there once driving begins.
 
     Ported from the hand-verified edits built up over several live sessions
     (docs/FINDINGS.md, "Phase 1" onward). One piece *is* new code --
     HudReassert -- and the module docstring explains what forced that.
     """
-    # -- player 2's view: a gap, then ten bands across zones 2..11 -----------
-    p.put(zone(1), [0x06, 0x24, 0xF6], expect=[0x09, 0x24, 0xF6])
-
-    originals = {2: [0x06, 0x1D, 0x1C], 3: [0x02, 0x24, 0xF6],
-                 4: [0x06, 0x1D, 0x28], 5: [0x02, 0x24, 0xF6],
-                 6: [0x06, 0x1D, 0x34], 7: [0x82, 0x24, 0xF6],
-                 8: [0x07, 0x22, 0xC7], 9: [0x07, 0x22, 0xD1],
-                 10: [0x07, 0x22, 0xDB], 11: [0x82, 0x24, 0xF6]}
+    # -- player 2's view: a gap, then all thirteen bands across zones 2..14 --
+    # Thirteen, not ten, so the top view is the same 78 lines as the road
+    # below it. What used to cap this at ten had nothing to do with the
+    # mirror at all -- see DLI_ZONES above and docs/FINDINGS.md, "Solved:
+    # the start light was erasing display-interrupt bits".
+    put_zone(p, 1, 4, 0x24F6)
     for i, dl in enumerate(ROAD_BANDS):
-        z = 2 + i
-        flags = 0x05 | (0x80 if z in DLI_ZONES else 0x00)   # 6 lines, DLI bit preserved
-        p.put(zone(z), [flags, dl >> 8, dl & 0xFF], expect=originals[z])
+        put_zone(p, 2 + i, 6, dl)
 
-    # -- below the HUD: blank, sized so player 1's road still starts on time -
-    p.put(zone(16), [0x05, 0x24, 0xF6], expect=[0x07, 0x22, 0xE1])
-    p.put(zone(17), [0x05, 0x24, 0xF6], expect=[0x07, 0x22, 0xEB])
+    # -- the divider: zones 15-17, three HUD rows ----------------------------
+    for i in range(3):
+        put_zone(p, DIVIDER_ZONE + i, 7,
+                 (HUD_ROWS[i * 3 + 1] << 8) | HUD_ROWS[i * 3 + 2])
+
+    # Zone 18 is deliberately absent from this function: it keeps its stock
+    # ten lines of $18FA. An earlier version spent it as a one-line perch for
+    # index 10; the templates carry that bit now, so it isn't needed.
+
+    # -- aim the light and banner at the new divider -------------------------
+    # Both routines end with `STA ram_2224,X`, hardcoded at zone 12 -- which
+    # is a mirror band now. One operand byte each sends them to zone 15
+    # instead, where the HUD divider actually lives.
+    p.put(0xD81B, [DIVIDER_ADDR & 0xFF], expect=[0x24])   # sub_D80D, the banner
+    p.put(0xDA92, [DIVIDER_ADDR & 0xFF], expect=[0x24])   # sub_DA7C, the light
 
     # -- the divider's own three writers need to agree on a total ------------
     # HudReassert/StartDriveHud/QualDriveHud all write 7+7+7=21 lines across
@@ -433,8 +495,18 @@ def fix_mirror_split(p):
     # visible content -- so the light and banner still show exactly the
     # graphics they always have, just with four more scanlines of the same
     # blank padding they already had some of.
-    p.put(0xA6BE, [0x06], expect=[0x02])   # dat_A6BB's own blank zone13 slot: 3 lines -> 7
-    p.put(0xA6D3, [0x04], expect=[0x00])   # dat_A6CD's own blank zone14 slot: 1 line -> 5
+    p.put(0xA6BE, [0x06], expect=[0x02])   # dat_A6BB's blank middle slot: 3 lines -> 7
+    p.put(0xA6D3, [0x04], expect=[0x00])   # dat_A6CD's blank last slot:   1 line  -> 5
+
+    # -- and both templates must preserve index 10 ---------------------------
+    # Bit 7 on each template's third selector. Without it the first appearance
+    # of the light or banner erases the interrupt that restores read mode 0
+    # before the road, and the chain never recovers. With it, the divider can
+    # hold a DLI at all -- which is what lets index 10 stay on zone 17 and
+    # zone 18 keep its stock content. Line counts only otherwise; neither
+    # edit touches an address or any visible graphics.
+    p.put(0xA6C1, [0x86], expect=[0x06])   # dat_A6BB 3rd selector: +DLI
+    p.put(0xA6D3, [0x84], expect=[0x04])   # dat_A6CD 3rd selector: +DLI (5 lines)
 
     # -- read mode has to follow the layout ----------------------------------
     # The HUD's text objects are character mode and need CTRL read mode 3;

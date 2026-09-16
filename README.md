@@ -108,19 +108,21 @@ real road's curve is injected scanline-by-scanline by a display interrupt,
 which a mirror rendered elsewhere on screen can't borrow). The patch script's
 own docstring has the zone-by-zone layout and the reasoning behind each edit.
 
-The mirror shows the player's own car whole (it mirrors the ten road zones
-closest to the camera, not the ten farthest, so the car's sprite isn't cut
-off), and the start light and the "POLE POSITION! ####" banner still show up
+Player 2's view now mirrors all thirteen of player 1's road bands, so it is
+the same 78 lines as the road below it rather than a shortened 60, the
+player's own car included. The start light and the "POLE POSITION! ####" banner still show up
 at their usual moments -- centred in the same divider the HUD lives in, the
 HUD returning right after each one finishes (during qualifying too, not just
 the real race), in the divider's own correct colours rather than the
 mirror's road palette, and without the whole screen visibly bumping up and
 down as each message comes and goes. Getting all of that right took the
 first new code (as opposed to edited-in-place bytes) this patch has needed;
-see "The mirror was missing the car, and the divider was missing the light"
-and "Colour, a third entry point, and a screen that bumped" in
-`docs/FINDINGS.md` for the wrong turns along the way, each caught by
-disagreement with a recording or a screenshot rather than assumed away.
+see "The mirror was missing the car, and the divider was missing the light",
+"Colour, a third entry point, and a screen that bumped" and "The mirror was
+free; the interrupt positions were not" in `docs/FINDINGS.md` for the wrong
+turns along the way -- there were several, including two root causes that
+were confidently documented and then disproved -- each caught by disagreement
+with a recording or a screenshot rather than assumed away.
 
 **One thing worth knowing if you test a build against a recording:**
 `--build` writes an *unsigned* image by default, on purpose -- see the
