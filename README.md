@@ -112,12 +112,15 @@ The mirror shows the player's own car whole (it mirrors the ten road zones
 closest to the camera, not the ten farthest, so the car's sprite isn't cut
 off), and the start light and the "POLE POSITION! ####" banner still show up
 at their usual moments -- centred in the same divider the HUD lives in, the
-HUD returning right after each one finishes. Getting that combination right
-took the one piece of new code (as opposed to edited-in-place bytes) this
-patch has needed so far; see "The mirror was missing the car, and the
-divider was missing the light" in `docs/FINDINGS.md` for the two wrong turns
-along the way, both caught by disagreement with a recording rather than
-assumed away.
+HUD returning right after each one finishes (during qualifying too, not just
+the real race), in the divider's own correct colours rather than the
+mirror's road palette, and without the whole screen visibly bumping up and
+down as each message comes and goes. Getting all of that right took the
+first new code (as opposed to edited-in-place bytes) this patch has needed;
+see "The mirror was missing the car, and the divider was missing the light"
+and "Colour, a third entry point, and a screen that bumped" in
+`docs/FINDINGS.md` for the wrong turns along the way, each caught by
+disagreement with a recording or a screenshot rather than assumed away.
 
 **One thing worth knowing if you test a build against a recording:**
 `--build` writes an *unsigned* image by default, on purpose -- see the

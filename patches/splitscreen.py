@@ -257,28 +257,59 @@ SOUNDSTOP = 0xDED6
 
 
 def hud_reassert_src(addr):
-    """Two hooks, one shared write, because there turned out to be two
-    places normal driving begins from, not one.
+    """Four routines sharing one write.
 
-    HudWrite is the 9-byte copy into zones 12-14 (ram $2224), shared by
-    both. HudReassert wraps it for rom:D848, where it replaces `LDA #$0B /
-    JSR SoundStop` at the end of sub_D83D -- the "resume driving after a
-    per-lap event" path (state $09 -> $03) -- and still makes that same
-    SoundStop call itself afterward, A restored to $0B first, so nothing
-    about the original behaviour changes beyond adding the HUD write.
+    HudWrite is the 9-byte copy into zones 12-14 (ram $2224). HudReassert
+    wraps it for rom:D848, where it replaces `LDA #$0B / JSR SoundStop` at
+    the end of sub_D83D -- the "resume driving after a per-lap event" path
+    (state $09 -> $03) -- and still makes that same SoundStop call itself
+    afterward, A restored to $0B first.
 
-    StartDriveHud wraps it for rom:CBEB, where it replaces `LDA #$03 / BNE
-    L_CBF1` -- state $11 -> $03, the *other* path into normal driving, right
-    as the start light finishes, reached from a completely different
-    routine (a periodic ram_00A2/ram_00A3-gated state check, not sub_D83D
-    at all). Both were needed: hooking only rom:D848 (this patch's first
-    attempt) left the HUD not returning after the start light specifically,
-    confirmed live by counting how many times each actually ran across a
-    full recording -- see docs/FINDINGS.md, "Two places normal driving
-    begins from"."""
+    StartDriveHud wraps it (inlined, not a call -- see `_unrolled_hud_write`)
+    for rom:CBEB, where it replaces `LDA #$03 / BNE L_CBF1` -- state $11 ->
+    $03, reached from a periodic ram_00A2/ram_00A3-gated state check
+    unrelated to sub_D83D. This is normal driving's *other* entry point;
+    hooking only rom:D848 left the HUD not returning after the start light.
+
+    QualDriveHud does the same for rom:CBE3 (`CMP #$10 / BEQ L_CBEF`), the
+    third and last entry into normal driving -- qualifying's own, never
+    revisited afterward (qualifying just stays in state $02 until it ends),
+    which is why the divider previously never showed anything but the start
+    light for all of qualifying. It shares tight quarters with the rom:CBEB
+    hook above (see the comment at its call site in fix_mirror_split for
+    why it hooks one instruction earlier than the other two), which is also
+    why it reproduces a comparison rather than just a state store.
+
+    ZoneDividerRestore and DividerPaletteOnly are different in kind: not a
+    state-machine hook but a replacement for the two paths DLI_ED30 (zone
+    11's own interrupt) can take. Stock's DLI_ED30 already has to decide
+    between them -- CTRL read mode 3 for the divider's own text (`JMP
+    sub_EC67` at rom:ED47) *unless* ram_009D is $4-$7 (the start light is
+    showing, which needs mode 0's direct graphics, not character mode), in
+    which case it stays mode 0 (`STA ram_00FF / JMP sub_EC09` at rom:ED42).
+    Neither path ever touched palette -- stock never needed either to,
+    since in stock the whole zones-1-19 span uses one shared palette that
+    DLI_ECA1 sets once, appropriate for banner, HUD and light alike. This
+    patch's mirror repoints that same palette at the road's colours instead
+    (below), which the divider inherits too since nothing resets it on
+    either path -- confirmed live (screenshot comparison against the
+    unpatched ROM at the same frames caught the text-and-background case;
+    a second comparison, specifically at a frame where the light is showing,
+    caught that the mode-0 path needed the identical fix -- an easy one to
+    miss, since it only shows up while the light itself is on screen).
+    ZoneDividerRestore handles the mode-3 path (reproducing sub_EC67's mode
+    switch first, so results-screen callers elsewhere, which still call
+    sub_EC67 directly, are untouched); DividerPaletteOnly handles the mode-0
+    path (reproducing only its `STA ram_00FF`, since that path's whole point
+    is *not* switching mode). Both then fall into the same palette/BACKGRND
+    restore before jumping back to $EC09."""
     return [
         ".org $%04X" % addr,
         "SoundStop = $%04X" % SOUNDSTOP,
+        "WSYNC = $0024", "CTRL = $003C", "BACKGRND = $0020",
+        "P0C1 = $0021", "P0C2 = $0022", "P0C3 = $0023",
+        "P1C1 = $0025", "P1C2 = $0026", "P1C3 = $0027",
+        "P4C3 = $0033", "P5C3 = $0037",
         "HudWrite:",
         "    LDX #$08",
         "Loop:",
@@ -296,6 +327,42 @@ def hud_reassert_src(addr):
     ] + _unrolled_hud_write() + [
         "    LDA #$03",
         "    JMP $CBF1",
+        "QualDriveHud:",
+        "    CMP #$10",
+        "    BNE QualDriveSkip",
+        "    LDA #$02",
+        "    STA $009D",
+    ] + _unrolled_hud_write() + [
+        "    JMP $CC08",
+        "QualDriveSkip:",
+        "    JMP $CBE7",
+        "DividerPaletteOnly:",
+        "    STA $00FF",
+        "    JMP PaletteRestore",
+        "ZoneDividerRestore:",
+        "    STA $00FF",
+        "    LDA $005F",
+        "    ORA #$03",
+        "    STA WSYNC",
+        "    STA $005F",
+        "    STA CTRL",
+        "PaletteRestore:",
+        "    LDA #$80",
+        "    STA P0C3",
+        "    STA P1C3",
+        "    STA P4C3",
+        "    STA P5C3",
+        "    LDA #$38",
+        "    STA P0C1",
+        "    LDA #$3C",
+        "    STA P0C2",
+        "    LDA #$28",
+        "    STA P1C2",
+        "    LDA #$24",
+        "    STA P1C1",
+        "    LDA #$89",
+        "    STA BACKGRND",
+        "    JMP $EC09",
         "HudTriplet:",
         "    .byte $%02X,$%02X,$%02X,$%02X,$%02X,$%02X,$%02X,$%02X,$%02X"
         % tuple(HUD_ROWS),
@@ -354,14 +421,30 @@ def fix_mirror_split(p):
     p.put(zone(16), [0x05, 0x24, 0xF6], expect=[0x07, 0x22, 0xE1])
     p.put(zone(17), [0x05, 0x24, 0xF6], expect=[0x07, 0x22, 0xEB])
 
+    # -- the divider's own three writers need to agree on a total ------------
+    # HudReassert/StartDriveHud/QualDriveHud all write 7+7+7=21 lines across
+    # zones 12-14. The stock light and banner templates don't match that --
+    # 8+8+1=17 and 7+3+7=17 -- so every swap between "HUD showing" and
+    # "light or banner showing" changed how many scanlines MARIA processed
+    # before the road, visibly shifting the whole screen below the divider
+    # for the swap's duration (confirmed live: it bumps up when a per-lap
+    # message appears, and back down when it clears). Both edits below are
+    # to a *blank filler zone's line count only* -- not the address, not the
+    # visible content -- so the light and banner still show exactly the
+    # graphics they always have, just with four more scanlines of the same
+    # blank padding they already had some of.
+    p.put(0xA6BE, [0x06], expect=[0x02])   # dat_A6BB's own blank zone13 slot: 3 lines -> 7
+    p.put(0xA6D3, [0x04], expect=[0x00])   # dat_A6CD's own blank zone14 slot: 1 line -> 5
+
     # -- read mode has to follow the layout ----------------------------------
     # The HUD's text objects are character mode and need CTRL read mode 3;
     # both road views need mode 0. Wrong either way and the failure is not
     # obvious: the HUD garbles, or road bands decode into a sawtooth-edged
     # wrong shape. DLI_ECA1's tail governs zones 1+, so it flips to mode 0 for
-    # player 2. Zone 11's DLI already routes through sub_EC67 (mode 3) for the
-    # HUD band, and zone 15's already restores mode 0 below -- both untouched,
-    # and both load-bearing.
+    # player 2. Zone 11's DLI still routes to mode 3 for the divider (below,
+    # ZoneDividerRestore takes over from sub_EC67 to add a palette fix at the
+    # same spot), and zone 15's already restores mode 0 below -- untouched,
+    # and load-bearing.
     p.put(0xED1E, [0x29, 0xFC], expect=[0x09, 0x03],
           )  # DLI_ECA1 tail: ORA #$03 -> AND #$FC
 
@@ -385,6 +468,9 @@ def fix_mirror_split(p):
     p.put(HUD_REASSERT_ADDR, code, expect=[0xFF] * len(code))
     reassert_addr = syms["HudReassert"]
     start_drive_addr = syms["StartDriveHud"]
+    qual_drive_addr = syms["QualDriveHud"]
+    divider_restore_addr = syms["ZoneDividerRestore"]
+    palette_only_addr = syms["DividerPaletteOnly"]
 
     # -- and bring the HUD back once normal driving begins -------------------
     # Two different places turn out to do that, not one (docs/FINDINGS.md,
@@ -411,6 +497,52 @@ def fix_mirror_split(p):
     # happens exactly where the game always put it.
     p.put(0xCBEB, [0x4C, start_drive_addr & 0xFF, start_drive_addr >> 8, 0xEA],
           expect=[0xA9, 0x03, 0xD0, 0x02])
+
+    # rom:CBE3 -- a *third* entry point, state $10 -> $02, qualifying's own
+    # (and only) transition into its drive state. Unlike the other two,
+    # nothing ever transitions qualifying back out of $02 and through here
+    # again, which is exactly why the divider previously showed only the
+    # start light for the entire qualifying run: no hook ever fired during
+    # it. This one shares tight quarters with the rom:CBEB hook above --
+    # the unique code for it is only two bytes (`L_CBEF: LDA #$02`) before
+    # falling into the same three-way-shared `STA ram_009D` at $CBF1 that
+    # StartDriveHud already rejoins at, too little room for a JMP without
+    # also overwriting that shared instruction and breaking its other two
+    # callers. So the hook goes one step earlier, at the branch's own
+    # `CMP #$10 / BEQ L_CBEF` (rom:CBE3, 4 bytes): QualDriveHud reproduces
+    # that comparison, and on state $10 does the state store, the HUD write,
+    # then a JMP to $CC08 (the same place the original code's `BNE L_CC08`
+    # would have landed, given the value it just stored is nonzero). On any
+    # other state it jumps to $CBE7 to rejoin the original code exactly
+    # where the replaced instructions left off -- the `CMP #$11` check,
+    # untouched, still deciding rom:CBEB's own case. L_CBEF and the shared
+    # $CBF1 it used to fall into are unreached now, not overwritten -- just
+    # four orphaned bytes, harmless. Found only after the first attempt (a
+    # hook at rom:D412, a second, unrelated occurrence of the same
+    # `LDA #$02 / STA ram_009D` byte pattern this project's own disassembly
+    # never labelled as reached from qualifying) was built, live-tested, and
+    # shown -- by dense per-frame sampling, not by assumption -- to never
+    # actually fire during qualifying at all.
+    p.put(0xCBE3, [0x4C, qual_drive_addr & 0xFF, qual_drive_addr >> 8, 0xEA],
+          expect=[0xC9, 0x10, 0xF0, 0x08])
+
+    # rom:ED47 -- zone 11's own DLI, `JMP sub_EC67`, retargeted to
+    # ZoneDividerRestore (same mode switch, plus the palette fix). Only this
+    # one JMP's operand changes; sub_EC67 itself, and DLI_EC87's own,
+    # separate call to it, are untouched.
+    p.put(0xED48, [divider_restore_addr & 0xFF, divider_restore_addr >> 8],
+          expect=[0x67, 0xEC])
+
+    # rom:ED42 -- the *other* path out of the same DLI_ED30 check (ram_009D
+    # in $4-$7, the start light showing, so mode stays 0): `STA ram_00FF /
+    # JMP sub_EC09` becomes a JMP to DividerPaletteOnly, which reproduces
+    # the STA and then applies the same palette/BACKGRND fix, without
+    # touching CTRL -- this path's whole point is staying in mode 0 for the
+    # light's own graphics, confirmed live at a frame where the light is on
+    # screen: without this hook specifically, the light still rendered
+    # against the road's colours even after the mode-3 case above was fixed.
+    p.put(0xED42, [0x4C, palette_only_addr & 0xFF, palette_only_addr >> 8, 0xEA, 0xEA],
+          expect=[0x85, 0xFF, 0x4C, 0x09, 0xEC])
     return p
 
 

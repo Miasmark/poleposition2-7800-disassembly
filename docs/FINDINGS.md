@@ -1615,6 +1615,100 @@ divider at their moments, and the HUD reappears there the instant each one
 finishes -- not 2,200-odd frames later, which is what the version with only
 the `rom:D848` hook left it doing.
 
+## Colour, a third entry point, and a screen that bumped
+
+Real hands-on play of the working divider (above) surfaced three more bugs,
+none of them visible from a handful of scripted-recording screenshots: the
+light, banner and HUD all rendered in the wrong colours; the HUD never
+reasserted during qualifying at all; and the whole screen visibly bumped up
+and back down around every per-lap message. All three are fixed; two of the
+three took a wrong turn on the way, both caught live.
+
+**The colours.** `DLI_ECA1` -- the interrupt that recolours zones 1+ for the
+mirror -- sets a run of palette registers (`P0C1/C2`, `P1C1/C2`, the shared
+`P0C3/P1C3/P4C3/P5C3` load, `BACKGRND`) that stay in effect for the rest of
+the "sky" span, zones 1 through 19, until the road's own DLI at zone 20 sets
+different ones. Stock never needed to reset them again in between, because
+everything in that whole span -- HUD, light, banner, decorative signs -- was
+designed to look right in one shared palette. This patch's mirror needs
+*road* colours for zones 2-11 specifically, which the divider (12-14)
+inherits too, since nothing resets it before its own scanlines render --
+confirmed by comparing screenshots against the unpatched ROM at the same
+frames: stock's HUD is blue-on-sky, this patch's was rendering it in the
+road's tan-and-white instead, background included, not just text.
+
+The fix needed to land inside a per-scanline interrupt handler for the first
+time, which is a much tighter cycle budget than the state-machine hooks
+above: `ZoneDividerRestore` (docs and full reasoning in
+`patches/splitscreen.py`'s `hud_reassert_src`) replaces zone 11's own DLI
+(`rom:ED47`, `JMP sub_EC67`) with a version that does the same CTRL mode
+switch and then restores the original P0/P1/BACKGRND values, confirmed to
+add no measurable cost (a full recording's state-transition log, diffed
+frame-for-frame against the unpatched ROM, came back identical).
+
+**The wrong turn inside the colour fix:** the first version only fixed the
+banner and the HUD, not the light. A second screenshot comparison, this one
+specifically at a frame where the light is on screen, showed it still
+rendering against road colours even after the first fix. The reason:
+`DLI_ED30` (zone 11's real handler) doesn't unconditionally switch to
+character mode -- when `ram_009D` is $4-$7 (the light showing, which needs
+mode 0's direct graphics), it takes a *different* path (`rom:ED42`, `STA
+ram_00FF / JMP sub_EC09`) that stays in mode 0 and skips `sub_EC67`
+entirely. `ZoneDividerRestore` sat on the path that path never took.
+`DividerPaletteOnly` covers the second path -- same palette fix, deliberately
+*without* the mode switch, since that path's whole point is staying in mode
+0 for the light's own graphics.
+
+**Qualifying never showing the HUD.** Root cause: HudReassert's two existing
+hooks (rom:D848 and rom:CBEB) both work, but they cover the two ways *normal
+driving* is entered -- qualifying enters its own, separate drive state ($02)
+through a third path that neither hook touches, and nothing ever transitions
+qualifying back out of $02 and through anywhere else before it ends. No hook
+ever fired during the entire qualifying run, which is exactly the reported
+symptom.
+
+**The wrong turn inside this fix, and the more interesting one:** the first
+attempt hooked `rom:D412`, a `LDA #$02 / STA ram_009D` this project's own
+disassembler never showed as reached from anywhere qualifying-related, found
+by grepping for the instruction shape rather than tracing execution. It
+looked plausible, the bytes matched, the build succeeded -- and it never
+fired. Dense per-frame sampling around the exact moment qualifying begins
+(the same technique that caught the earlier register-clobber bug) showed
+`ram_009D` becoming $02 right on schedule while the divider's contents never
+changed at all. A raw byte-pattern search across the *whole ROM* for the
+exact four-byte sequence `A9 02 85 9D` -- not just the instances the
+disassembler had already labelled `STA ram_009D` -- turned up a *second*
+occurrence at `rom:CBEF`, four bytes away from the already-hooked `rom:CBEB`
+and falling into the very same shared `STA ram_009D` (`rom:CBF1`) that
+`StartDriveHud` already rejoins at. That shared instruction can't be
+overwritten (two other callers depend on it staying exactly what it is), and
+`L_CBEF` itself is only two bytes -- too short for a JMP. So the real hook
+sits one instruction earlier, at `rom:CBE3` (`CMP #$10 / BEQ L_CBEF`, four
+bytes): `QualDriveHud` reproduces that comparison, does the state store and
+the HUD write on a match, and rejoins the original code (`$CBE7`, the
+`CMP #$11` check `rom:CBEB` depends on) on any other value. `rom:D412`'s
+role, whatever it is, remains unpatched -- an edit that was never confirmed
+to do anything live is worse than no edit, not a harmless extra.
+
+**The screen bump.** Root cause was arithmetic, not logic: HudReassert,
+StartDriveHud and QualDriveHud all write three 7-line rows (21 lines total)
+into zones 12-14, but the stock light and banner templates don't match that
+-- 8+8+1=17 and 7+3+7=17. Every swap between "HUD showing" and "light or
+banner showing" changed how many scanlines MARIA processed before the road,
+which shifted the whole screen below the divider up or down by the
+difference for as long as the swap lasted. Fixed with two single-byte edits
+to `dat_A6BB` and `dat_A6CD` -- not their addresses, not their visible
+content, just each template's own blank filler zone's line count (3->7 and
+1->5), so all three writers total 21 and the swap stops moving anything.
+Confirmed by screenshot: the road and decoration sit at the same height in
+frames taken during a lap message and immediately after the HUD reasserts,
+where they visibly didn't before.
+
+Verified the same way as the round before it: both recordings still land on
+the exact unpatched score/gear/speed at frame 8000, and `run-01.inp`'s full
+state-transition log matches the unpatched ROM frame-for-frame after every
+one of the fixes above, not just the first.
+
 ## What's open
 
 Corrections to earlier versions of this list are noted where they apply, since
