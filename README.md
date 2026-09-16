@@ -84,12 +84,21 @@ coincidental, and `--map` for a heatmap (needs Pillow).
 
 `patches/splitscreen.py` rearranges the display list into a two-viewport
 layout -- player 2's view on top, the HUD moved to the centre as a divider,
-player 1's road below, unmoved. It ships no cartridge data: it's a list of
-addresses and the bytes to check for and replace, verified against your own
-dump before anything is written.
+player 1's road below, unmoved. It ships no cartridge data: every edit is
+checked against the bytes it expects to find before it's made, and the
+distributable form ([`dist/pp2-splitscreen.abp`](dist/pp2-splitscreen.abp),
+the anchored-bundle format `a7800-toolkit` defines) carries a CRC32 of each
+edited region rather than the region itself.
 
 ```
-python patches/splitscreen.py "Pole Position II (NTSC) (Atari) (1987) (A85FB962).a78" -o pp2-split.a78
+# apply it, against your own dump, through the toolkit's own patcher:
+python ../a7800-toolkit-local/tools/patchset.py apply dist/pp2-splitscreen.abp \
+    --rom "Pole Position II (NTSC) (Atari) (1987) (A85FB962).a78" \
+    --with mirror-split --out pp2-split.a78
+
+# or rebuild the bundle, or a quick unsigned test copy, from the script directly:
+python patches/splitscreen.py --bundle
+python patches/splitscreen.py --build -o pp2-split.a78
 ```
 
 Player 2's view is currently a *mirror* of player 1's road, not an independent
@@ -98,6 +107,14 @@ camera -- see "Phase 1" in `docs/FINDINGS.md` for what that buys for free
 real road's curve is injected scanline-by-scanline by a display interrupt,
 which a mirror rendered elsewhere on screen can't borrow). The patch script's
 own docstring has the zone-by-zone layout and the reasoning behind each edit.
+
+**One thing worth knowing if you test a build against a recording:**
+`--build` writes an *unsigned* image by default, on purpose -- see the
+"cartridge signature" entry in `docs/FINDINGS.md`. Signing is for real
+hardware (or a fresh recording made against a signed build specifically);
+every `.inp` in this repo was recorded against the original, unsigned-by-
+this-patch cartridge, and a freshly *signed* build will play back a
+different, if equally plausible-looking, race against it.
 
 ## Recording a session
 
@@ -131,7 +148,8 @@ mame a7800 -rompath ../bios -cart "<rom>" -skip_gameinfo \
 | `annotations.json` | The recipe. Feed it to `disasm.py` to get the listing. |
 | `docs/FINDINGS.md` | The narrative -- read this first. |
 | `tools/` | This project's own probe scripts. |
-| `patches/` | Byte-patch scripts that build a modified ROM from your own dump; see "The split-screen patch" above. |
+| `patches/` | Scripts that build a modified ROM from your own dump; see "The split-screen patch" above. |
+| `dist/` | The distributable `.abp` bundles those scripts produce -- no cartridge data, just CRC32s and BPS diffs of this project's own edits. |
 | `Play Recording.command`, `Record Session.command` | Double-click launchers (macOS + MAME on `PATH`). |
 
 Not committed (see `.gitignore`): the ROM, the generated `src/rom.asm` and

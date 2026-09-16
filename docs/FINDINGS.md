@@ -1208,6 +1208,55 @@ palette lives in *byte 3* instead (moved there in the 5-byte layout), and
 reads as palette 2 for all three HUD rows checked -- the same palette the
 road itself uses, not a separate one.
 
+## The cartridge signature affects recording playback -- through timing, not validity
+
+Found while moving the split-screen work from ad hoc byte edits into a proper
+`.abp` bundle (`patches/splitscreen.py`), and worth recording on its own,
+separately from that patch, because it applies to every recording this
+project has and every patch it will ever build.
+
+The build applied cleanly through `tools/patchset.py apply` -- correct
+anchors, correct target match, and (via the manifest's `"region": "ntsc"`)
+a freshly *valid* cartridge signature, exactly as it should for something
+meant to run on real hardware. Replayed against `run-01.inp`, it landed on
+the wrong score, gear and speed at frame 8000. Not a crash, not visibly
+broken -- a complete, plausible-looking race that simply was not the one the
+recording asked for.
+
+Diffing the result against the same edits built *without* signing found
+the entire discrepancy confined to exactly 120 bytes: `$FF80-$FFF7`, the
+signature block itself, and nothing else. Nothing in the disassembled ROM
+reads that range -- checked directly, not assumed -- so the game's own code
+cannot be the cause. `sign7800.verify()` makes the shape of it clear:
+the unsigned build's original, untouched signature bytes report `False`
+(correctly -- this patch's edits invalidate them), yet that is the build
+that reproduces the recording exactly. The freshly-signed build reports
+`True` and desyncs. A third version, with the signature block simply
+zeroed, gives a third result, different from both. All three are
+individually deterministic -- rerunning any one of them reproduces the same
+"wrong" score every time -- so this is not jitter or a race condition; it is
+a function of the exact byte content of that block.
+
+The mechanism this points to: the BIOS's signature check is a modular
+squaring (`sig^2 mod N`, the scheme's own public exponent), and squaring's
+running time on a 6502 plausibly depends on the operand's bit pattern --
+not on whether the final comparison against the cartridge hash passes or
+fails, which is a cheap step at the very end. Different signature bytes,
+valid or not, cost a different number of cycles to check, and a boot
+sequence timed to the cycle is exactly what a frame-perfect input recording
+cannot absorb a shift in.
+
+**Practical rule, now written down rather than rediscovered per patch:** a
+build meant to replay against an existing recording must carry the
+recording's *exact* signature bytes -- which for every recording in this
+repo means the original cartridge's, untouched, even though that makes the
+signature cryptographically invalid for edited content. A build meant for
+real hardware, or for a fresh recording made against it specifically, needs
+a valid signature instead. These are different requirements and satisfying
+one does not satisfy the other. `patches/splitscreen.py --build` defaults to
+unsigned for exactly this reason, with `--sign` (or `patchset.py apply`'s
+automatic resigning) opt-in for the other case.
+
 ## Phase 1: the top display, mirroring player 1
 
 The first working second view. Thirteen bytes, no new instructions.
