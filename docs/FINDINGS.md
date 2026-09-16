@@ -2038,6 +2038,116 @@ the overwrite window is fine as long as every routine that writes that window
 carries it.** Moving the interrupt out is the expensive answer, and the cost
 does not show up where you would look for it.
 
+## What a second view cannot have: the smoothing is beam-synchronised
+
+The mirror stair-steps where the real road is smooth. The obvious question is
+whether the smoothing can simply be run twice. It cannot, and the reason is
+worth having on the record with a number attached.
+
+`DLI_InjectRowCurveX` (rom:EDA0) is not a per-frame setup routine. It is
+beam-synchronised: one `WSYNC` per road scanline, rewriting each band's x and
+y bytes *mid-zone* -- MARIA re-reads a zone's display list on every scanline,
+so changing `$2303` between lines is what bends the band. Thirteen bands at
+six lines each means ~78 `WSYNC`s, and for all of them the 6502 is stopped.
+A second copy for the mirror costs another ~78 scanlines of main loop.
+
+Measuring the headroom directly settles it. Index 8's handler was replaced
+with one that burns N scanlines and then does index 9's job, so the chain
+still lands on index 10, with no DLI anywhere in the mirror (a MARIA display
+interrupt is an NMI and would re-enter the handler):
+
+| extra scanlines | f8000 `run-02`   |
+|-----------------|------------------|
+| 1               | 026770 ✅        |
+| 2               | 026770 ✅        |
+| 4               | 026770 ✅        |
+| 6               | 000390 ❌        |
+| 20              | 010800 ❌        |
+| 77              | 005080 ❌        |
+
+**The budget is four to five scanlines.** The feature needs seventy-eight.
+It is not a matter of writing it more tightly -- `WSYNC` is the mechanism, not
+the implementation. Freeing that much CPU would mean cutting elsewhere, which
+is what the smaller Atari signs and a lower enemy-car count were proposed for.
+
+## The mirror's colours: everything on the road, not the road itself
+
+Cars, signs and the lap line came out wrong in the mirror while the road
+surface looked right. That split is the whole diagnosis. `DLI_ECA1` sets the
+palettes for everything above the divider, and an earlier round had matched
+P0 and P1 -- the road surface -- by hand, with six byte-edits inside its
+palette block. Everything *drawn on* the road uses P2-P7, which nothing had
+touched:
+
+| palette | `DLI_ECA1` (top) | `DLI_ED4F` (bottom) | what it carries |
+|---------|------------------|---------------------|-----------------|
+| P0C2    | `$3C`            | `ram_00FC`          | stripe animation, lap line |
+| P2      | `$00 $00 $00`    | `$89 $8B $8D`       | road furniture |
+| P3      | `$0D $0B $09`    | `$1E $17 $00`       | signs |
+| P4      | `$C8 $CC $80`    | `$0E $98 $00`       | |
+| P5      | `$C4 $C8 $80`    | `$9C $96 $00`       | |
+| P6      | `ram_00F4-$F6`   | `$2F $26 $00`       | **cars** |
+| P7      | `ram_00F7-$F9`   | `$0F $0F $0F`       | cars |
+
+P0C2 is why the stripes and the lap line held still in the mirror while they
+animated below: a flat byte where the road reads a per-frame one. P6 is why
+the car was blue on top and gold below.
+
+Six scattered byte-edits could never have fixed this, and not only because
+they missed P2-P7: `L_ECF8` (rom:ECF8) writes P3 on its way out of the very
+same handler, so anything set earlier in the block is overwritten. The fix
+hooks `DLI_ECA1`'s closing `JMP sub_EC09` at rom:ED29 instead and restates
+`DLI_ED4F`'s whole palette block, so both views draw from identical registers
+rather than from two hand-matched approximations. `BACKGRND` comes from
+`ram_00FB`, the road's own ground colour, rather than the hardcoded `$1B` it
+used to use -- that value is per-track, so a constant was only right on some.
+`PaletteRestore` grew the matching restores, or the HUD and the start light
+would have inherited the road's palette.
+
+### The interrupt fires before the zone finishes
+
+With the palettes matched, the mirror's bottom four scanlines rendered solid
+`$38` tan with the grass behind them `$89` blue -- the road's *shape* intact,
+every colour wrong. MARIA raises a zone's display interrupt about four
+scanlines before that zone has finished displaying, and palette writes land
+the instant they are made, so index 9's handler repainted the last mirror band
+while it was still on screen.
+
+Delaying the handler works, exactly linearly -- one `STA WSYNC` at the head of
+`PaletteRestore` recovers one scanline:
+
+| `WSYNC`s | tan rows remaining | f8000 `run-02` |
+|----------|--------------------|----------------|
+| 1        | 3                  | 026770 ✅      |
+| 2        | 2                  | 000000 ❌      |
+| 3        | 1                  | 000000 ❌      |
+| 4        | 0                  | 000000 ❌      |
+
+Clearing it needs four; the budget from the table above allows one. So the
+interrupt got a blank zone to land on instead, where the early write repaints
+nothing: the divider simply reads as a few lines taller.
+
+That costs a band. Zones 1-14 hold exactly fourteen selectors, thirteen bands
+leave no room for a blank, and **zone 1 cannot be the one given up** -- moving
+the bands up to zones 1-13 to free zone 14 hangs the machine outright at frame
+6500 of `run-01`, everything frozen and the screen flashing as the interrupt
+chain stops being serviced. Confirmed both ways: with index 9 on zone 14 and
+on zone 13, a road band in zone 1 hangs it either way, and the same build with
+the bands back at zones 2-14 runs clean to 12,200 frames. So the blank goes
+after the bands and the farthest band pays for it. The mirror is twelve bands,
+72 lines, against the road's 78.
+
+One more trap in that neighbourhood, found the hard way: with zone 1 at six
+lines and the blank at four, `run-01` diverges for 2,725 straight frames from
+f9475. At zone 1 = four and the blank = six -- the same 139 total -- it tracks
+stock to 13,000 frames on both recordings. Zone 1's length is load-bearing and
+nothing about the line budget says so.
+
+A method note, since it nearly shipped a broken build: the first read of that
+2,725-frame divergence called it benign, because the scan printed the first
+twelve divergent stretches and they were all one frame long. The sustained one
+was the sixty-fifth. Sort by length, not by position.
+
 ## What's open
 
 Corrections to earlier versions of this list are noted where they apply, since

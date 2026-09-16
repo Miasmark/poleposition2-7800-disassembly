@@ -16,10 +16,12 @@ top, the HUD relocated to the centre as a divider, player 1's road below,
 untouched:
 
     zone  0        16 lines   blank top margin        DLI index 7
-    zone  1         4         blank gap
-    zones 2-14     78         player 2's view -- all thirteen road bands
-                                                      DLI index 8 on zone 7,
-                                                      index 9 on zone 14
+    zone  1         4         blank gap  (must stay blank -- a road band here
+                                          hangs the machine; see below)
+    zones 2-13     72         player 2's view -- twelve road bands
+                                                      DLI index 8 on zone 7
+    zone  14        6         blank, and the landing pad for
+                                                      DLI index 9
     zones 15-17    21         HUD, three rows -- the centre divider
                                                       DLI index 10 on zone 17
     zone  18       10         horizon decoration ($18FA, stock)
@@ -33,19 +35,33 @@ a mismatch there shifts everything below the divider for the mismatch's
 duration, which is what used to make the whole screen bump up for a lap
 message and drop back when it cleared.
 
+Zone 14 is blank on purpose. MARIA raises a zone's display interrupt about
+four scanlines before that zone has finished displaying, and palette writes
+take effect immediately, so index 9's handler -- which swaps the road's
+palette for the divider's -- used to repaint the bottom four lines of the
+last mirror band while they were still on screen. Giving index 9 a blank zone
+of its own puts that early write somewhere harmless. It costs the mirror its
+farthest band, because zones 1-14 hold exactly fourteen selectors and zone 1
+cannot be the one given up.
+
 Player 2's view is currently a *mirror*: its bands point at the same RAM
 sub-lists player 1's road uses, so it tracks the same curve and the same
 stripe animation for free, at the cost of stair-stepping where the real road
-is smooth (the smoothness is injected scanline-by-scanline by a display
-interrupt, which a view rendered ~80 scanlines earlier cannot borrow). See
+is smooth. That last part is not a temporary limitation: the smoothness comes
+from DLI_InjectRowCurveX, which is beam-synchronised -- one WSYNC per road
+scanline, rewriting each band's x mid-zone -- so a second copy for the mirror
+would cost another ~78 scanlines of stalled main loop. Measured headroom is
+four to five scanlines (docs/FINDINGS.md, "What a second view cannot have").
+See
 "Phase 1" in docs/FINDINGS.md for the full trail -- including two things this
 patch had to fix that are not obvious from the zone table alone: CTRL's read
 mode has to follow the layout (character mode for the HUD, the road's mode
 everywhere else), and BACKGRND has to carry the road's ground colour into
 player 2's view or every transparent pixel in the road graphics shows sky.
 
-It mirrors all thirteen of player 1's road zones, so the top view is the
-same 78 lines as the road below it. Earlier versions managed only ten, and
+It mirrors twelve of player 1's thirteen road zones -- all but the farthest,
+which pays for zone 14 -- so the top view is 72 lines of road against the 78
+below it, with the missing band being the most distant and least detailed. Earlier versions managed only ten, and
 two separate rounds of investigation blamed that on the wrong thing -- first
 on which zone the mirror sat next to, then on a supposed ten-zone ceiling.
 Both were wrong, and docs/FINDINGS.md keeps them on the record next to what
@@ -237,7 +253,14 @@ ALL_ROAD_BANDS = [0x2300, 0x2326, 0x234C, 0x2372, 0x2398, 0x23BE, 0x2400,
 # wrong thing twice (docs/FINDINGS.md, "Solved: the start light was erasing
 # display-interrupt bits" supersedes both). The real constraint turned out to
 # have nothing to do with how many zones the mirror uses -- see DLI_ZONES.
-ROAD_BANDS = ALL_ROAD_BANDS
+# All but the farthest. Thirteen would fit the line budget, but index 9 needs
+# a blank zone to land on (see put_zone(p, 14, ...) in fix_mirror_split) and
+# zones 1-14 hold exactly fourteen selectors: thirteen bands leave no room for
+# it, and zone 1 cannot be the one given up -- a road band there hangs the
+# machine outright a few thousand frames in, with the screen flashing as the
+# interrupt chain dies (docs/FINDINGS.md). So the blank goes after the bands
+# and the farthest band, the one with least on it, pays for it.
+ROAD_BANDS = ALL_ROAD_BANDS[1:]
 
 # Zones carrying a display-interrupt bit, and the one rule that governs where
 # they may go: **no DLI bit may sit on a zone the start light or the banner
@@ -345,7 +368,12 @@ def hud_reassert_src(addr):
         "WSYNC = $0024", "CTRL = $003C", "BACKGRND = $0020",
         "P0C1 = $0021", "P0C2 = $0022", "P0C3 = $0023",
         "P1C1 = $0025", "P1C2 = $0026", "P1C3 = $0027",
-        "P4C3 = $0033", "P5C3 = $0037",
+        "P2C1 = $0029", "P2C2 = $002A", "P2C3 = $002B",
+        "P3C1 = $002D", "P3C2 = $002E", "P3C3 = $002F",
+        "P4C1 = $0031", "P4C2 = $0032", "P4C3 = $0033",
+        "P5C1 = $0035", "P5C2 = $0036", "P5C3 = $0037",
+        "P6C1 = $0039", "P6C2 = $003A", "P6C3 = $003B",
+        "P7C1 = $003D", "P7C2 = $003E", "P7C3 = $003F",
         "HudWrite:",
         "    LDX #$08",
         "Loop:",
@@ -372,6 +400,49 @@ def hud_reassert_src(addr):
         "    JMP $CC08",
         "QualDriveSkip:",
         "    JMP $CBE7",
+        # DLI_ECA1 sets the palettes for everything above the divider, and
+        # the values it picks are the stock ones for a HUD, not for a road:
+        # P2 all black, P3 set late at L_ECF8 to $0D/$0B/$09, P4 and P5 in the
+        # $C0s, P0C2 a flat colour where the road wants the animated stripe
+        # byte. That is why cars, signs and the lap line all came out wrong in
+        # the mirror while the road surface itself looked right -- the surface
+        # uses P0/P1, which an earlier round had already matched by hand, and
+        # everything *on* the road uses P2-P5, which nothing had touched.
+        #
+        # Rather than six scattered byte-edits inside DLI_ECA1 (which is what
+        # this patch used to do, and which cannot work for P3 anyway because
+        # L_ECF8 overwrites it afterwards), this runs at the very end of that
+        # handler and restates the same palette block DLI_ED4F installs for
+        # player 1's road. Both views then draw from identical registers.
+        "MirrorPalette:",
+        "    LDA #$89", "    STA P2C1",
+        "    LDA #$8B", "    STA P2C2",
+        "    LDA #$8D", "    STA P2C3",
+        "    LDA #$1E", "    STA P3C1",
+        "    LDA #$17", "    STA P3C2",
+        "    LDA #$0E", "    STA P4C1",
+        "    LDA #$98", "    STA P4C2",
+        "    LDA #$9C", "    STA P5C1",
+        "    LDA #$96", "    STA P5C2",
+        "    LDA #$00", "    STA P3C3", "    STA P4C3", "    STA P5C3",
+        "    LDA #$0F", "    STA P0C1",
+        # the stripe animation: a flat byte here is what made the lap line and
+        # the road stripes hold still in the mirror while they moved below.
+        "    LDA $00FC", "    STA P0C2",
+        "    LDA #$34", "    STA P1C1",
+        "    LDA #$04", "    STA P1C2", "    STA P1C3", "    STA P0C3",
+        # the ground colour the real road uses, rather than a hardcoded guess
+        # -- it is per-track, so a constant was only ever right on some of them.
+        # P6 and P7 are the cars. DLI_ED4F sets them too (rom:EDC1 and
+        # rom:EDE2); L_ECF8 loads this region's from ram_00F4-$F9 instead,
+        # which is why the car in the mirror came out blue while the same car
+        # below it was yellow.
+        "    LDA #$0F", "    STA P7C1", "    STA P7C2", "    STA P7C3",
+        "    LDA #$2F", "    STA P6C1",
+        "    LDA #$26", "    STA P6C2",
+        "    LDA #$00", "    STA P6C3",
+        "    LDA $00FB", "    STA BACKGRND",
+        "    JMP $EC09",
         "DividerPaletteOnly:",
         "    STA $00FF",
         "    JMP PaletteRestore",
@@ -398,6 +469,40 @@ def hud_reassert_src(addr):
         "    STA P1C1",
         "    LDA #$89",
         "    STA BACKGRND",
+        # MirrorPalette leaves P2-P5 holding the road's colours, so the divider
+        # has to put back the ones DLI_ECA1 and L_ECF8 would have left, or the
+        # HUD, the start light and the banner inherit the road's palette.
+        "    LDA #$00", "    STA P2C1", "    STA P2C2", "    STA P2C3",
+        "    LDA #$0D", "    STA P3C1",
+        "    LDA #$0B", "    STA P3C2",
+        "    LDA #$09", "    STA P3C3",
+        "    LDA #$C8", "    STA P4C1", "    STA P5C2",
+        "    LDA #$CC", "    STA P4C2",
+        "    LDA #$C4", "    STA P5C1",
+        # and DLI_ECA1's own start-light special case (rom:ECDC-ECF6), which
+        # tinted P4 while the light was on screen. It used to reach the light
+        # because the light drew in this palette region; now that the light
+        # draws in the divider, the tint has to be applied here instead.
+        "    LDA $009D",
+        "    CMP #$13",
+        "    BNE PalNoSub",
+        "    LDA $0048",
+        "PalNoSub:",
+        "    CMP #$06",
+        "    BMI PalDone",
+        "    CMP #$08",
+        "    BPL PalDone",
+        "    LDA #$0A", "    STA P4C1",
+        "    LDA #$35", "    STA P4C2",
+        "    LDA #$0C", "    STA P4C3",
+        # and P6/P7 back to what L_ECF8 loads for this region.
+        "    LDA $00F4", "    STA P6C1",
+        "    LDA $00F5", "    STA P6C2",
+        "    LDA $00F6", "    STA P6C3",
+        "    LDA $00F7", "    STA P7C1",
+        "    LDA $00F8", "    STA P7C2",
+        "    LDA $00F9", "    STA P7C3",
+        "PalDone:",
         "    JMP $EC09",
         "HudTriplet:",
         "    .byte $%02X,$%02X,$%02X,$%02X,$%02X,$%02X,$%02X,$%02X,$%02X"
@@ -467,6 +572,23 @@ def fix_mirror_split(p):
     for i, dl in enumerate(ROAD_BANDS):
         put_zone(p, 2 + i, 6, dl)
 
+    # -- a four-line blank for index 9 to land on --------------------------
+    # MARIA raises a zone's display interrupt about four scanlines before that
+    # zone has finished displaying, and palette writes take effect the instant
+    # they are made. With index 9 on the last mirror band, the divider's
+    # palette therefore landed on that band while it was still on screen: its
+    # bottom four lines rendered $38 tan with the grass behind them $89 blue,
+    # the road's shape intact but every colour wrong.
+    #
+    # Delaying the handler works and costs one scanline of stalled main loop
+    # per line delayed -- and the budget for that is one scanline, not the
+    # four this needs (docs/FINDINGS.md). So index 9 gets a blank zone of its
+    # own instead. The early write lands on blank lines, which simply show the
+    # divider's own background, so the divider reads as four lines taller and
+    # nothing is corrupted. The mirror keeps all thirteen bands: they start at
+    # zone 1 now rather than zone 2, which is where the four lines come from.
+    put_zone(p, 14, 6, 0x24F6)
+
     # -- the divider: zones 15-17, three HUD rows ----------------------------
     for i in range(3):
         put_zone(p, DIVIDER_ZONE + i, 7,
@@ -521,19 +643,15 @@ def fix_mirror_split(p):
           )  # DLI_ECA1 tail: ORA #$03 -> AND #$FC
 
     # -- colour ---------------------------------------------------------------
-    # Pixel value 0 is transparent and shows BACKGRND, so player 2's view
-    # needs the road's ground colour behind it, not sky.
-    p.put(0xECA9, [0x1B], expect=[0x89])                    # BACKGRND: sky -> ground
-
-    # Road objects declare palettes 0 and 1, alternating every frame or two --
-    # that flip is what animates the rumble strips and the centreline. Both
-    # palettes must match the road's, or every other frame renders in
-    # whatever colours this region used to use.
-    p.put(0xECBF, [0x0F], expect=[0x38])                    # P0C1
-    p.put(0xECC3, [0x0F], expect=[0x3C])                    # P0C2
-    p.put(0xECCB, [0x34], expect=[0x24])                    # P1C1
-    p.put(0xECC7, [0x04], expect=[0x28])                    # P1C2
-    p.put(0xECB5, [0x04], expect=[0x80])                    # shared C3 load
+    # This used to be six byte-edits scattered through DLI_ECA1's palette
+    # block -- BACKGRND to a hardcoded ground colour, P0 and P1 to the road's.
+    # They got the road *surface* right and everything drawn on it wrong: the
+    # cars, the signs and the lap line all take palettes 2-5, which none of
+    # them touched, and P3 could not have been fixed that way in any case
+    # because L_ECF8 writes it after that block runs. MirrorPalette replaces
+    # the lot, at the end of the handler, by restating DLI_ED4F's own palette
+    # block -- so the two views draw from identical registers instead of from
+    # two hand-matched approximations. See the hook on rom:ED29 below.
 
     # -- the one piece of new code this patch needs --------------------------
     code, syms = _assemble(hud_reassert_src(HUD_REASSERT_ADDR))
@@ -543,6 +661,7 @@ def fix_mirror_split(p):
     qual_drive_addr = syms["QualDriveHud"]
     divider_restore_addr = syms["ZoneDividerRestore"]
     palette_only_addr = syms["DividerPaletteOnly"]
+    mirror_palette_addr = syms["MirrorPalette"]
 
     # -- and bring the HUD back once normal driving begins -------------------
     # Two different places turn out to do that, not one (docs/FINDINGS.md,
@@ -615,6 +734,14 @@ def fix_mirror_split(p):
     # against the road's colours even after the mode-3 case above was fixed.
     p.put(0xED42, [0x4C, palette_only_addr & 0xFF, palette_only_addr >> 8, 0xEA, 0xEA],
           expect=[0x85, 0xFF, 0x4C, 0x09, 0xEC])
+
+    # rom:ED29 -- DLI_ECA1's closing `JMP sub_EC09`, retargeted to
+    # MirrorPalette, which installs the road's palettes for player 2's view
+    # and then makes the same jump. It has to be here, at the very end of the
+    # handler, rather than inside the palette block it supersedes: L_ECF8
+    # (rom:ECF8) writes P3 on its way out, so anything set earlier is lost.
+    p.put(0xED29, [mirror_palette_addr & 0xFF, mirror_palette_addr >> 8],
+          expect=[0x09, 0xEC])
     return p
 
 

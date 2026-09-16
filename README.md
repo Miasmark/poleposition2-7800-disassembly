@@ -105,12 +105,18 @@ Player 2's view is currently a *mirror* of player 1's road, not an independent
 camera -- see "Phase 1" in `docs/FINDINGS.md` for what that buys for free
 (geometry, colour, the stripe animation) and why it can't yet be smooth (the
 real road's curve is injected scanline-by-scanline by a display interrupt,
-which a mirror rendered elsewhere on screen can't borrow). The patch script's
+which a mirror rendered elsewhere on screen can't borrow -- and that is
+measured, not assumed: the injection is beam-synchronised and a second copy
+would cost ~78 scanlines of stalled main loop against a measured budget of
+four to five). The patch script's
 own docstring has the zone-by-zone layout and the reasoning behind each edit.
 
-Player 2's view now mirrors all thirteen of player 1's road bands, so it is
-the same 78 lines as the road below it rather than a shortened 60, the
-player's own car included. The start light and the "POLE POSITION! ####" banner still show up
+Player 2's view now mirrors twelve of player 1's thirteen road bands, so it is
+72 lines against the road's 78 rather than a shortened 60, the player's own car
+included, and both views draw from identical palette registers -- the cars,
+signs, lap line and stripe animation match top and bottom. The one band it
+gives up is the farthest and least detailed; it pays for a blank zone the
+divider's display interrupt has to land on. The start light and the "POLE POSITION! ####" banner still show up
 at their usual moments -- centred in the same divider the HUD lives in, the
 HUD returning right after each one finishes (during qualifying too, not just
 the real race), in the divider's own correct colours rather than the
