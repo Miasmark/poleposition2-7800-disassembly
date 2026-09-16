@@ -1709,6 +1709,83 @@ the exact unpatched score/gear/speed at frame 8000, and `run-01.inp`'s full
 state-transition log matches the unpatched ROM frame-for-frame after every
 one of the fixes above, not just the first.
 
+## Why zone 11 specifically: the desync is directional, not budget-shaped
+
+Follow-up to "The mirror was missing the car, and the divider was missing
+the light" above, which found that moving the mode-switch DLI bit from
+zone 11 to zone 14 (to make room for a full thirteen-band mirror) desyncs a
+recording, without explaining why. Asked to actually find out -- partly
+because the answer matters beyond this one patch, if a future independent
+two-camera view needs its own equivalent of zone 11's boundary.
+
+**It isn't about how much is drawn.** A version of the moved-DLI mirror
+with zones 12-14 left completely blank -- no mirror content, next to no
+DMA cost -- desyncs at the identical frame (1265) with the identical
+symptom (a live controller-port tap: `InputAccel` reads $FF in the
+unpatched ROM and $7F in the patched one, at the same instant the
+recording's very first real accelerator press happens). The earlier
+"~2,000 extra cycles" estimate for those three zones, measured properly
+afterward against `dmabudget.py` using the *real* object counts and widths
+from a live display-list dump rather than a guessed worst case, turned out
+to be about 3.5x too high anyway (roughly 680 cycles, not 2,000) -- moot,
+since even zero cost broke it identically.
+
+**It isn't zone 15 either.** A version that moves *only* zone 11's bit (to
+zone 14) and leaves zone 15's bit exactly where stock has it -- so the gap
+between the two interrupts shrinks drastically, unlike the original
+two-bit-move version where both shift together and the gap stays similar
+to stock -- desyncs identically, same frame, same symptom. Since the gap to
+the *next* interrupt varies a lot between these two variants but the
+failure doesn't, the size of that particular gap isn't the mechanism.
+
+**It's directional.** Moving zone 11's bit two zones *earlier* instead (to
+zone 9, with literally nothing else changed from the shipped, safe design
+-- same ten bands, same zone 1, same everything) produces no controller-port
+divergence at all across a full 4,200-frame check. It isn't clean -- a
+much smaller, later, different-shaped drift shows up in `PlayerX` starting
+around frame 1948, almost certainly just from zones 9-11 rendering in the
+wrong CTRL mode with real mirror content in them -- but the catastrophic,
+immediate, input-level failure that every *later* placement produces is
+simply absent.
+
+That asymmetry points at zone 19's own DLI (`DLI_ED4F`): a long,
+WSYNC-paced handler that injects fresh per-scanline curve data into all
+thirteen real road bands, phase-locked to MARIA's raster for the entire
+78-line road with no slack to spare (docs/FINDINGS.md, "the last piece").
+Moving the mode-switch interrupt *later* -- closer to zone 19 -- is the one
+change that plausibly costs that handler some of its own margin; moving it
+*earlier* only gives it more. The most likely chain, not yet confirmed at
+the cycle level (MAME's own write-tap API proved unreliable for tracing
+this precisely -- taps stop firing a few frames after boot for reasons this
+investigation didn't get to the bottom of): a late or jittered entry into
+`DLI_ED4F` shifts its own internal WSYNC pacing, which delays when it
+finally returns; that delay reaches the true VBLANK handler (`rom:F110`
+onward -- confirmed to be where the main loop's own frame counter,
+`ram_00B9`, gets incremented, and where `ram_00FF` gets re-armed to `$07`
+for the next frame's race-view DLI chain), pushing it later in real time
+even though every zone's *scanline* position is unchanged; and that reaches
+into the next frame's read of the controller port, which is timing-
+sensitive in a way ordinary digital inputs aren't (`ReadController`,
+`rom:C17E`, stores the *raw* byte from `INPT1`/`INPT0`, not just a masked
+bit -- consistent with these being genuinely time-charged paddle-style
+inputs where a few cycles of jitter can tip a real transition to the wrong
+side, exactly what a controller-value flip landing on the recording's very
+first accelerator press looks like).
+
+**The practical upshot, including for a future disconnected two-camera
+view:** the failure tracks proximity to zone 19, not identity with zone 11.
+A second, independent divider boundary looks safe to add as long as it
+stays *earlier* in the frame than zone 11's own position, not later --
+moving the existing boundary earlier still costs a little (the `PlayerX`
+drift above), so it isn't free, but it is a different and much smaller
+class of problem than the one moving it later produces. Fitting all
+thirteen bands into the *current* mirror without moving anything past
+zone 11's own position would need zone 0 and zone 1's combined margin (23
+lines today) cut to about 5 -- tight, and zone 0's own requirements haven't
+been audited for how far it can shrink -- but it's the direction that this
+investigation's evidence says is worth trying, not the direction that was
+tried and rejected.
+
 ## What's open
 
 Corrections to earlier versions of this list are noted where they apply, since
