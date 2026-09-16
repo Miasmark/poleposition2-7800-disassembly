@@ -116,6 +116,24 @@ every `.inp` in this repo was recorded against the original, unsigned-by-
 this-patch cartridge, and a freshly *signed* build will play back a
 different, if equally plausible-looking, race against it.
 
+## A higher-detail car sprite (credit: KevinMos3 and Defender_2600)
+
+`patches/graphics_hack.py` / [`dist/pp2-graphics-hack.abp`](dist/pp2-graphics-hack.abp)
+incorporates a car-sprite redraw that is **not this project's own work**: it
+is **"Pole Position II Graphics Hack"** by **KevinMos3** and **Defender_2600**,
+published on the AtariAge forums on 2014-04-12. All credit for the artwork
+is theirs -- this only locates exactly which bytes their release changed
+(two sprite objects, confirmed live against the display list, not guessed
+from the diff) so the redraw can be applied on its own, combined with the
+split-screen patch above (the two touch entirely disjoint bytes), and always
+with their names attached.
+
+```
+python ../a7800-toolkit-local/tools/patchset.py apply dist/pp2-graphics-hack.abp \
+    --rom "Pole Position II (NTSC) (Atari) (1987) (A85FB962).a78" \
+    --with hires-car --out pp2-hires-car.a78
+```
+
 ## Recording a session
 
 Live findings come from replaying a MAME input recording -- a deterministic

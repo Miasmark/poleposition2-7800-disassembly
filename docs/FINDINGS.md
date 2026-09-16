@@ -1458,6 +1458,47 @@ governs that region, not just one. Matching only palette 1 leaves every
 looks like a flicker or a wrong-coloured centreline rather than an obvious
 palette bug.
 
+## A higher-detail car sprite, from elsewhere, incorporated with credit
+
+`patches/graphics_hack.py` / `dist/pp2-graphics-hack.abp` -- independent of
+the split-screen work above, and not this project's own artwork.
+
+**The redraw is by KevinMos3 and Defender_2600**, published on the AtariAge
+forums 2014-04-12 as "Pole Position II Graphics Hack". All credit for the
+sprite work is theirs; this project's contribution is narrower -- finding
+exactly which bytes their release changed, so the change can be applied on
+its own, combined with anything else here, and always with their names
+attached, rather than only available bundled inside their standalone ROM.
+
+**What actually changed, confirmed live rather than assumed.** Walking the
+display list against `run-01.inp` (not a guess from the diff alone) finds
+two objects, both width 8, palette 6: a 26-line main pose based at `$8B10`
+(five road-band zones reuse it as 6-line slices, `$8B10`/`$9110`/`$9710`/
+`$9D10`/`$A310` -- each exactly 6 pages, i.e. 6 scanlines, apart, the same
+line-planar convention documented above) and a 6-line companion piece at
+`$AAE8`. `tools/gfx.py` rendered both, before and after: same silhouette,
+visibly more cockpit and shading detail in the redraw. Two more bytes,
+`$EDE3`/`$EDE7`, recolour `P6C1`/`P6C2` -- the car's own palette -- to suit.
+Nothing else from their release is reproduced: their build also carries its
+own re-signed cartridge signature and a changed header title string, neither
+of which is the sprite, and neither is included here.
+
+**Composes cleanly with the split-screen patch, confirmed rather than
+assumed.** The two touch entirely disjoint bytes (checked programmatically:
+zero overlap), and `tools/patchset.py apply` accepts either bundle as a
+target for the other, in either order, on the strength of the anchors
+alone -- exactly the case `.abp`'s anchor design exists for. Applied
+together and replayed against `run-01.inp`: score, gear and speed match the
+unpatched run exactly, and the mirrored top view (Phase 1, above) shows the
+redrawn car automatically, since it already reads the same live sub-lists
+player 1's road does.
+
+One thing this option's `.abp` does that this project's own patches
+deliberately avoid: its BPS necessarily carries the replacement bytes
+themselves; a CRC32 can identify someone else's finished artwork but cannot
+describe how to draw it. That is the deliberate, credited exception to the
+policy in `patches/splitscreen.py`'s own docstring, not an oversight.
+
 ## What's open
 
 Corrections to earlier versions of this list are noted where they apply, since
