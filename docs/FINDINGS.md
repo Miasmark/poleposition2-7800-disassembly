@@ -2943,6 +2943,34 @@ a logic bug in whichever half you did not write most recently.
   1's equivalent.
 * No collision, and no interaction between the two cars.
 
+## A shared divider, and the bands that turned out not to be clipped
+
+The divider now belongs to both players: its top row is player 2's, matching
+the viewport above it, and the lower two rows stay player 1's, matching the
+viewport below. Player 2's row is a display list of its own at `$2770`, seeded
+at boot from the row it replaces so it draws legibly from the first frame.
+Both the boot template and the triplet `HudReassert` rewrites point at it, so
+it survives the start light and the per-lap banner.
+
+What it does not yet have is player 2's *content*. The HUD rows are five-byte
+extended headers pointing at character buffers in RAM -- the top row is two
+objects, `$1F8A` at x `$0C` and `$1F9D` at x `$68`. Saying something about
+player 2 means writing those character codes, which needs the game's character
+encoding established first: which code is which digit, and where the game
+writes its own. That is a reading job rather than a building one.
+
+### The bands are not clipped
+
+Measured rather than assumed: both views render all twelve bands at full
+six-line height. The top runs y=11 to 82 and the bottom y=136 to 207, 72 rows
+each, with band boundaries landing exactly every six rows.
+
+What happens at the nearest band is horizontal, not vertical. Its road spans
+96..319 in the top view and 0..227 in the bottom -- it is simply wider than the
+320-pixel line at that depth and runs off both sides. The total display is 249
+lines, which is what stock uses, so the bottom view ends exactly where stock's
+road ends and any remaining loss is overscan that affects stock equally.
+
 ## What's open
 
 Corrections to earlier versions of this list are noted where they apply, since
