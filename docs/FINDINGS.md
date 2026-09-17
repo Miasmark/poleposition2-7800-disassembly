@@ -2766,6 +2766,51 @@ RAM aliasing is ruled out: writing distinct bytes to `$2500`, `$2600`, `$2700`,
 `$2730`, `$2750`, `$2760`, `$27F0`, `$2000` and `$2400` returns every one
 intact. Moving player 2's state from `$2730` to `$2750` changed nothing.
 
+## Correction: sub_D8AC is not the main loop
+
+It has been called that here for several turns. It is not. A counter
+incremented at the top of a routine hooked into it read **01 at frame 900 and
+still 01 at frame 1500** -- it runs once, at race start.
+
+That single fact explains everything that was wrong with player 2's walk.
+Its track position was copied from player 1's once, at segment 0, and frozen
+there. So the walk integrated zero curvature from a straight starting segment,
+the steering appeared dead, and `P2_BANDX` came back holding exactly the
+per-band base values -- which is precisely what the walk writes when the
+position accumulator is zero. Three symptoms, one cause, and the cause was an
+assumption about where per-frame work happens rather than anything in the new
+code.
+
+The game's per-frame work lives in the NMI and display-interrupt chain. That
+is worth stating plainly because it reframes every cost measured in this
+document: they have all been *interrupt* time, which is why the budget has
+felt so unreasonably tight against a frame of some 29,000 cycles.
+
+Moving the call to `RoadTail` -- inside `DLI_ED4F`, and genuinely per frame --
+stopped the game outright: player 1's own `RowCurveOffset` came back all
+zeros. About 3,400 cycles is far beyond what that handler can hold.
+
+So player 2's walk has no home. It needs somewhere that runs every frame and
+can afford roughly 30 scanlines, and no such place has been found yet. Two
+directions worth trying, in order:
+
+* **Split it across frames.** Four or five samples per frame, completing every
+  third frame. Player 2's camera would lag through curves, but the per-frame
+  cost falls to something an interrupt can absorb.
+* **Find the game's own per-frame physics and hook beside it**, instead of
+  picking a routine that looks like a loop. Doing the latter is what cost this
+  turn.
+
+### Player 2's controller is free
+
+Established while looking for somewhere to put the input: the game never reads
+it. Every `SWCHA` read masks `$F0`, `$20` or `$10` -- all high nibble, player
+1's stick -- and `INPT2`, `INPT3` and `INPT5` appear nowhere in the ROM.
+Player 2's directions sit in SWCHA's low nibble, active low: bit 3 right, bit
+2 left, bit 1 down, bit 0 up. Player 1 steers on `INPT0`/`INPT1` with `INPT4`
+as trigger, so the identical shape of input is available for player 2 when its
+steering wants to be analogue rather than a stick.
+
 ## What's open
 
 Corrections to earlier versions of this list are noted where they apply, since
