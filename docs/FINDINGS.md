@@ -2377,7 +2377,43 @@ that zone, so the strip draws in whatever the previous frame left behind. The
 fix is to move that palette work earlier -- the vblank handler is the obvious
 home -- and is not done.
 
-## The wraparound: hiding a road half has to shrink it, not just move it
+## Correction: the "wraparound fix" below is wrong, and so were two detectors
+
+Live testing killed it. The hide both **eats visible road on ordinary frames**
+and **does not fix the wraparound**. The build is reverted; what follows is
+kept because the reasoning failure is the useful part.
+
+Two detectors said it worked, and both were measuring the wrong shape:
+
+* The first only flagged rows where road touched `x=0`. The artifact is a
+  *detached* chunk that can start a few pixels in, so it scored 0 of 8 while
+  the artifact was plainly on screen.
+* The replacement looked for two road runs with grass between on one row. That
+  misses it too: at the near rows the true road is off screen entirely, so the
+  wrapped fragment is the ONLY road run on that line.
+
+A third approach -- comparing the coarse build against an injection-kept build
+frame for frame -- was invalid, because the two builds desync and the
+"mismatch" was mostly different game state rather than different rendering.
+
+What a live screenshot actually shows: the car far off the road with no road
+beneath it, the true road as a chunk in the FAR rows, and a fragment at the
+far RIGHT edge on NEAR rows where the road has gone off screen to the left.
+
+That reading changes the diagnosis. For x in 160..255 the game is using
+**negative positioning** -- the object is meant to wrap in from the left edge,
+and MARIA's 255/0 wrap is the mechanism it relies on, not a bug. Hiding
+everything at x >= 160 therefore deletes road that is supposed to be drawn,
+which is exactly the road-eating. And the stray fragment is not a clamp
+failure at all: it is one x per band being correct for one scanline out of six.
+
+If that is right, only finer x granularity on the near bands fixes it -- which
+costs the objects again, because finer zones need their own display lists.
+Unverified either way: no frame in run-01 or run-02 reproduces the situation
+(searched for speed 140-152 with |PlayerX| >= 55; no matches), so there is
+nothing to test a fix against yet.
+
+## Superseded: hiding a road half has to shrink it, not just move it
 
 With the injection gone and both views coarse, sharp-curve off-road frames
 showed the road reappearing at the opposite screen edge. It was tempting to
