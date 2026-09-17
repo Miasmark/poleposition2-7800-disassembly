@@ -2592,7 +2592,51 @@ One more difference from the stock loop: the segment advance becomes a loop
 rather than a single test, because six rows of distance can cross more than one
 track segment.
 
-## Why player 1 cannot share the coarse walk
+## Measured: interpolation is accurate enough, and both views can share the walk
+
+The section below says player 1 cannot share the coarse walk, because object
+placement reads `RowCurveOffset` at arbitrary depths. That stands as a fact
+about the code -- but the conclusion drawn from it was too cautious. The
+question is not whether thirteen samples can be indexed at row 37; it is how
+wrong reconstructing row 37 from them actually is. That is measurable.
+
+Dumping the live 78-byte array across six frames, including sharp curves and
+far-off-centre ones, and comparing each row against linear interpolation
+between the samples:
+
+| samples | ROM | mean error | worst | worst in near rows 60-77 |
+|---------|-----|------------|-------|--------------------------|
+| 13 band rows           | 39 B | 0.51 | 9 | 4 |
+| + row 0                | 42 B | 0.38 | 4 | 4 |
+| **+ rows 0 and 77**    | 45 B | **0.34** | **2** | **1** |
+| + more near rows       | 51 B | 0.34 | 2 | 1 |
+
+Both **edges** are what matter, not more samples in the middle: the 13-row
+worst case of 9 was at row 0, where interpolation had nothing to its outside
+and was clamping. Adding the two ends takes the worst case to 2 units, and 1
+unit through the near rows where collisions are decided -- on a road some 150
+units wide at the nearest band. Adding further samples buys nothing.
+
+So a fifteen-sample walk serves object placement too, and **both views can use
+it**, which is the requirement that matters: the two viewports have to behave
+the same, and they cannot if one is walking 78 rows and the other 15.
+
+    SampleRow   00 03 09 0F 15 1B 21 27 2D 33 39 3F 45 4B 4D
+    SampleZLo   14 6A 7F BC 1D A0 37 E0 9B 66 3D 20 0C 02 00
+    SampleZHi   05 04 03 02 02 01 01 00 00 00 00 00 00 00 00
+    SampleShift 03 03 03 03 02 02 01 01 01 01 01 01 00 00 00
+
+60 bytes of ROM. Fifteen iterations rather than 78 is ~450 cycles against
+~2,340 -- about 3 scanlines against 20. **Both** views then cost ~7 scanlines
+where player 1 alone costs 20 today: a net saving of ~12 scanlines *and* a
+second camera.
+
+A level-of-detail scheme -- coarse placement far out, exact when an object
+comes close enough to collide -- was the plan before this was measured, and it
+is not needed. The near rows are the accurate ones already. Worth recording as
+a case where measuring first removed the complicated half of the design.
+
+## Why player 1 cannot share the coarse walk -- as originally reasoned
 
 The obvious follow-on to the 13-step table is to give player 1 the same
 treatment and bank the saving twice: player 1's view is coarse too, one x per
