@@ -2860,6 +2860,44 @@ call `P2Frame` from `RoadTail` with the walk stubbed to an immediate `RTS`. If
 that runs, the problem is the walk's cost or contents; if it dies, the problem
 is calling anything from that point at all.
 
+## Player 2's track walk, split across frames
+
+It was never the call site and never the contents. Bisected against the
+profiler's liveness check:
+
+| test | result |
+|------|--------|
+| `RoadTail` calls `P2Frame`, which returns immediately | runs |
+| `P2Frame` runs steering and follow, walk stubbed | runs |
+| full walk, 1 sample | runs |
+| 2, 3, 4, 5, 6, 8, 10, 11, 12 samples | runs |
+| **13 samples** | **dead** |
+
+Cost, and the ceiling is twelve where thirteen are needed. One sample short --
+which is why every earlier attempt died without a hint as to why.
+
+So the walk runs in halves: samples 0-6 on one frame, 7-12 on the next,
+completing every second frame. Nothing needs saving to make that work; the
+accumulators -- distance, segment index, velocity, position -- already live in
+RAM, so the second half simply carries on from where the first stopped. Only
+the index and the stopping point differ between the two.
+
+### The bug the split introduced
+
+The parity byte is read at the top of the routine and toggled further down, so
+the "should I initialise" test was reading the value *before* the flip. The two
+halves were therefore computed from different starting states and did not join.
+
+It showed as a clean step in the position accumulator at exactly the boundary
+band -- `...10 0C | 0F 0D...` where the sequence should have been smooth. That
+is the useful part: a discontinuity precisely at a split boundary is a
+statement about the split, not about the arithmetic either side of it.
+Inverted, the accumulator reads `21 1D 18 14 10 0C 09 06 04 02 01 00 00` --
+continuous, and decreasing from far to near as the geometry requires.
+
+Player 2's viewport is now drawn from its own track walk, its own lateral
+camera, and its own display lists, every frame.
+
 ## What's open
 
 Corrections to earlier versions of this list are noted where they apply, since
