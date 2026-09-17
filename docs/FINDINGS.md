@@ -2377,6 +2377,48 @@ that zone, so the strip draws in whatever the previous frame left behind. The
 fix is to move that palette work earlier -- the vblank handler is the obvious
 home -- and is not done.
 
+## The wraparound: hiding a road half has to shrink it, not just move it
+
+With the injection gone and both views coarse, sharp-curve off-road frames
+showed the road reappearing at the opposite screen edge. It was tempting to
+read that as a new bug. It was not: probed over eight frames chosen for
+|curve| >= 6, |PlayerX| >= 40 and speed > 60, **pp2-full13's mirror already
+wrapped 4 of 8** while its own road view wrapped 0 of 8. The per-scanline
+injection had been suppressing it in the bottom half all along; making the
+views identical made the existing mirror bug symmetrical.
+
+The mechanism, once the 7800 software guide settled that MARIA wraps at the
+255/0 boundary rather than at the line width:
+
+HPOS is eight bits and the line is 160 wide, so the game hides a road half
+that has curved off screen by parking it above 160. That is safe only while
+`x + width` stays under 256. The near bands' road objects are wide -- up to 25
+bytes -- so a half parked at, say, 206 runs past 255 and comes back round at
+the left edge. Per-scanline injection never held a value there long enough to
+show. One sample per band does.
+
+**The fix has to shrink the object as well as move it.** When x is at or above
+160 the object is meant to be invisible, so its width goes to the minimum (low
+five bits set, palette bits kept) and x to 161 -- the value the game itself
+uses for unused slots. It then ends at 165, clear of the boundary.
+
+A wrong turn worth keeping: moving x alone, without touching width, changed
+nothing at all -- still 4 of 8. The object was still wide enough to reach past
+255 from its new home. Checkpoint 10 keeps that version so the idea is not
+retried.
+
+Reading the result also needed care. The hide drops about 15% of the road
+pixels on ordinary frames, which looks like it is eating legitimate road until
+you read a row: without the hide, row +68 is `road:0-109  kerb:110-123
+road:124-275  kerb:276-295  grass`. That first stretch is road *outside* the
+left kerb -- the wrapped copy. The hide replaces it with grass. The pixels it
+removes are the artifact.
+
+With it in place: wrap 0 of 8, the two views still identical, and the build
+matches stock at run-01 f8000 and f11000 and at run-02 f1500, f2600, f8000 and
+f11000 -- so the whole coarse rewrite, injection bypass included, now comes
+back recording-clean rather than merely healthy.
+
 ## What's open
 
 Corrections to earlier versions of this list are noted where they apply, since
