@@ -2675,6 +2675,52 @@ And a consequence worth noting for later: when player 2 does get objects, it
 needs a full-resolution offset array of its own, and this saving disappears
 with it.
 
+## Player 2's track walk: built, correct, and over budget
+
+The 13-sample walk is implemented -- tables lifted from the stock ROM at the
+rows player 2's bands sample, segment advance as a loop since six rows of
+distance can cross more than one segment, and the integration done as six real
+single-row steps rather than a closed form so there is no approximation to
+justify. It follows player 1's track position, so the two views must agree,
+which is the check the walk exists to pass.
+
+It does not fit. Shortening the walk separates cost from correctness cleanly:
+
+| samples | result |
+|---------|--------|
+| 1, 3    | runs normally |
+| 6, 9, 13| does not run |
+
+Each sample is roughly 250-270 cycles, mostly the six integrations at ~30
+each, so thirteen is about 3,400 cycles -- some 30 scanlines against the ~10
+available.
+
+### An estimate that was wrong for several turns
+
+The engine's own per-row body is about **85** cycles, not the 30 assumed
+earlier: a segment compare, a curvature fetch with sign extension and a
+variable shift, four 16-bit adds, a seed add, two table lookups and two
+stores. Its 78-row walk is therefore nearer **6,600 cycles (~58 scanlines)**
+than the 2,340 quoted before.
+
+That makes converting player 1 a much bigger prize than advertised -- and
+changes the order of work. It is not a follow-up optimisation; it is the thing
+that has to happen first, because it is what pays for player 2:
+
+    player 1 today             ~6,600 cycles    78 rows, full array
+    player 1 on a 13-walk      ~3,400           plus an interpolation fill
+    player 2 on a 13-walk      ~3,400
+    ----------------------------------------------------------------
+    both                       ~6,800 + fill    against 6,600 today
+
+Roughly break-even before the fill, which is too tight. So the closed-form step
+is worth having after all: `v += 6c` and `p += 6v + 21c` replaces ~180 cycles
+of integration per sample with about 100, taking each walk to ~2,200 and both
+to ~4,400 -- comfortably under what player 1 costs alone today, with room for
+the fill. It is exact for constant curvature across the step, which is the
+normal case; the literal six steps only matter when a segment boundary falls
+inside a step.
+
 ## What's open
 
 Corrections to earlier versions of this list are noted where they apply, since
