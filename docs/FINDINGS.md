@@ -2497,6 +2497,45 @@ unaffected -- every state field still moves and the clock still shows its
 usual 101 distinct values. The same caveat applies to anything added from here
 until the second camera exists, since each addition changes boot work again.
 
+## Player 2's camera is derived, not recomputed
+
+Two cameras looked like it needed the engine's geometry run twice. It does not
+fit. The pipeline is `sub_E9DA` seeding an accumulator from `PlayerX`, then a
+78-iteration loop building `RowCurveXStagedSrc` -- two passes of ~78
+iterations, about **38 scanlines**, against roughly **10** of headroom. Adding
+cartridge RAM does not help: the constraint here is cycles, not memory.
+
+It does not need recomputing. A lateral move changes exactly one thing in that
+pipeline -- the seed -- and the seed enters as a constant step accumulated once
+per row. That step is `dat_EA41` indexed by the offset, and the table is a
+straight ramp of about 3.55 per unit whose high byte stays zero to index 72. So
+the shift at row i is `i * step / 256`, and a band sampling row `6b+3` needs
+one 16-bit add:
+
+    step  = dat_EA41[|offset|]
+    step3 = step * 3            the first band samples row 9
+    step6 = step * 6            each band is six rows further on
+    acc   = step3 ; per band: acc += step6 ; shift = acc >> 8
+
+Negative offsets negate `step3`/`step6` once, so the per-band path is a plain
+add either way. **About 360 cycles for the whole camera**, against ~38
+scanlines to recompute it.
+
+Verified by driving the offset at `$2702`: at 0 player 2 reproduces player 1's
+road exactly; at +16 the road shifts 8 pixels at the far band, ~20 mid and
+~20-30 near; at -16 it mirrors. The growth with proximity is the point -- a
+flat slide would be the wrong shape.
+
+### What full two-player still needs
+
+* **An independent track position.** The lateral camera still shares player 1's
+  point on the track. A second Z needs curve data for a different position,
+  and that is the part that genuinely cannot be derived from player 1's arrays.
+* **Controller 2**, which `$2702` stands in for at the moment.
+* **Player 2's car and traffic.** Its viewport is road-only, and objects need
+  positions computed for its own camera.
+* **Player 2's HUD**, currently player 1's.
+
 ## What's open
 
 Corrections to earlier versions of this list are noted where they apply, since
