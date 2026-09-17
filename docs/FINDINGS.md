@@ -2721,6 +2721,51 @@ the fill. It is exact for constant curvature across the step, which is the
 normal case; the literal six steps only matter when a segment boundary falls
 inside a step.
 
+## Which budget? The vblank deadline is not the frame budget
+
+Player 2's 13-sample walk would not run: six samples was already too many. The
+engine's own walk was then stripped of ~1,900 cycles of work that is dead in
+this build, and it made **no difference at all** -- three samples still ran,
+six still did not.
+
+The reason is that the walk was being called from `MirrorStage`, which runs in
+the vertical-blank handler. Vblank has a hard deadline of its own, and the
+cycles freed were main-loop cycles. Moving the call to rom:D8CF -- in
+`sub_D8AC`, after `sub_E93D` has run player 1's walk and well before the vblank
+wait -- ran all thirteen samples immediately.
+
+Worth stating plainly because it invalidates the way cost has been discussed
+for several turns here: "about 10 scanlines of headroom" was never one number.
+There is main-loop time and there is interrupt time, and work has to be costed
+against the one it will actually spend.
+
+### The engine's walk tail is dead weight here
+
+rom:E9BE-E9D8 computes two things this build never reads. `RowCurveOffsetAlt`
+has **zero** readers anywhere in the ROM. `RowCurveXStagedSrc` feeds only
+`StageRowCurveForDLI`'s copy into `RowCurveXStaged`, which nothing reads now
+that the injection is bypassed.
+
+Stripped to `DEX / BPL / RTS`. The thirteen values that *are* read are
+recomputed in `MirrorStage` as `RowCurveOffset[row]` plus a per-band constant
+-- `dat_EBA4[dat_BB7E[row]]`, fixed per row, so it need not be looked up at
+runtime. About 1,900 cycles a frame with no loss of accuracy, and it is the
+same sum the engine was computing at rom:E9D0 anyway.
+
+### Open: player 2's track state is not being copied
+
+`P2Main` is verified in the built ROM -- rom:D8CF jumps to it, and its bytes
+are the three copies followed by the call and the tail jump. `P2Geom`
+demonstrably runs, because `P2_BANDX` comes back holding exactly the per-band
+base values, which is what it writes when the position accumulator is zero.
+But the segment byte reads 00 at end of frame while player 1's reads 09, so the
+walk is integrating zero curvature from segment zero -- which is precisely the
+output observed.
+
+RAM aliasing is ruled out: writing distinct bytes to `$2500`, `$2600`, `$2700`,
+`$2730`, `$2750`, `$2760`, `$27F0`, `$2000` and `$2400` returns every one
+intact. Moving player 2's state from `$2730` to `$2750` changed nothing.
+
 ## What's open
 
 Corrections to earlier versions of this list are noted where they apply, since
