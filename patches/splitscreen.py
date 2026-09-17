@@ -700,6 +700,16 @@ def hud_reassert_src(addr):
         [] if os.getenv("PP2_KEEP_INJECTION") else road_stage_src()
     ) + p2_stage_src() + [
         "    RTS",
+        "WrapSlot0:",
+        "    CMP #$A0",
+        "    BCC WrapKeep",
+        "    CMP #$FD",
+        "    BCS WrapKeep",
+        "    LDA #$FC",          # $FC - $3C = $C0: parked at 192..255, no wrap
+        "WrapKeep:",
+        "    SEC",
+        "    SBC #$3C",
+        "    RTS",
         "DividerPaletteOnly:",
         "    STA $00FF",
         "    JMP PaletteRestore",
@@ -880,7 +890,7 @@ def road_stage_src():
             #   slot0 x == slot1 x - $3C                          (exact, never
             #              varies -- slot0 is a fixed-width piece a constant
             #              distance to the left, not a second scaled half)
-            #   slot0 W == (slot1 W & $20) | $10                  (a fixed 16
+            #   slot0 W == (slot1 W & $E0) | $10                  (a fixed 16
             #              byte object that only inherits the stripe palette)
             #
             # RowCurveYStaged ($1B4E, hence $1B7E at the near rows) is filled
@@ -888,11 +898,12 @@ def road_stage_src():
             # still read straight out of it.
             n = i - NEAR_FIRST_ROW
             lines += ["    LDA $%04X" % (NEAR_SLOT1_W + n), "    STA $%04X" % (band + 5),
-                      "    AND #$20", "    ORA #$10", "    STA $%04X" % (band + 1),
+                      "    AND #$E0", "    ORA #$10", "    STA $%04X" % (band + 1),
                       "    LDA $%04X" % (ROW_CURVE_OFFSET + i),
                       "    CLC", "    ADC #$%02X" % band_base(i),
-                      "    STA $%04X" % (band + 7),
-                      "    SEC", "    SBC #$3C", "    STA $%04X" % (band + 3)]
+                      "    STA $%04X" % (band + 7)]
+            lines += wrap_guard()
+            lines += ["    STA $%04X" % (band + 3)]
     return lines
 
 
@@ -912,6 +923,38 @@ def _unrolled_mirror_stage():
         lines += ["    LDA $%04X" % (ROW_CURVE_Y + i), "    STA $%04X" % (a + 1),
                   "    LDA $%04X" % (ROW_CURVE_X + i), "    STA $%04X" % (a + 3)]
     return lines
+
+
+
+# An 8-bit HPOS cannot express a negative position. MARIA renders x in
+# $A0..$FF correctly as a negative offset, because the head lands past column
+# 159 (invisible) and only the part that runs past 255 wraps back into 0..,
+# which is exactly where a negative-positioned object belongs. But once the
+# intended position is far enough left that its 8-bit value drops back into
+# $00..$9F, MARIA draws it as a POSITIVE position and the object reappears at
+# the right-hand edge as a detached slab of road.
+#
+# slot0 is the half this happens to, because it sits a fixed $3C to the left of
+# slot1. With slot1 at $C7 (-57) slot0 is at -117, whose byte is $8B = 139, and
+# 139 is a perfectly ordinary on-screen column. Measured against the stock ROM
+# at a comparable lateral offset, the road pixel runs per scanline were
+#     stock  0-129                (one run)
+#     ours   0-131  and  278-319  (two runs; 278-319 is 139..159 in MARIA units)
+#
+# slot0 is 16 bytes = 64 pixels, so it is entirely off-screen left exactly when
+# slot1 is in $A0..$FC, and parking it at $C0 hides it with no wrap of its own
+# ($C0 + 64 = 256, so its span ends at 255). $FC is the cutoff because at
+# slot1 >= $FD a few of slot0's pixels legitimately reach column 0.
+def wrap_guard():
+    """Turn slot1's x, in A, into slot0's x, parking it off-screen when its true
+    position is too far left to be expressed in eight bits.
+
+    Inline this and it is ten extra bytes a band, which is a hundred bytes the
+    blob does not have -- it overran the free $FF run at $F3FF-$FF7E. As a call
+    it costs JSR + STA, exactly what SEC / SBC / STA cost before the guard
+    existed, so the blob does not grow at all. The price is 12 cycles a band,
+    about one scanline across all ten."""
+    return ["    JSR WrapSlot0"]
 
 
 def band_base(row):
@@ -1308,7 +1351,7 @@ def p2_stage_src():
             S = P2_SCRATCH
             lines += [
                 "    LDA $%04X" % (NEAR_SLOT1_W + n), "    STA $%04X" % (dl + 5),
-                "    AND #$20", "    ORA #$10", "    STA $%04X" % (dl + 1),
+                "    AND #$E0", "    ORA #$10", "    STA $%04X" % (dl + 1),
                 "    CLC",
                 "    LDA $%04X" % (S + 5), "    ADC $%04X" % (S + 3),
                 "    STA $%04X" % (S + 5),
@@ -1319,8 +1362,9 @@ def p2_stage_src():
             ]
             if P2_X_OFFSET:
                 lines += ["    CLC", "    ADC #$%02X" % (P2_X_OFFSET & 0xFF)]
-            lines += ["    STA $%04X" % (dl + 7),
-                      "    SEC", "    SBC #$3C", "    STA $%04X" % (dl + 3)]
+            lines += ["    STA $%04X" % (dl + 7)]
+            lines += wrap_guard()
+            lines += ["    STA $%04X" % (dl + 3)]
     return lines
 
 

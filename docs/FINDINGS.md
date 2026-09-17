@@ -3187,3 +3187,77 @@ run once per slot as `emit()` did.
 Lesson worth keeping: this project has **two** road-staging paths, and a fix to
 the shared geometry has to be applied to both. Verifying only player 1's DL
 addresses ($244C..$24D4) says nothing about player 2's ($2646..$266E).
+
+## The rumble-strip wraparound: an 8-bit HPOS cannot hold a negative position
+
+**Confirmed live, and fixed.** The user reported that the wraparound "starts when
+the player car starts hitting the rumble strips" -- that is, at large lateral
+offsets. Reproduced at f2079 of run-02 (PlayerX = 104) and measured objectively
+by counting road-coloured pixel runs per scanline:
+
+    stock, PlayerX = 92    0-129                 one run
+    ours,  PlayerX = 104   0-131  and  278-319   two runs
+
+The second run is columns 139..159 in MARIA units, which is exactly where
+`near band 12 slot0` sat. So this is ours, not an inherited artifact.
+
+### Mechanism
+
+MARIA's HPOS is eight bits against a 160-wide line, and wraps at the 255/0
+boundary. That makes x in `$A0..$FF` render *correctly* as a negative position:
+the head lands past column 159 and is invisible, and only the part that runs
+past 255 comes back at 0.., which is precisely where a negative-positioned
+object belongs. The road relies on this constantly -- at f2079 every band had x
+between 199 and 250.
+
+The failure is when the intended position is so far left that its byte drops
+back into `$00..$9F`. With slot1 at `$C7` (= -57) slot0 is at -117, whose byte is
+`$8B` = 139 -- an ordinary on-screen column. MARIA draws it there, as a detached
+slab of road at the right-hand edge.
+
+slot0 is the half this happens to because it sits a fixed `$3C` to the left of
+slot1, so it crosses the boundary first. It is 16 bytes = 64 pixels wide, so it
+is entirely off-screen exactly when slot1 is in `$A0..$FC`, and parking it at
+`$C0` hides it with no wrap of its own (`$C0` + 64 = 256, so its span ends at
+255). `$FC` is the correct cutoff: at slot1 >= `$FD` a few of slot0's pixels
+legitimately reach column 0, and those still render correctly unaided.
+
+This is why the earlier clamp (checkpoint 10) failed. It clamped x directly and
+ate visible road on ordinary frames, because on ordinary frames the large x
+values are *correct*. The fix has to distinguish "large x meaning negative,
+which works" from "small x meaning very negative, which does not", and only the
+second is repairable.
+
+### Also corrected here
+
+`slot0 W == (slot1 W & $20) | $10` from checkpoints 23/24 was wrong: it keeps
+only one of the three palette bits. Over 7300 frames x 30 rows on the stock ROM
+it fails 201 times, because the road uses palette 7 as well as 0 and 1. The
+correct mask is `& $E0`, which holds everywhere.
+
+And `slot0 x == slot1 x - $3C` is no longer just a measurement. `dat_EBA4` and
+`dat_EBA9` are one contiguous table that the disassembler split in two:
+
+    EBA4: 44 40 38 30 28 24 1C 14 48 44 3C 34 30 0C 08 00 F8 F4
+    dat_EBA4[8..12] = 48 44 3C 34 30     slot1's perspective base
+    dat_EBA9[8..12] = 0C 08 00 F8 F4     slot0's
+
+Every pair differs by exactly `$3C`, which is why the constant is exact.
+
+### Cost
+
+Inline, the guard was 10 bytes a band over 10 bands -- 100 bytes the blob does
+not have, and it overran the free `$FF` run at `$F3FF-$FF7E`. As a `JSR` it costs
+`JSR` + `STA`, exactly what `SEC` / `SBC` / `STA` cost before, so the blob does
+not grow. The price is 12 cycles a band, about one scanline over all ten.
+
+### Not fixed: the opposite edge
+
+The mirror-image case is an object whose x is on-screen but whose span runs past
+255, spilling its tail onto the far edge. A detector over run-01 and run-02
+found **zero** occurrences in either view -- but both recordings keep the car to
+the right of centre, so that case is unexercised rather than shown absent. It
+would need x in roughly 133..159 on a 29-31 byte band, which is what a hard left
+excursion should produce. Left unfixed pending a case that actually reproduces
+it; clamping the width would be the repair, since only invisible and spurious
+pixels lie beyond 256.
