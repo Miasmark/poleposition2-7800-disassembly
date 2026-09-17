@@ -3099,3 +3099,74 @@ reintroduced:
   skidding, and the run ends when the clock runs out rather than at a finish
   line. It exercises every hazard the manual names, which is why most of the
   live findings here cite it.
+
+## The near bands' "second array" does not exist ($1B30 / $1B7E)
+
+**Confirmed live.** The near-row injection (rom:EE73, scanline >= 48) writes four
+bytes per row, and the two it takes from `$1B7E+n` and `$1B30+n` were treated
+throughout this project as a *separate pair of near-band arrays*. They are not.
+
+    $1B00 = RowCurveXStaged (78 bytes, $1B00-$1B4D)   ->  $1B30 = +48
+    $1B4E = RowCurveYStaged (78 bytes, $1B4E-$1B9B)   ->  $1B7E = +48
+
+and `n = row - 48`, so `$1B30+n` is simply `RowCurveXStaged[row]` and `$1B7E+n`
+is `RowCurveYStaged[row]`. The near bands' right half is positioned by exactly
+the same per-row curve array the far bands use. The left half comes from the
+zero-page pair `$007E`/`$0060`, which `StageRowCurveForDLI` copies out of
+`ram_1C38`.
+
+What gave this away: grepping the whole disassembly for writers of `$1B30` and
+`$1B7E` returned *nothing*, direct or indexed. The only indexed stores anywhere
+near them use base `ram_1BEA`/`ram_1BEB` (rom:E360, E5FC, E60B), which start
+*above* `$1B30` and so can never reach it. An array with no writer is not an
+array.
+
+### Why this broke the split-screen build
+
+The walk-tail strip at rom:E9BE stopped `RowCurveXStagedSrc` being written, so
+`StageRowCurveForDLI` copies nothing into `RowCurveXStaged` *or* into its
+zero-page mirror `$0060`. The far bands were given a replacement for this
+(`RowCurveOffset + band_base`); the near bands never were. Both of their halves
+therefore read zero, landed on the same x, and the road collapsed -- which the
+user saw as "the bottom view's nearest bands look stuck in a left turn" and
+"the top view's left half is outright missing in the nearest bands".
+
+### The relationship, measured off the stock ROM
+
+Dumping `$0060[0..29]`, `$1B00[48..77]`, `$007E[0..29]`, `$1B4E[48..77]` and
+`RowCurveOffset[48..77]` from the *unpatched* ROM under run-02, at three frames:
+
+    slot1 x - slot0 x == $3C on all 30 rows at every frame, without exception
+    slot1 x == RowCurveOffset[row] + base, base flat within each 6-row band
+               and equal to $48 $44 $3C $34 $30 for bands 8..12
+    slot0 W == (slot1 W & $20) | $10
+
+The base table is not new: `band_base(row)` (`dat_EBA4[dat_BB7E[row]]`) already
+returns those five values. slot0 is a fixed-width 16-byte object sitting a
+constant $3C to the left, not a second perspective-scaled half -- which is why
+every attempt to *derive* the gap from the width failed.
+
+So each near band is rebuilt from two arrays that do survive the strip:
+
+    LDA $1B7E+n   STA slot1W          ; RowCurveYStaged, filled by sub_E8AC
+    AND #$20  ORA #$10  STA slot0W
+    LDA RowCurveOffset+i  CLC  ADC #base  STA slot1x
+    SEC  SBC #$3C  STA slot0x
+
+### Corrections this supersedes
+
+* **Wrong:** "`$1B30` is the near bands' slot1 x array." It is `RowCurveXStaged`
+  at the near rows.
+* **Wrong:** "only slot1 is broken; `$0060` is intact." `$0060` is the zero-page
+  copy of the same dead array and reads zero as well. Checking only the *gap*
+  hid this, because with both halves zero the gap is a plausible-looking number.
+* **Wrong (checkpoint 22):** deriving the gap from the width (`bytes*4 - 4`) or
+  pinning it to a constant added to a broken slot0. The constant $3C was right;
+  adding it to zero was not.
+
+### Method note
+
+Cross-build frame numbers are still not comparable -- builds desync, so the
+stock ROM at f1500 is not this build's f1500. The stock dump was used only for
+the *relationships between arrays within one frame*, which are frame-invariant,
+never to compare absolute values against the patched build.

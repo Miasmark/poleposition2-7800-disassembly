@@ -289,8 +289,212 @@ DLI_ZONES = {0, 7, 14, 17, 19}
 # low byte of the `STA ram_2224,X` operand that aims them. Zone 15 = $2200 +
 # 15*3 = $222D. The three zones from here are the divider, and must stay
 # clear of DLI_ZONES above.
-DIVIDER_ZONE = 15
-DIVIDER_ADDR = 0x2200 + DIVIDER_ZONE * 3
+# Where MARIA reads the zone list from. Stock builds it at $2200, immediately
+# below the results screen's own list at $226B, which leaves room for exactly
+# the 35 zones stock uses and no more. $2500-$27FF is 768 bytes with no
+# reference anywhere in the disassembly -- verified by scanning for both
+# literal addresses and indexed bases -- and it sits clear of the last road
+# band's display list, which ends at $24FA. Moving the race list there is what
+# makes a finer-grained mirror possible: it needs far more than 35 zones.
+DLL_BASE = 0x2500
+
+# The mirror is drawn as thirty-six two-line zones rather than twelve six-line
+# ones, each with its own short display list, so its road edge steps every two
+# scanlines instead of every six. What pays for it: a band's display list is
+# nine four-byte object slots and eight of them are usually empty -- address
+# $0000 -- but MARIA fetches every one regardless. Pointing the mirror at a
+# short list of its own instead of at the road's costs ~24 scanlines less DMA,
+# measured (docs/FINDINGS.md, "Paying for the mirror with slots it never used").
+FINE_LINES = int(os.environ.get("PP2_FINE_LINES", "2"))   # scanlines per mirror zone
+# Bands 1..FINE_BAND_LAST are drawn with fine zones; the rest keep one
+# six-line zone each on the road's own list so their objects survive.
+# How many of the near bands keep their own short, road-only display lists.
+# Zero by default, and that is the point: a band on its own list draws the
+# road and nothing else, so cars and signs disappear at that range. With the
+# injection gone the road is stepped either way, so the fine zones were buying
+# smoothness that is no longer on offer while costing every distant object.
+# All twelve bands now point at the road's real lists, in both views.
+FINE_BAND_LAST = int(os.environ.get("PP2_FINE_LAST", "0"))
+SUBS_PER_BAND = 6 // FINE_LINES
+FINE_ZONES = FINE_BAND_LAST * SUBS_PER_BAND
+MIRROR_ZONES = FINE_ZONES + (12 - FINE_BAND_LAST)
+# Both views are built from the same plan now, so the zone list is two of them
+# plus the fixed furniture: the top margin and gap, the carrier, three divider
+# rows, the horizon, the decor strip and two bottom margin zones.
+DLL_ZONES = MIRROR_ZONES * 2 + 10
+IDX8_SUB = int(os.environ.get("PP2_IDX8", str(5 * SUBS_PER_BAND)))
+MINI_DL_BASE = int(os.environ.get("PP2_MINI_BASE", "0x2600"), 16)
+MINI_DL_SIZE = 6
+
+# The blank zone index 9 lands on, between the mirror and the divider. Six
+# lines is the minimum that keeps the divider's early palette write off the
+# last mirror band; anything spare goes here as breathing room above the HUD.
+CARRIER_LINES = int(os.environ.get("PP2_CARRIER", "12"))
+
+# ---------------------------------------------------------------------------
+# Player 2's own viewport.
+#
+# Until now both views pointed at the same thirteen road display lists, so they
+# could not diverge however the zones were arranged -- a mirror by
+# construction. Player 2 gets its own lists here, driven by its own geometry,
+# which is what makes two cameras possible at all.
+#
+# Road surface only: ten bytes per band, the two road objects and an end
+# marker. Copying player 1's lists wholesale would carry the traffic across
+# too, but they are 468 bytes and rewriting them every frame costs ~3,700
+# cycles -- about 33 scanlines, more than the whole budget the injection
+# bypass freed. Objects in player 2's view need the engine to compute a second
+# set of positions for a second camera anyway; a copy of player 1's would be
+# in the wrong places by definition.
+P2_DL_BASE = 0x2600
+P2_DL_SIZE = 10
+P2_TEMPLATE = 0xFB80
+
+# A constant added to player 2's road x. Zero makes the two views identical
+# again, which is the regression check; anything else drives the viewports
+# apart and is how the split is demonstrated before there is a second camera.
+P2_X_OFFSET = int(os.environ.get("PP2_P2_OFFSET", "0"), 0)
+
+# Player 2's lateral position, as a signed offset from player 1's, and the
+# scratch the camera maths uses. Both live in the free RAM above the display
+# lists so no zero page has to be found for them.
+P2_LATERAL = 0x2702          # signed: how far player 2 sits from player 1
+P2_SCRATCH = 0x2703          # step, step3, step6, accumulator -- 7 bytes
+
+# Re-running the engine's geometry for a second camera is not affordable: the
+# pipeline is two 78-iteration loops, about 38 scanlines, against roughly 10
+# of headroom. It does not have to be re-run. The only thing a lateral move
+# changes is the seed in sub_E9DA, and that seed enters as a constant step
+# accumulated once per row -- dat_EA41 indexed by the offset, a straight ramp
+# of ~3.55 per unit whose high byte stays zero to index 72. So the shift at
+# row i is just i * step / 256, and a band sampling row 6b+3 can be walked
+# with one 16-bit add per band. ~360 cycles for the whole camera.
+LATERAL_RAMP = 0xEA41
+
+# Player 2's controller. The game never touches it: every SWCHA read masks
+# $F0, $20 or $10 -- all high nibble, player 1's stick -- and INPT2, INPT3 and
+# INPT5 appear nowhere in the ROM at all. So player 2's directions sit in
+# SWCHA's low nibble, unread, active low: bit 3 right, bit 2 left, bit 1 down,
+# bit 0 up. Player 1 steers on INPT0/INPT1 with INPT4 as trigger, so the same
+# shape of input is free for player 2 whenever its steering wants to be
+# analogue rather than a stick.
+SWCHA = 0x0280
+P2_RIGHT, P2_LEFT = 0x08, 0x04
+P2_LIMIT = 0x3C              # how far player 2's camera may lean either way
+
+# ---------------------------------------------------------------------------
+# Player 2's own position along the track.
+#
+# This is the half of a second camera that cannot be derived from player 1's
+# arrays, because it depends on the curvature of the track ahead of a
+# different point. The engine's own walk (AccumulateRowCurveOffset, rom:E981)
+# covers 78 rows; player 2's view samples 13 of them, one per band at row
+# 6b+3, so the walk runs 13 times with the integration stepped six rows at a
+# time instead of once.
+#
+# The stepping is done as six real single-row integrations rather than a
+# closed form. The accumulate is a DOUBLE integration -- curvature into a
+# velocity, velocity into a position -- so a six-row step is v += 6c and
+# p += 6v + 21c, the 21c being sum(1..6) for the intermediate rows. Doing the
+# six steps literally is both cheaper than those 16-bit constant multiplies
+# and exactly right, which removes the question of how much the coarse step
+# drifts from the engine's own answer.
+P2_TRACK_SEG = 0x2750        # player 2 track state; $2730 is NOT free -- see findings
+P2_TRACK_LO = 0x2751
+P2_TRACK_HI = 0x2752
+P2_WALK = 0x2720             # walk scratch: dist, seg, v, p, curvature
+P2_SPEED = 0x2753            # player 2's own speed along the track
+
+# The divider is shared: its top row belongs to player 2 and its lower rows to
+# player 1, matching the viewport above and below it. Player 2's row needs a
+# display list of its own rather than the game's, so it can be filled with
+# player 2's readouts. Seeded at boot from the row it replaces, so it renders
+# something recognisable before the content is rewritten.
+P2_HUD_DL = 0x2770           # player 2's HUD row: one 5-byte header + end
+P2_HUD_TEMPLATE = 0xFC00            # player 2's own speed along the track
+SWCHA = 0x0280               # player 2's stick: bit 3 right, 2 left, 1 down, 0 up
+P2_HALF = 0x2756             # which half of the walk this frame runs
+P2_END = 0x2757              # the sample index this half stops at
+P2_BANDX = 0x2760            # 13 bytes: the walk answer per band
+
+SEG_LEN_LO, SEG_LEN_HI, SEG_CURVE = 0x1800, 0x185A, 0x1900
+ROW_CURVE_OFFSET = 0x1A31    # the walk's own output, before the per-row base
+TRACK_LEN = 0x00C1
+BAND_SAMPLE = int(os.environ.get("PP2_SAMPLE", "3"))
+PLACEHOLDER_W = int(os.environ.get("PP2_PW", "0x1F"), 16)
+PLACEHOLDER_X = int(os.environ.get("PP2_PX", "0x80"), 16)
+DLL_TEMPLATE = 0xFB00          # boot image of the zone list, clear of the code blob
+MINI_TEMPLATE = 0xFDC0         # boot image of the mini display lists
+
+# Road band slot +00, the road surface itself: (address low, address high).
+# Confirmed static across frames -- the injection rewrites only this slot's
+# width and x, never its address -- which is what lets the mini lists bake
+# their addresses in at boot and do no per-frame address work at all.
+BAND_GFX = [(0x00, 0x80), (0x06, 0x80), (0x0E, 0x80), (0x00, 0xAA),
+            (0x10, 0xAA), (0xBC, 0x9E), (0xD2, 0x9E), (0x1A, 0x80),
+            (0x38, 0x80), (0x5A, 0x80), (0x7E, 0x80), (0xA6, 0x80),
+            (0xD2, 0x80)]
+
+# Slot +04. The five nearest bands draw the road with TWO objects, not one --
+# by then it is wider than a single object can cover -- and a mirror that
+# replicated only slot +00 lost the left half of its road from the eighth band
+# down, a hard seam across the view. Addresses are static like slot +00's;
+# width and x change per frame but NOT per scanline (the injection never
+# touches this slot), so all three sub-zones of a band share one value.
+# None is a band whose second slot stays empty.
+BAND_SLOT1 = [None] * 8 + [(0x47, 0x80), (0x69, 0x80), (0x8D, 0x80),
+                           (0xB5, 0x80), (0xE1, 0x80)]
+
+# The road is injected two different ways and the mirror has to follow both.
+# For the eight far bands, DLI_InjectRowCurveX writes a band's slot +00 width
+# and x from these two arrays, indexed by road scanline:
+ROW_CURVE_X = 0x1B00           # per-scanline road x
+ROW_CURVE_Y = 0x1B4E           # per-scanline road width
+
+# From band 8 down (road scanline 48, rom:EE73 onward) it switches to writing
+# FOUR bytes per scanline -- both road objects, width and x each -- from four
+# separate arrays indexed by (scanline - 48). Missing this is what put a seam
+# across the mirror at the eighth band: the near zones were being fed the far
+# bands' arrays, which is not where those bands' geometry lives at all.
+NEAR_FIRST_ROW = 48            # road scanline where the scheme changes
+NEAR_SLOT0_W = 0x007E          # zero page
+NEAR_SLOT0_X = 0x0060          # zero page
+# These two are not separate arrays at all: $1B30 is RowCurveXStaged + 48 and
+# $1B7E is RowCurveYStaged + 48 -- the ordinary per-row curve arrays, read at
+# the near rows. So the near bands' RIGHT half is positioned by exactly the
+# same values the far bands use, and only their LEFT half comes from the
+# zero-page pair.
+#
+# Which is why stripping the walk's tail at rom:E9BE broke them. That strip
+# stopped RowCurveXStagedSrc being written, so StageRowCurveForDLI now copies
+# nothing into RowCurveXStaged. The far bands were given a replacement --
+# RowCurveOffset plus the per-row base -- and the near bands' right half was
+# not, so it read zero and collapsed onto the left half.
+NEAR_SLOT1_W = 0x1B7E        # == RowCurveYStaged + 48, still filled by sub_E8AC
+NEAR_SLOT1_X = 0x1B30        # == RowCurveXStaged + 48, NO LONGER FILLED
+# Where the per-frame hook goes: sub_DC4F, called from the true vertical-blank
+# handler's tail at rom:F16B. Two earlier choices inside the main loop both
+# failed the same way. StageRowCurveForDLI (rom:EA2C) stages only the x array,
+# $1B00-$1B4D; the width array at $1B4E is filled separately. Moving past that
+# to sub_DD41 (rom:D8CF) still read a half-built frame -- probing what the
+# routine actually saw returned widths of 34 30 30 30 00 00 where the live
+# values were 18 38 38 14 34 34, and a width of $00 is MARIA's end-of-list
+# marker, so most mirror zones terminated immediately and drew nothing.
+#
+# The main loop simply does not have a point where both arrays are settled.
+# Vertical blank does: by then the road below has already been drawn from
+# them, so the mirror is guaranteed to show exactly the values player 1's
+# road used -- one frame old, which is what the coarse mirror always showed.
+PER_FRAME_HOOK = int(os.environ.get("PP2_HOOKSUB", "0xDC4F"), 16)
+
+# Zone 0, the blank gap at zone 1, the mirror, then index 9's blank carrier:
+# the divider starts immediately after those. Derived rather than written
+# down, because a stale constant here aims the light, the banner and
+# HudReassert at whatever zone happens to sit at that index -- with a coarser
+# mirror that is a road zone, and the display corrupts a few thousand frames
+# in rather than immediately.
+DIVIDER_ZONE = MIRROR_ZONES + 3
+DIVIDER_ADDR = DLL_BASE + DIVIDER_ZONE * 3
 
 # The three-row HUD, written into the divider by HudReassert once normal
 # driving begins, sharing those zones with the start light and the
@@ -299,7 +503,8 @@ DIVIDER_ADDR = 0x2200 + DIVIDER_ZONE * 3
 # DLI bit for index 10. Every writer of these three zones -- this table, the
 # light's dat_A6CD and the banner's dat_A6BB -- has to agree on that bit, or
 # whichever one runs last silently drops the interrupt.
-HUD_ROWS = [0x06, 0x1D, 0x1C, 0x06, 0x1D, 0x28, 0x86, 0x1D, 0x34]
+HUD_ROWS = [0x06, P2_HUD_DL >> 8, P2_HUD_DL & 0xFF,
+            0x06, 0x1D, 0x28, 0x86, 0x1D, 0x34]
 
 # HudReassert lives here: $F3FF-$FF7E (2,945 bytes) is a run of untouched $FF
 # filler, confirmed via the toolkit's own --gaps report (disasm.py) and by
@@ -311,7 +516,7 @@ HUD_ROWS = [0x06, 0x1D, 0x1C, 0x06, 0x1D, 0x28, 0x86, 0x1D, 0x34]
 # `expect=` on the write already proves the space is genuinely free on the
 # ROM being patched -- the property a float's auto-placement exists to give
 # when several options might collide over the same room.
-HUD_REASSERT_ADDR = 0xF900
+HUD_REASSERT_ADDR = 0xF400
 SOUNDSTOP = 0xDED6
 
 
@@ -443,6 +648,58 @@ def hud_reassert_src(addr):
         "    LDA #$00", "    STA P6C3",
         "    LDA $00FB", "    STA BACKGRND",
         "    JMP $EC09",
+        # Copies both boot images into RAM: the zone list to DLL_BASE and the
+        # mini display lists to MINI_DL_BASE. Replaces sub_F171's first loop,
+        # whose DEX/BPL form could only ever move 128 bytes.
+        # With the injection skipped, DLI_ED4F's own tail runs immediately
+        # rather than after the road, and two of its jobs were relying on that
+        # ordering: setting BACKGRND to the road's ground colour (the injection
+        # did it, at rom:EDAF/EDC5) and clearing it to black for the bottom
+        # margin (rom:F158, now neutered). This puts the ground colour back
+        # before the road is drawn, and lets the margin share it.
+        "RoadTail:",
+        "    LDA $00FB",
+        "    STA BACKGRND",
+        "    JSR P2Frame",
+        "    JMP $F143",
+    ] + p2_walk_src() + [
+        "P2ZLo:",   "    .byte " + ",".join("$%02X" % v for v in p2_walk_tables()["P2ZLo"]),
+        "P2ZHi:",   "    .byte " + ",".join("$%02X" % v for v in p2_walk_tables()["P2ZHi"]),
+        "P2Shift:", "    .byte " + ",".join("$%02X" % v for v in p2_walk_tables()["P2Shift"]),
+        "P2Base:",  "    .byte " + ",".join("$%02X" % v for v in p2_walk_tables()["P2Base"]),
+        "P2Band:",  "    .byte " + ",".join("$%02X" % v for v in p2_walk_tables()["P2Band"]),
+        "MirrorInit:",
+        "    LDX #$00",
+        "MiLoop1:",
+        "    LDA $%04X,X" % DLL_TEMPLATE,
+        "    STA $%04X,X" % DLL_BASE,
+        "    INX",
+        "    CPX #$%02X" % (DLL_ZONES * 3),
+        "    BNE MiLoop1",
+        "    JSR P2HudInit",
+    ] + ([] if os.getenv("PP2_NO_MINI_COPY") else _mini_copy_src()) + [
+        "    LDX #$00",
+        "P2Loop:",
+        "    LDA $%04X,X" % P2_TEMPLATE,
+        "    STA $%04X,X" % P2_DL_BASE,
+        "    INX",
+        "    CPX #$%02X" % (12 * P2_DL_SIZE),
+        "    BNE P2Loop",
+        "    RTS",
+        # Once per frame, straight after the game stages the per-scanline road
+        # curve: give each mirror zone its own width and x from the same two
+        # arrays DLI_InjectRowCurveX reads. No WSYNC anywhere -- each zone is
+        # only two scanlines, so the value can be written ahead of the beam
+        # rather than into the middle of a zone as the road's version must.
+        # Zone k stands for road scanline 6 + 2k; the mirror starts at band 1,
+        # which is scanline 6.
+        "MirrorStage:",
+    ] + ["    STA WSYNC"] * int(os.environ.get("PP2_BURN", "0")) + [
+        "    JSR $%04X" % PER_FRAME_HOOK,
+    ] + _unrolled_mirror_stage() + (
+        [] if os.getenv("PP2_KEEP_INJECTION") else road_stage_src()
+    ) + p2_stage_src() + [
+        "    RTS",
         "DividerPaletteOnly:",
         "    STA $00FF",
         "    JMP PaletteRestore",
@@ -503,7 +760,17 @@ def hud_reassert_src(addr):
         "    LDA $00F8", "    STA P7C2",
         "    LDA $00F9", "    STA P7C3",
         "PalDone:",
+    ] + (_unrolled_mirror_stage() if os.getenv("PP2_HOOK_PALETTE") else []) + [
         "    JMP $EC09",
+        "P2HudInit:",
+        "    LDX #$00",
+        "P2HudLoop:",
+        "    LDA $%04X,X" % P2_HUD_TEMPLATE,
+        "    STA $%04X,X" % P2_HUD_DL,
+        "    INX",
+        "    CPX #$0C",
+        "    BNE P2HudLoop",
+        "    RTS",
         "HudTriplet:",
         "    .byte $%02X,$%02X,$%02X,$%02X,$%02X,$%02X,$%02X,$%02X,$%02X"
         % tuple(HUD_ROWS),
@@ -548,6 +815,582 @@ STOCK_ZONES = {
 }
 
 
+def _mini_copy_src():
+    """Copy the fine zones' display lists into RAM at boot. Sized to what
+    exists: a fixed-size copy overran into live RAM at any base without that
+    much free after it. Note this runs once, from a one-time init path, and
+    still shifts startup enough to desync a recording -- see docs/FINDINGS.md,
+    "Boot-time work desyncs the recordings".
+    """
+    n = FINE_ZONES * MINI_DL_SIZE
+    if n == 0:
+        return []                                  # no short lists to copy
+    assert n <= 255, "copy needs splitting at %d bytes" % n
+    return ["    LDX #$00", "MiLoop2:",
+            "    LDA $%04X,X" % MINI_TEMPLATE,
+            "    STA $%04X,X" % MINI_DL_BASE,
+            "    INX", "    CPX #$%02X" % n, "    BNE MiLoop2"]
+
+
+def road_stage_src():
+    """One width and x per road band per frame, replacing the per-scanline
+    injection entirely.
+
+    DLI_InjectRowCurveX is beam-synchronised: one WSYNC per road scanline, ~78
+    scanlines of stalled 6502 every frame, and it is what makes player 1's road
+    smooth where the mirror steps. Driving each band from a single value
+    instead makes the two views match -- which is the point -- and hands that
+    time back.
+
+    Each band takes its middle scanline's value. The far bands read the same
+    two arrays the mirror's fine zones do; the near five read the four arrays
+    the injection switches to at rom:EE73, indexed by (scanline - 48), and
+    carry a second road object that needs its own width and x.
+    """
+    lines = []
+    for b in range(13):
+        band = ALL_ROAD_BANDS[b]
+        # Which scanline of the band to sample. The road tapers across a
+        # band, so one sample has to stand for six lines; on a sharp curve the
+        # near bands are wide enough that the wrong choice puts the object
+        # past the end of the line and MARIA wraps it round to the left edge.
+        i = 6 * b + BAND_SAMPLE
+        if i < NEAR_FIRST_ROW:
+            # x comes from RowCurveOffset plus this band's fixed perspective
+            # base, rather than from RowCurveXStagedSrc. That is the same sum
+            # the engine used to compute per row at rom:E9D0 -- doing it here,
+            # for the 13 rows anything actually reads, lets the whole tail of
+            # its walk be stripped.
+            lines += ["    LDA $%04X" % (ROW_CURVE_Y + i), "    STA $%04X" % (band + 1),
+                      "    LDA $%04X" % (ROW_CURVE_OFFSET + i),
+                      "    CLC",
+                      "    ADC #$%02X" % band_base(i),
+                      "    STA $%04X" % (band + 3)]
+        else:
+            # Both of the near band's halves are rebuilt here. Neither of the
+            # arrays the stock injection reads survives the walk-tail strip:
+            # $1B30 is RowCurveXStaged+48 and $0060 is its zero-page copy, and
+            # both are now left empty, which is what collapsed the two halves
+            # onto a single x. Measured off the live stock ROM across all 30
+            # near rows and every sampled frame:
+            #
+            #   slot1 x == RowCurveOffset[row] + band_base(row)   (same rule
+            #              the far bands already use, and band_base already
+            #              returns the near bases $48 $44 $3C $34 $30)
+            #   slot0 x == slot1 x - $3C                          (exact, never
+            #              varies -- slot0 is a fixed-width piece a constant
+            #              distance to the left, not a second scaled half)
+            #   slot0 W == (slot1 W & $20) | $10                  (a fixed 16
+            #              byte object that only inherits the stripe palette)
+            #
+            # RowCurveYStaged ($1B4E, hence $1B7E at the near rows) is filled
+            # by sub_E8AC and is untouched by the strip, so slot1's width is
+            # still read straight out of it.
+            n = i - NEAR_FIRST_ROW
+            lines += ["    LDA $%04X" % (NEAR_SLOT1_W + n), "    STA $%04X" % (band + 5),
+                      "    AND #$20", "    ORA #$10", "    STA $%04X" % (band + 1),
+                      "    LDA $%04X" % (ROW_CURVE_OFFSET + i),
+                      "    CLC", "    ADC #$%02X" % band_base(i),
+                      "    STA $%04X" % (band + 7),
+                      "    SEC", "    SBC #$3C", "    STA $%04X" % (band + 3)]
+    return lines
+
+
+def _unrolled_mirror_stage():
+    """Each fine mirror zone's road width and x, written straight rather than
+    looped. Every fine zone belongs to a far band, so they all read the same
+    two per-scanline arrays; the near bands keep the road's own lists and need
+    no update at all. Mirror zone k stands for road scanline 6 + FINE_LINES*k.
+    """
+    lines = []
+    if os.getenv("NOUPDATE"):
+        return lines
+    limit = int(os.environ.get("PP2_UPD_LIMIT", str(FINE_ZONES)))
+    for k in range(min(limit, FINE_ZONES)):
+        i = 6 + FINE_LINES * k
+        a = MINI_DL_BASE + k * MINI_DL_SIZE
+        lines += ["    LDA $%04X" % (ROW_CURVE_Y + i), "    STA $%04X" % (a + 1),
+                  "    LDA $%04X" % (ROW_CURVE_X + i), "    STA $%04X" % (a + 3)]
+    return lines
+
+
+def band_base(row):
+    """dat_EBA4[dat_BB7E[row]] -- the fixed perspective base the engine adds to
+    RowCurveOffset at rom:E9D0. Constant per row, so it need not be looked up
+    at runtime."""
+    import io as _io
+    rom = bytearray(_io.open(load_source()[0], "rb").read())
+    rom = rom[len(rom) - ROM_SIZE:]
+    return rom[(0xEBA4 + rom[0xBB7E + row - BASE]) - BASE]
+
+
+def p2_walk_tables():
+    """Per-sample track depth, curvature scale and lateral base, in walk order
+    (nearest band first). Lifted straight out of the stock tables at the 13
+    rows player 2's bands actually sample."""
+    import io as _io
+    rom = bytearray(_io.open(load_source()[0], "rb").read())
+    rom = rom[len(rom) - ROM_SIZE:]
+    at = lambda a: rom[a - BASE]
+    rows = [6 * b + 3 for b in range(13)][::-1]
+    return {
+        "P2ZLo":   [at(0xEB56 + i) for i in rows],
+        "P2ZHi":   [at(0xEAB9 + i) for i in rows],
+        "P2Shift": [0 if i >= 0x40 else (1 if i >= 0x20 else (2 if i >= 0x10 else 3))
+                    for i in rows],
+        "P2Base":  [at(0xEBA4 + at(0xBB7E + i)) for i in rows],
+        "P2Band":  list(range(12, -1, -1)),
+    }
+
+
+def p2_walk_src():
+    """Walk player 2's track position out to each band and leave the road's
+    lateral offset for that band in P2_BANDX."""
+    W = P2_WALK
+    return [
+        # Called from the MAIN LOOP, not from vblank. The walk is far too long
+        # for the vblank handler's deadline -- that is why stripping ~1,900
+        # cycles out of the engine's own walk bought nothing while this ran
+        # there: the saving was main-loop time, and vblank is not main-loop
+        # time. Here it can spend what the strip freed.
+        # Called from RoadTail, i.e. from DLI_ED4F once the road's palettes are
+        # set and before the frame-end work -- mid screen, every frame, with
+        # the bottom margin's slack ahead of the vblank wait.
+        #
+        # NOT from sub_D8AC. That was the first choice and it is not a per-frame
+        # routine at all: a counter incremented there reached 1 and stayed
+        # there, so player 2's track position was copied once at race start,
+        # from segment 0, and frozen. Every symptom followed from that -- the
+        # walk integrating zero curvature, the steering doing nothing, and the
+        # band output sitting at exactly the per-band base values.
+        "P2Frame:",
+        "    INC $2758",
+    ] + p2_drive_src() + [
+        "    JSR P2Geom",
+        "    RTS",
+        "P2Geom:",
+    ] + (["    RTS"] if os.getenv("PP2_STUB_GEOM") else []) + [
+        # distance starts where the engine starts it: $47 plus the player's
+        # own distance into the current segment (rom:E941)
+        # The parity is read here BEFORE it is toggled below, so the test is
+        # against the value this frame is about to flip: a 1 now becomes the
+        # second half, which must NOT reinitialise the accumulators the first
+        # half left behind. Getting this the wrong way round left the two
+        # halves computed from different starting states, and they failed to
+        # join -- a clean step in the road right at the boundary band.
+        "    LDA $%04X" % P2_HALF,
+        "    BNE P2GNoInit",
+        "    CLC",
+        "    LDA #$47", "    ADC $%04X" % P2_TRACK_LO, "    STA $%04X" % W,
+        "    LDA #$00", "    ADC $%04X" % P2_TRACK_HI, "    STA $%04X" % (W + 1),
+        "    LDA $%04X" % P2_TRACK_SEG, "    STA $%04X" % (W + 2),
+        "    LDA #$00",
+        "    STA $%04X" % (W + 3), "    STA $%04X" % (W + 4),
+        "    STA $%04X" % (W + 5), "    STA $%04X" % (W + 6),
+        "P2GNoInit:",
+        # Twelve samples fit in a frame here and thirteen do not, so the walk
+        # runs in halves and completes every second frame. The accumulators --
+        # distance, segment, velocity, position -- already live in RAM, so the
+        # second half simply carries on from where the first stopped: only the
+        # index and the stopping point differ.
+        "    LDA $%04X" % P2_HALF,
+        "    EOR #$01",
+        "    STA $%04X" % P2_HALF,
+        "    BEQ P2GSecond",
+        "    LDX #$00",
+        "    LDA #$07",
+        "    STA $%04X" % P2_END,
+        "    JMP P2GLoop",
+        "P2GSecond:",
+        "    LDX #$07",
+        "    LDA #$0D",
+        "    STA $%04X" % P2_END,
+        "P2GLoop:",
+        # The advance below walks track segments until the distance reaches
+        # this sample's depth. It is the one unbounded loop in the walk, and
+        # it runs inside a display interrupt -- if the track length or a
+        # segment length ever reads zero the distance stops growing and it
+        # spins forever, taking the machine with it. Bounded to 32 steps, far
+        # more than six rows of distance can legitimately need.
+        "    LDA #$20",
+        "    STA $%04X" % (P2_WALK + 10),
+        # advance through track segments until the distance reaches this
+        # sample's depth. A loop, not a single test: six rows of distance can
+        # cross more than one segment.
+        "P2GAdv:",
+        "    SEC",
+        "    LDA $%04X" % W,       "    SBC P2ZLo,X",
+        "    LDA $%04X" % (W + 1), "    SBC P2ZHi,X",
+        "    BPL P2GHave",
+        "    LDY $%04X" % (W + 2),
+        "    INY",
+        "    CPY $%04X" % TRACK_LEN,
+        "    BNE P2GNoWrap",
+        "    LDY #$00",
+        "P2GNoWrap:",
+        "    STY $%04X" % (W + 2),
+        "    CLC",
+        "    LDA $%04X,Y" % SEG_LEN_LO, "    ADC $%04X" % W,       "    STA $%04X" % W,
+        "    LDA $%04X,Y" % SEG_LEN_HI, "    ADC $%04X" % (W + 1), "    STA $%04X" % (W + 1),
+        "    DEC $%04X" % (P2_WALK + 10),
+        "    BEQ P2GHave",
+        "    JMP P2GAdv",
+        "P2GHave:",
+        # curvature for this segment, sign extended, scaled the way the stock
+        # ASL chain scales it at this depth
+        "    LDY $%04X" % (W + 2),
+        "    LDA $%04X,Y" % SEG_CURVE,
+        "    STA $%04X" % (W + 8),
+        "    LDY #$00",
+        "    CMP #$80",
+        "    BCC P2GPos",
+        "    LDY #$FF",
+        "P2GPos:",
+        "    STY $%04X" % (W + 9),
+        "    LDY P2Shift,X",
+        "    BEQ P2GNoShift",
+        "P2GShift:",
+        "    ASL $%04X" % (W + 8), "    ROL $%04X" % (W + 9),
+        "    DEY", "    BNE P2GShift",
+        "P2GNoShift:",
+        # six single-row integrations -- three for the first sample, which is
+        # only three rows in from where the walk starts
+        "    LDY #$06",
+        "    CPX #$00",
+        "    BNE P2GSteps",
+        "    LDY #$03",
+        "P2GSteps:",
+        "    CLC",
+        "    LDA $%04X" % (W + 3), "    ADC $%04X" % (W + 8), "    STA $%04X" % (W + 3),
+        "    LDA $%04X" % (W + 4), "    ADC $%04X" % (W + 9), "    STA $%04X" % (W + 4),
+        "    CLC",
+        "    LDA $%04X" % (W + 5), "    ADC $%04X" % (W + 3), "    STA $%04X" % (W + 5),
+        "    LDA $%04X" % (W + 6), "    ADC $%04X" % (W + 4), "    STA $%04X" % (W + 6),
+        "    DEY",
+        "    BNE P2GSteps",
+        # the band's lateral offset: the position's high byte plus the fixed
+        # perspective base the engine adds at rom:E9D0
+        "    LDA $%04X" % (W + 6),
+        "    CLC",
+        "    ADC P2Base,X",
+        "    LDY P2Band,X",
+        "    STA $%04X,Y" % P2_BANDX,
+        "    INX",
+        "    CPX $%04X" % P2_END,
+        # inverted: the loop body is well over 128 bytes, so the way back has
+        # to be a jump rather than a relative branch
+        "    BEQ P2GDone",
+        "    JMP P2GLoop",
+        "P2GDone:",
+        "    RTS",
+    ]
+
+
+def p2_plan():
+    """Player 2's viewport: the same zone shape as player 1's, but every zone
+    pointed at player 2's own display list rather than the shared road."""
+    return [(6, P2_DL_BASE + i * P2_DL_SIZE, None) for i in range(12)]
+
+
+def p2_dl_template():
+    """Boot image of player 2's lists. The graphics addresses never change --
+    only width and x do -- so they are baked in and cost nothing per frame.
+    Bands without a second road object get a zero width byte there, which is
+    MARIA's end-of-list marker, so the list simply stops after the first."""
+    out = []
+    for b in range(1, 13):
+        lo, hi = BAND_GFX[b]
+        e = [lo, 0x1F, hi, 0x80]
+        if BAND_SLOT1[b] is None:
+            e += [0x00, 0x00, 0x00, 0x00]
+        else:
+            lo1, hi1 = BAND_SLOT1[b]
+            e += [lo1, 0x1F, hi1, 0x80]
+        out += e + [0x00, 0x00]
+    return out
+
+
+def p2_camera_src():
+    """Set up player 2's lateral camera for the frame.
+
+    step  = LATERAL_RAMP[|offset|]        the per-row shift, 8 bits
+    step3 = step * 3                      the first band samples row 9
+    step6 = step * 6                      one band is six rows further on
+    acc   = step3                         then += step6 before each band
+
+    Negative offsets negate step3 and step6 once, so the per-band loop is a
+    plain 16-bit add either way and the high byte of the accumulator is the
+    shift to apply.
+    """
+    S = P2_SCRATCH
+    return [
+        "    LDA $%04X" % P2_LATERAL,
+        "    BPL P2Mag",
+        "    EOR #$FF",
+        "    CLC",
+        "    ADC #$01",
+        "P2Mag:",
+        "    TAX",
+        "    LDA $%04X,X" % LATERAL_RAMP,
+        "    STA $%04X" % S,
+        # step3 = step * 3
+        "    STA $%04X" % (S + 1),
+        "    LDA #$00",
+        "    STA $%04X" % (S + 2),
+        "    ASL $%04X" % (S + 1),
+        "    ROL $%04X" % (S + 2),
+        "    LDA $%04X" % (S + 1),
+        "    CLC",
+        "    ADC $%04X" % S,
+        "    STA $%04X" % (S + 1),
+        "    LDA $%04X" % (S + 2),
+        "    ADC #$00",
+        "    STA $%04X" % (S + 2),
+        # step6 = step3 * 2
+        "    LDA $%04X" % (S + 1),
+        "    ASL A",
+        "    STA $%04X" % (S + 3),
+        "    LDA $%04X" % (S + 2),
+        "    ROL A",
+        "    STA $%04X" % (S + 4),
+        # negate both when player 2 sits to the other side
+        "    LDA $%04X" % P2_LATERAL,
+        "    BPL P2NoNeg",
+        "    SEC",
+        "    LDA #$00", "    SBC $%04X" % (S + 1), "    STA $%04X" % (S + 1),
+        "    LDA #$00", "    SBC $%04X" % (S + 2), "    STA $%04X" % (S + 2),
+        "    SEC",
+        "    LDA #$00", "    SBC $%04X" % (S + 3), "    STA $%04X" % (S + 3),
+        "    LDA #$00", "    SBC $%04X" % (S + 4), "    STA $%04X" % (S + 4),
+        "P2NoNeg:",
+        # accumulator starts at step3
+        "    LDA $%04X" % (S + 1), "    STA $%04X" % (S + 5),
+        "    LDA $%04X" % (S + 2), "    STA $%04X" % (S + 6),
+    ]
+
+
+def p2_drive_src():
+    """Player 2's car: throttle, steering, and its own distance along the track.
+
+    Everything here is player 2's own state. Nothing is copied from player 1
+    any more, which is what makes this two cars rather than two views of one.
+    The stick is free -- the game never reads SWCHA's low nibble -- so up and
+    down are throttle and brake, left and right are steering.
+
+    Advancing the position mirrors what the engine does for player 1: add the
+    speed to the distance into the current segment, then carry into the next
+    segment for as long as the distance exceeds that segment's length. The
+    carry is a loop because at speed one frame can cross a short segment
+    entirely.
+    """
+    return [
+        # --- throttle: stick up accelerates, down brakes ------------------
+        "    LDA $%04X" % SWCHA,
+        "    AND #$01",
+        "    BNE P2NotUp",
+        "    LDA $%04X" % P2_SPEED,
+        "    CMP #$C0",
+        "    BCS P2NotUp",
+        "    CLC",
+        "    ADC #$02",
+        "    STA $%04X" % P2_SPEED,
+        "P2NotUp:",
+        "    LDA $%04X" % SWCHA,
+        "    AND #$02",
+        "    BNE P2NotDown",
+        "    LDA $%04X" % P2_SPEED,
+        "    SEC",
+        "    SBC #$04",
+        "    BCS P2SpdOk",
+        "    LDA #$00",
+        "P2SpdOk:",
+        "    STA $%04X" % P2_SPEED,
+        "P2NotDown:",
+        # --- steering ------------------------------------------------------
+        "    LDA $%04X" % SWCHA,
+        "    AND #$08",
+        "    BNE P2NotRight",
+        "    LDA $%04X" % P2_LATERAL,
+        "    CLC",
+        "    ADC #$01",
+        "    CMP #$3D",
+        "    BNE P2StoreR",
+        "    LDA #$3C",
+        "P2StoreR:",
+        "    STA $%04X" % P2_LATERAL,
+        "P2NotRight:",
+        "    LDA $%04X" % SWCHA,
+        "    AND #$04",
+        "    BNE P2NotLeft",
+        "    LDA $%04X" % P2_LATERAL,
+        "    SEC",
+        "    SBC #$01",
+        "    CMP #$C3",
+        "    BNE P2StoreL",
+        "    LDA #$C4",
+        "P2StoreL:",
+        "    STA $%04X" % P2_LATERAL,
+        "P2NotLeft:",
+        # --- advance along the track ---------------------------------------
+        "    CLC",
+        "    LDA $%04X" % P2_TRACK_LO, "    ADC $%04X" % P2_SPEED,
+        "    STA $%04X" % P2_TRACK_LO,
+        "    LDA $%04X" % P2_TRACK_HI, "    ADC #$00",
+        "    STA $%04X" % P2_TRACK_HI,
+        "P2Carry:",
+        "    LDY $%04X" % P2_TRACK_SEG,
+        "    SEC",
+        "    LDA $%04X" % P2_TRACK_LO, "    SBC $%04X,Y" % SEG_LEN_LO,
+        "    TAX",
+        "    LDA $%04X" % P2_TRACK_HI, "    SBC $%04X,Y" % SEG_LEN_HI,
+        "    BCC P2Rolled",
+        "    STA $%04X" % P2_TRACK_HI,
+        "    STX $%04X" % P2_TRACK_LO,
+        "    INY",
+        "    CPY $%04X" % TRACK_LEN,
+        "    BNE P2NoWrap2",
+        "    LDY #$00",
+        "P2NoWrap2:",
+        "    STY $%04X" % P2_TRACK_SEG,
+        "    JMP P2Carry",
+        "P2Rolled:",
+    ]
+
+
+def p2_follow_src():
+    """Point player 2's track position at player 1's.
+
+    With this in place the two cameras are at the same place on the track, so
+    player 2's walk must reproduce player 1's road exactly -- which is the
+    regression check for the walk itself. Replace these three copies with
+    player 2's own position and the cameras come apart.
+    """
+    return [
+        "    LDA $00CF", "    STA $%04X" % P2_TRACK_SEG,
+        "    LDA $00D5", "    STA $%04X" % P2_TRACK_LO,
+        "    LDA $00D6", "    STA $%04X" % P2_TRACK_HI,
+    ]
+
+
+def p2_stage_src():
+    """Player 2's road geometry, once per frame, from its own source."""
+    lines = p2_camera_src()
+    for b in range(1, 13):
+        dl = P2_DL_BASE + (b - 1) * P2_DL_SIZE
+        band_index = b
+        i = 6 * b + BAND_SAMPLE
+        def emit(wsrc, xsrc, advance):
+            S = P2_SCRATCH
+            out = ["    LDA $%s" % wsrc, "    STA $%04X" % dl_w]
+            xsrc = "%04X" % (P2_BANDX + band_index)
+            if advance:
+                out += ["    CLC",
+                        "    LDA $%04X" % (S + 5), "    ADC $%04X" % (S + 3),
+                        "    STA $%04X" % (S + 5),
+                        "    LDA $%04X" % (S + 6), "    ADC $%04X" % (S + 4),
+                        "    STA $%04X" % (S + 6)]
+            out += ["    LDA $%s" % xsrc, "    CLC", "    ADC $%04X" % (S + 6)]
+            if P2_X_OFFSET:
+                out += ["    CLC", "    ADC #$%02X" % (P2_X_OFFSET & 0xFF)]
+            out += ["    STA $%04X" % dl_x]
+            return out
+        if i < NEAR_FIRST_ROW:
+            dl_w, dl_x = dl + 1, dl + 3
+            lines += emit("%04X" % (ROW_CURVE_Y + i), "%04X" % (ROW_CURVE_X + i), True)
+        else:
+            n = i - NEAR_FIRST_ROW
+            dl_w, dl_x = dl + 1, dl + 3
+            lines += emit("%02X" % (NEAR_SLOT0_W + n), "%02X" % (NEAR_SLOT0_X + n), True)
+            dl_w, dl_x = dl + 5, dl + 7
+            lines += emit("%04X" % (NEAR_SLOT1_W + n), "%04X" % (NEAR_SLOT1_X + n), False)
+    return lines
+
+
+def mirror_plan():
+    """The mirror, band by band, as (lines, dl_address, mini_index).
+
+    Hybrid on purpose. The far bands get FINE_LINES-tall zones with short
+    display lists of their own, which is what makes their road edge smooth --
+    and they are where the curve actually reads, since that is where the road
+    is narrow. The near bands keep one six-line zone each pointed at the
+    road's OWN display list, so everything drawn on them comes along: the
+    player's car and the traffic around it, which live in the last five bands.
+
+    Replicating objects into fine zones was the alternative and it does not
+    fit. They sit at different offsets in each band and move between frames,
+    so there is no cheap subset to copy -- it means the whole slot area, 32
+    bytes per sub-zone, over a thousand bytes a frame.
+    """
+    plan, k = [], 0
+    for b in range(1, 13):
+        if b <= FINE_BAND_LAST:
+            for _ in range(SUBS_PER_BAND):
+                plan.append((FINE_LINES, MINI_DL_BASE + k * MINI_DL_SIZE, k))
+                k += 1
+        else:
+            plan.append((6, ALL_ROAD_BANDS[b], None))
+    return plan
+
+
+MIRROR_PLAN_LEN = None       # filled on first use by dll_template()
+
+
+def dll_template():
+    """The new zone list. Replaces the stock 35-zone boot template entirely."""
+    plan = mirror_plan()
+    z = [[0x8F, 0x24, 0xF6],                          # 0: 16 blank, DLI idx7
+         [0x03, 0x24, 0xF6]]                          # 1:  4 blank, must stay blank
+    # Index 8 sits partway down the mirror. Its home was expressed in fine
+    # sub-zones, which silently lands past the end of a coarse plan -- and a
+    # chain link that no zone carries simply never fires, taking every
+    # interrupt after it with it. Clamped, so the count can change freely.
+    top = p2_plan()                                   # player 2's viewport
+    idx8_at = min(IDX8_SUB, len(top) - 1)
+    for n, (lines, dl, mini) in enumerate(top):
+        dli = 0x80 if n == idx8_at else 0x00
+        z.append([(lines - 1) | dli, dl >> 8, dl & 0xFF])
+    z.append([(CARRIER_LINES - 1) | 0x80, 0x24, 0xF6])  # blank, DLI idx9
+    z.append([0x06, P2_HUD_DL >> 8, P2_HUD_DL & 0xFF])   # divider: player 2's row
+    z.append([0x06, 0x1D, 0x28])
+    z.append([0x86, 0x1D, 0x34])                      #   DLI idx10
+    z.append([0x09, 0x18, 0xFA])                      # horizon, stock
+    z.append([0x89, 0x1D, 0x3B])                      # decor, DLI idx11
+    # Player 1's view, built from the SAME plan as player 2's -- same zone
+    # heights, same display lists, same dropped far band. With the injection
+    # gone neither view gets per-scanline treatment any more, so the two are
+    # now identical rather than merely similar, and the bottom gives up the
+    # six lines of its farthest band in the bargain.
+    for lines, dl, _mini in plan:
+        z.append([(lines - 1), dl >> 8, dl & 0xFF])
+    z.append([0x0F, 0x24, 0xF6])                      # bottom margin
+    z.append([0x0F, 0x24, 0xF6])
+    total = sum((e[0] & 0x0F) + 1 for e in z)
+    tl, bl = sum(p[0] for p in top), sum(p[0] for p in plan)
+    if tl != bl:
+        raise SystemExit("views differ: top %d lines, bottom %d" % (tl, bl))
+    if total != 249:
+        raise SystemExit("zone list totals %d lines, need 249 (off by %+d)"
+                         % (total, total - 249))
+    return [b for e in z for b in e]
+
+
+def mini_dl_template():
+    """One short list per fine mirror zone: a single road-surface object and
+    an end marker. Six bytes -- the far bands draw the road with one object,
+    so there is no second slot to carry. MARIA steps a zone's graphics one
+    page per scanline counting down from height-1, so a zone standing in for
+    band rows starting at j0 needs its base page shifted by 6 - FINE_LINES -
+    j0 to land on the rows the band would have drawn. Static, so it is baked
+    in here and costs nothing per frame."""
+    out = []
+    for k in range(FINE_ZONES):
+        b, m = 1 + k // SUBS_PER_BAND, k % SUBS_PER_BAND
+        lo, hi = BAND_GFX[b]
+        shift = 6 - FINE_LINES - FINE_LINES * m
+        out += [lo, PLACEHOLDER_W, (hi + shift) & 0xFF, PLACEHOLDER_X, 0x00, 0x00]
+    return out
+
+
 def put_zone(p, z, lines, dl):
     """One zone selector: line count, DL address, DLI bit from DLI_ZONES."""
     flags = (lines - 1) | (0x80 if z in DLI_ZONES else 0x00)
@@ -563,47 +1406,37 @@ def fix_mirror_split(p):
     (docs/FINDINGS.md, "Phase 1" onward). One piece *is* new code --
     HudReassert -- and the module docstring explains what forced that.
     """
-    # -- player 2's view: a gap, then all thirteen bands across zones 2..14 --
-    # Thirteen, not ten, so the top view is the same 78 lines as the road
-    # below it. What used to cap this at ten had nothing to do with the
-    # mirror at all -- see DLI_ZONES above and docs/FINDINGS.md, "Solved:
-    # the start light was erasing display-interrupt bits".
-    put_zone(p, 1, 4, 0x24F6)
-    for i, dl in enumerate(ROAD_BANDS):
-        put_zone(p, 2 + i, 6, dl)
-
-    # -- a four-line blank for index 9 to land on --------------------------
-    # MARIA raises a zone's display interrupt about four scanlines before that
-    # zone has finished displaying, and palette writes take effect the instant
-    # they are made. With index 9 on the last mirror band, the divider's
-    # palette therefore landed on that band while it was still on screen: its
-    # bottom four lines rendered $38 tan with the grass behind them $89 blue,
-    # the road's shape intact but every colour wrong.
-    #
-    # Delaying the handler works and costs one scanline of stalled main loop
-    # per line delayed -- and the budget for that is one scanline, not the
-    # four this needs (docs/FINDINGS.md). So index 9 gets a blank zone of its
-    # own instead. The early write lands on blank lines, which simply show the
-    # divider's own background, so the divider reads as four lines taller and
-    # nothing is corrupted. The mirror keeps all thirteen bands: they start at
-    # zone 1 now rather than zone 2, which is where the four lines come from.
-    put_zone(p, 14, 6, 0x24F6)
-
-    # -- the divider: zones 15-17, three HUD rows ----------------------------
-    for i in range(3):
-        put_zone(p, DIVIDER_ZONE + i, 7,
-                 (HUD_ROWS[i * 3 + 1] << 8) | HUD_ROWS[i * 3 + 2])
-
-    # Zone 18 is deliberately absent from this function: it keeps its stock
-    # ten lines of $18FA. An earlier version spent it as a one-line perch for
-    # index 10; the templates carry that bit now, so it isn't needed.
+    # -- player 2's view, as its own zone list -------------------------------
+    # The stock boot template at dat_BC7E is no longer used: sub_F171 is
+    # redirected below to copy this one instead, which is larger than the 107
+    # bytes that would fit between $2200 and the results screen's own list.
+    p.put(DLL_TEMPLATE, dll_template(), expect=[0xFF] * (DLL_ZONES * 3))
+    p.put(P2_TEMPLATE, p2_dl_template(), expect=[0xFF] * (12 * P2_DL_SIZE))
+    # Seed of player 2's HUD row: the same two character objects the row it
+    # replaces uses, so it draws legibly from the first frame. Rewriting the
+    # characters it points at is what makes it player 2's, and is not done yet.
+    p.put(P2_HUD_TEMPLATE,
+          [0x8A, 0x60, 0x1F, 0x4D, 0x0C, 0x9D, 0x60, 0x1F, 0x55, 0x68, 0x00, 0x00],
+          expect=[0xFF] * 12)
+    if FINE_ZONES:
+        p.put(MINI_TEMPLATE, mini_dl_template(),
+              expect=[0xFF] * (FINE_ZONES * MINI_DL_SIZE))
 
     # -- aim the light and banner at the new divider -------------------------
     # Both routines end with `STA ram_2224,X`, hardcoded at zone 12 -- which
     # is a mirror band now. One operand byte each sends them to zone 15
     # instead, where the HUD divider actually lives.
-    p.put(0xD81B, [DIVIDER_ADDR & 0xFF], expect=[0x24])   # sub_D80D, the banner
-    p.put(0xDA92, [DIVIDER_ADDR & 0xFF], expect=[0x24])   # sub_DA7C, the light
+    p.put(0xD81B, [DIVIDER_ADDR & 0xFF, DIVIDER_ADDR >> 8],
+          expect=[0x24, 0x22])                            # sub_D80D, the banner
+    p.put(0xDA92, [DIVIDER_ADDR & 0xFF, DIVIDER_ADDR >> 8],
+          expect=[0x24, 0x22])                            # sub_DA7C, the light
+
+    # -- and move the zone list itself ---------------------------------------
+    # Two bytes: where sub_F171 copies the boot template to, and the DPPH
+    # immediate in sub_D8AC that tells MARIA where to read it from. The
+    # results screen's list at $226B is untouched and keeps its own pointer
+    # (rom:D89B), so only the race view moves.
+    p.put(0xD8D7, [DLL_BASE >> 8], expect=[0x22])   # sub_D8AC: LDA #$22 -> DPPH
 
     # -- the divider's own three writers need to agree on a total ------------
     # HudReassert/StartDriveHud/QualDriveHud all write 7+7+7=21 lines across
@@ -662,6 +1495,9 @@ def fix_mirror_split(p):
     divider_restore_addr = syms["ZoneDividerRestore"]
     palette_only_addr = syms["DividerPaletteOnly"]
     mirror_palette_addr = syms["MirrorPalette"]
+    mirror_init_addr = syms["MirrorInit"]
+    mirror_stage_addr = syms["MirrorStage"]
+    road_tail_addr = syms["RoadTail"]
 
     # -- and bring the HUD back once normal driving begins -------------------
     # Two different places turn out to do that, not one (docs/FINDINGS.md,
@@ -742,6 +1578,50 @@ def fix_mirror_split(p):
     # (rom:ECF8) writes P3 on its way out, so anything set earlier is lost.
     p.put(0xED29, [mirror_palette_addr & 0xFF, mirror_palette_addr >> 8],
           expect=[0x09, 0xEC])
+
+    # rom:F171 -- sub_F171's first loop, which copied the stock 107-byte zone
+    # list to $2200, becomes a call to MirrorInit. The loop's DEX/BPL form
+    # cannot move more than 128 bytes and the new list is 177, so it is
+    # replaced outright rather than retargeted. The second loop, which builds
+    # the results screen's own list at $226B, is left exactly as it was.
+    # rom:D8CF -- the main loop's `JSR sub_DD41`, retargeted to P2Main, which
+    # runs player 2's walk and then makes that same call. It sits after
+    # sub_E93D (rom:D8BC) so player 1's own walk has already run, and well
+    # before the vblank wait, so the walk is spending main-loop cycles.
+    # rom:E9BE -- the tail of the engine's own per-row walk, stripped to just
+    # the loop control. Everything between it and the DEX is dead in this
+    # build: RowCurveOffsetAlt has no readers anywhere in the ROM, and
+    # RowCurveXStagedSrc feeds only StageRowCurveForDLI's copy into
+    # RowCurveXStaged, which nothing reads now that the injection is bypassed.
+    # The 13 values that ARE read are recomputed in MirrorStage from
+    # RowCurveOffset, which the walk still stores. About 1,900 cycles a frame,
+    # some 17 scanlines, for no loss of accuracy at all.
+    p.put(0xE9BE, [0xCA, 0x10, 0x9B, 0x60],
+          expect=[0xBC, 0x7E, 0xBB, 0xE0])
+
+    # rom:ED9D -- the head of DLI_InjectRowCurveX, replaced by a jump straight
+    # to the handler's own tail at rom:F143. That skips the whole per-scanline
+    # injection, ~78 scanlines of WSYNC, and leaves the palette block above it
+    # untouched. The bands now carry whatever MirrorStage wrote for the frame.
+    if not os.getenv("PP2_KEEP_INJECTION"):
+        p.put(0xED9D, [0x4C, road_tail_addr & 0xFF, road_tail_addr >> 8],
+              expect=[0xAD, 0x00, 0x1B])
+        # rom:F158 -- `STA BACKGRND` with A=0. It used to run after the road
+        # had been drawn; without the injection's 78 scanlines in front of it
+        # it now lands mid-road and blacks the whole view out.
+        p.put(0xF158, [0xEA, 0xEA], expect=[0x85, 0x20])
+
+    p.put(0xF171, [0x20, mirror_init_addr & 0xFF, mirror_init_addr >> 8] + [0xEA] * 8,
+          expect=[0xA2, 0x6A, 0xBD, 0x7E, 0xBC, 0x9D, 0x00, 0x22, 0xCA, 0x10, 0xF7])
+
+    # rom:F16B -- the vertical-blank handler's `JSR sub_DC4F`, retargeted to
+    # MirrorStage, which makes that same call and then hands each mirror zone
+    # its own width and x. Registers are free here: the handler's next
+    # instruction is `JMP sub_EC09`, which pops Y, X and A before its RTI.
+    if not (os.getenv("PP2_NO_STAGE_HOOK") or os.getenv("PP2_HOOK_PALETTE")):
+        _at = int(os.environ.get("PP2_HOOKAT", "0xF16C"), 16)
+        _exp = [0x3D, 0xDF] if _at == 0xF15E else [0x4F, 0xDC]
+        p.put(_at, [mirror_stage_addr & 0xFF, mirror_stage_addr >> 8], expect=_exp)
     return p
 
 
