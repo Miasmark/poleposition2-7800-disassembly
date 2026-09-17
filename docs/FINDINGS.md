@@ -2148,6 +2148,89 @@ A method note, since it nearly shipped a broken build: the first read of that
 twelve divergent stretches and they were all one frame long. The sustained one
 was the sixty-fifth. Sort by length, not by position.
 
+## Paying for the mirror with slots it never used
+
+The earlier section concluded that smoothing the mirror was impossible: the
+injection is beam-synchronised, a second copy costs ~78 scanlines, and the
+budget is four to five. That conclusion was right about the injection and
+wrong about the budget, because the budget is not fixed. It is mostly being
+spent on nothing.
+
+A road band's display list is nine four-byte object slots. At any moment one
+or two hold a car or a sign; the rest are `00 1F 00 A1` -- width set, address
+`$0000`. MARIA fetches all nine regardless. The mirror, pointing at the road's
+own band lists, pays for eight objects that draw nothing.
+
+Re-running the burn sweep with the mirror pointed at a six-byte list holding
+only the road surface:
+
+| mirror configuration      | burn scanlines tolerated |
+|---------------------------|--------------------------|
+| the road's own band lists | 4-5                      |
+| road surface only         | 28+                      |
+| blank, nothing drawn      | 28-40                    |
+
+A road-only mirror costs almost exactly what a blank one does. **Roughly 24
+scanlines of headroom are recoverable** -- enough to hand each mirror zone its
+own width and x once per frame, with no `WSYNC` anywhere, because a zone that
+is only two scanlines tall does not need its list rewritten mid-zone.
+
+### What makes it possible
+
+* `$2500-$27FF` is 768 bytes with no reference anywhere in the disassembly --
+  checked for indexed bases as well as literal addresses, and clear of the
+  last band list, which ends at `$24FA`. Note the scan reports `$24DC-$27FF`
+  as unreferenced, which is wrong below `$2500`: those bytes belong to band 12
+  and are only ever written through an index.
+* The race zone list is placed by two bytes: `sub_F171`'s copy target and the
+  DPPH immediate at rom:D8D6. The results screen keeps its own list at
+  `$226B` and its own pointer at rom:D89B, so only the race view moves.
+  **Verified: relocated to `$2500`, both recordings match stock exactly.**
+* Slot +00's *address* never changes -- the injection rewrites only its width
+  and x. Confirmed identical across frames 2600, 2601, 2640, 3000 and 4000. So
+  every address in the mirror's lists can be baked in at boot.
+* MARIA steps a zone's graphics one page per scanline, counting down from
+  height-1, and the road graphics encode the taper *within* a band that way.
+  A two-line zone standing in for band rows j and j+1 needs its base page
+  shifted by `4 - j`, which is also static and also bakeable.
+
+### Where the prototype got to
+
+Working: the relocated 59-zone list, the boot-time copy of both images, and
+thirty-six two-line mirror zones fed once per frame from the vertical-blank
+handler. The mirror's road edge is genuinely smooth and tracks the road's own
+profile closely over the far two thirds -- widths of 34, 52, 68, 80, 104, 116,
+132, 152, 162, 180, 204 against the road's 12, 28, 44, 58, 76, 92, 112, 124,
+144, 154, 170.
+
+Not working: a seam at the eighth band. The five nearest bands draw the road
+with **two** objects, slot +00 and slot +04, because by then it is wider than
+one object can cover. Slot +04's address is static and its width and x change
+per frame but not per scanline, so it is cheap to replicate -- but with it
+added the near zones still render only their right half.
+
+Three traps worth keeping, all of which cost a build:
+
+* **The main loop has no point where both curve arrays are settled.**
+  `StageRowCurveForDLI` (rom:EA2C) fills only x, `$1B00-$1B4D`; the width array
+  at `$1B4E` is filled separately by sub_E8AC at rom:D8CC. Hooking either one
+  read a half-built frame. Probing what the routine actually saw returned
+  widths of `34 30 30 30 00 00` where the live values were `18 38 38 14 34 34`,
+  and **a width byte of `$00` is MARIA's end-of-list marker**, so most zones
+  terminated immediately and the mirror drew nothing at all. Vertical blank
+  (rom:F16B) is the answer: by then the road below has been drawn from those
+  arrays, so the mirror shows exactly what player 1's road used.
+* **Two separate 8-bit index overflows.** Thirty-six ten-byte lists is 360
+  bytes; neither the per-frame update nor the boot copy can walk that with one
+  8-bit register. The update is unrolled (faster anyway, ~576 cycles with no
+  loop overhead); the copy is split in half.
+* **The code blob outgrew its templates.** Unrolling pushed it from 322 to 949
+  bytes, straight over a template parked at `$FC00`. `expect=` caught it.
+
+A sentinel is what untangled the first of those: writing `$AA`/`$BB` instead
+of the array values proved the writes were landing in exactly the right
+places, which moved the search from the loop to its inputs.
+
 ## What's open
 
 Corrections to earlier versions of this list are noted where they apply, since
