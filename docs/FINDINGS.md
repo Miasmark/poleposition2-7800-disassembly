@@ -3170,3 +3170,20 @@ Cross-build frame numbers are still not comparable -- builds desync, so the
 stock ROM at f1500 is not this build's f1500. The stock dump was used only for
 the *relationships between arrays within one frame*, which are frame-invariant,
 never to compare absolute values against the patched build.
+
+### The mirror needed the same fix, separately
+
+Player 2's road is staged by `p2_stage_src`, not by the road's own routine, and
+it collapsed for a second, independent reason: its `emit()` helper *discards*
+the x source it is passed and writes `P2_BANDX[band] + accumulator` into both
+slots, and it read slot0's width from `$007E` -- the dead zero-page copy of
+`RowCurveXStaged`'s partner. So fixing player 1 left the top view exactly as it
+was, which is what the user saw ("Missing the left half on the top view still").
+
+The mirror now applies the same rule, with one wrinkle: the walk accumulator
+must advance exactly once per band, so that step is inlined rather than being
+run once per slot as `emit()` did.
+
+Lesson worth keeping: this project has **two** road-staging paths, and a fix to
+the shared geometry has to be applied to both. Verifying only player 1's DL
+addresses ($244C..$24D4) says nothing about player 2's ($2646..$266E).

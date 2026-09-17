@@ -1298,11 +1298,29 @@ def p2_stage_src():
             dl_w, dl_x = dl + 1, dl + 3
             lines += emit("%04X" % (ROW_CURVE_Y + i), "%04X" % (ROW_CURVE_X + i), True)
         else:
+            # The same rebuild player 1's near bands get. emit() cannot be
+            # reused here: it puts the walk's answer in BOTH slots, which is
+            # exactly the collapse being fixed, and it would take slot0's width
+            # from $007E, the dead zero-page copy. The walk accumulator must
+            # still advance exactly once for the band, so that step is inlined
+            # rather than run twice.
             n = i - NEAR_FIRST_ROW
-            dl_w, dl_x = dl + 1, dl + 3
-            lines += emit("%02X" % (NEAR_SLOT0_W + n), "%02X" % (NEAR_SLOT0_X + n), True)
-            dl_w, dl_x = dl + 5, dl + 7
-            lines += emit("%04X" % (NEAR_SLOT1_W + n), "%04X" % (NEAR_SLOT1_X + n), False)
+            S = P2_SCRATCH
+            lines += [
+                "    LDA $%04X" % (NEAR_SLOT1_W + n), "    STA $%04X" % (dl + 5),
+                "    AND #$20", "    ORA #$10", "    STA $%04X" % (dl + 1),
+                "    CLC",
+                "    LDA $%04X" % (S + 5), "    ADC $%04X" % (S + 3),
+                "    STA $%04X" % (S + 5),
+                "    LDA $%04X" % (S + 6), "    ADC $%04X" % (S + 4),
+                "    STA $%04X" % (S + 6),
+                "    LDA $%04X" % (P2_BANDX + band_index),
+                "    CLC", "    ADC $%04X" % (S + 6),
+            ]
+            if P2_X_OFFSET:
+                lines += ["    CLC", "    ADC #$%02X" % (P2_X_OFFSET & 0xFF)]
+            lines += ["    STA $%04X" % (dl + 7),
+                      "    SEC", "    SBC #$3C", "    STA $%04X" % (dl + 3)]
     return lines
 
 
