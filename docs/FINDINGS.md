@@ -2231,6 +2231,93 @@ A sentinel is what untangled the first of those: writing `$AA`/`$BB` instead
 of the array values proved the writes were landing in exactly the right
 places, which moved the search from the loop to its inputs.
 
+## Boot-time work desyncs the recordings, and it cost hours
+
+This one belongs at the front of anyone's mind before the rest of this
+section, because it invalidated several hours of apparently careful bisecting.
+
+Building a finer-grained mirror meant adding a boot-time copy: a new zone list
+into RAM, and a set of short display lists beside it. Every build carrying it
+failed the recordings with the *same* numbers -- `026770` becomes `000670` on
+`run-02`, every time, regardless of what else changed. That consistency was
+read, wrongly, as evidence of a single structural bug, and the hunt went
+through the zone list, the display lists, the display-list addresses, RAM
+versus ROM, granularity, and interrupt positions, ruling each out.
+
+The control that settled it: **mirror pointed at the road's own display lists,
+no per-frame hook, the only change a 120-iteration copy loop at boot writing
+to RAM the mirror never reads.** Identical failure. It cannot be corruption --
+nothing reads those bytes -- and it cannot be per-frame cost, because the loop
+runs once, from a one-time init path (rom:D241). It is boot timing: the extra
+work shifts startup past a frame boundary, every subsequent input in the
+recording lands at a different moment, and the race diverges from the top.
+
+This is the same effect already documented here for cartridge signing, which
+is why `--build` is unsigned. It generalises: **a recording cannot validate
+any build that changes how much work happens before the race starts.** When
+bisecting, hold the boot cost constant across every variant, or the comparison
+is meaningless. Two things follow from that:
+
+* Identical failure values across structurally different builds are a *signal*,
+  not a coincidence -- they mean the variable you are changing is not the one
+  that matters.
+* A build that fails a recording has not necessarily failed. It may simply be
+  unmeasurable this way, and needs a different check.
+
+## The per-frame budget, measured properly
+
+With boot cost held constant and the mirror on the road's own display lists,
+sweeping how many mirror zones get their width and x rewritten each frame from
+the hook at rom:F16B:
+
+| zones updated | approx cycles | result |
+|---------------|---------------|--------|
+| 1, 2, 3, 4, 6, 9 | 16 - 144   | pass   |
+| 12               | ~234       | fail   |
+
+**Roughly 150-230 cycles per frame.** A thirty-six zone, two-line mirror needs
+about 786. Two other homes were tried and did worse: rom:F15D, ahead of the
+handler's own vblank wait -- the reasoning that time before a wait is free
+turns out not to hold -- and the divider's own display interrupt, mid-screen,
+where the burn sweep had suggested there was room.
+
+That last one is worth stating plainly, because it contradicts the earlier
+section: the ~24 scanlines of headroom the burn sweep found are **not**
+spendable on per-frame work at frame end. They were measured by stalling a
+mid-screen interrupt while MARIA was already starving the 6502. Time taken
+once the display is done comes out of the main loop's actual compute window,
+and that window is far tighter.
+
+### Where the prototype reached
+
+It works, visually. Thirty-six two-line zones, each with its own six- or
+ten-byte display list, fed from the same arrays the road's own injection
+reads. The mirror's road edge is smooth and its width profile tracks the road
+one band ahead: 34, 52, 68, 80, 104, 116, 132, 152, 162, 180, 204, 220, 226,
+242, 268, 282, 290, 296 against the road's 12 through 292. The seam that first
+appeared at the eighth band is gone.
+
+Getting there turned up two facts about the road worth keeping:
+
+* **The near bands are injected completely differently.** For the eight far
+  bands, the injection writes slot +00's width and x from `$1B4E`/`$1B00`
+  indexed by scanline. From band 8 down -- road scanline 48, rom:EE73 -- it
+  writes *four* bytes per scanline, both road objects' width and x, from
+  `$007E`, `$0060`, `$1B7E` and `$1B30`, indexed by `scanline - 48`. The road
+  needs two objects there because it is wider than one can cover.
+* **Every address in those lists is static.** Slot +00's and slot +04's
+  graphics addresses never change across frames; only width and x do. So a
+  mirror's lists can bake their addresses in at boot and do no address work at
+  all -- including the page shift MARIA needs, since it counts the graphics
+  page down from the zone height and a shorter zone must start higher.
+
+What is not solved is paying for it. The rendering is right; the update is
+about four times the per-frame budget. Freeing that much would mean cutting
+elsewhere -- which is what the smaller Atari signs and a lower enemy-car count
+were proposed for, and remains the honest next step rather than a cleverer
+loop. The prototype and every build behind it are kept outside the tree so
+none of this has to be rediscovered.
+
 ## What's open
 
 Corrections to earlier versions of this list are noted where they apply, since
