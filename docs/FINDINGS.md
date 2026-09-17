@@ -2536,6 +2536,62 @@ flat slide would be the wrong shape.
   positions computed for its own camera.
 * **Player 2's HUD**, currently player 1's.
 
+## A 39-byte table buys the second track position
+
+The lateral half of a second camera turned out to be derivable. The other
+half -- an independent position along the track -- is the part that genuinely
+cannot be, because it depends on the curvature of the track ahead of a
+different point.
+
+That work is `AccumulateRowCurveOffset` (rom:E981-E9D9). It walks 78 rows from
+nearest to farthest, advancing through track segments as the accumulated
+distance passes each row's perspective depth (`dat_EB56` low, `dat_EAB9` high),
+and double-integrates `SegCurve` into `$0044-$0047`. A second pass is about
+2,340 cycles -- roughly 20 scanlines against the ~10 available.
+
+Player 2's view samples only **13** of those rows, one per band at row `6b+3`,
+so the walk can be done in 13 steps rather than 78. The stock tables give the
+depth and the curvature scale at exactly those rows:
+
+| band | row | Z (hi:lo) | curvature scale |
+|------|-----|-----------|-----------------|
+| 0    | 3   | 04:6A     | x8 |
+| 3    | 21  | 02:1D     | x4 |
+| 6    | 39  | 00:E0     | x2 |
+| 12   | 75  | 00:02     | x1 |
+
+    BandZLo   6A 7F BC 1D A0 37 E0 9B 66 3D 20 0C 02
+    BandZHi   04 03 02 02 01 01 00 00 00 00 00 00 00
+    BandShift 03 03 03 02 02 01 01 01 01 01 01 00 00
+
+The scale is the stock ASL chain made explicit: X >= $40 is x1, $20-$3F x2,
+$10-$1F x4, below $10 x8.
+
+**39 bytes of ROM, and 13 iterations instead of 78 -- about 390 cycles, some 3
+scanlines against 20.** That is the difference between fitting in the frame and
+not, and it is the place a table earns its keep: not a multiply lookup, but
+skipping 65 iterations of a walk whose intermediate results nothing reads.
+
+### The part to get right
+
+The accumulate is a *double* integration: `$0044/45` accumulates curvature into
+a velocity, `$0046/47` accumulates that into a position. A coarse step cannot
+simply scale the per-row increment by six:
+
+    per row  (78 steps):   v += c        p += v
+    per band (13 steps):   v += 6c       p += 6v + 21c
+
+The `21c` is sum(1..6) -- the position also gains the partial velocities from
+the five intermediate rows. Checked against the exact loop for c = 1, 5 and -3;
+both terms match. Dropping the second one makes the road bend too little on
+curves, which looks plausible and is wrong, so it is worth stating before
+someone simplifies it away. Neither term needs a multiply: 6c is 4c+2c and 21c
+is 16c+4c+c.
+
+One more difference from the stock loop: the segment advance becomes a loop
+rather than a single test, because six rows of distance can cross more than one
+track segment.
+
 ## What's open
 
 Corrections to earlier versions of this list are noted where they apply, since
