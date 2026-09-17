@@ -2455,6 +2455,48 @@ matches stock at run-01 f8000 and f11000 and at run-02 f1500, f2600, f8000 and
 f11000 -- so the whole coarse rewrite, injection bypass included, now comes
 back recording-clean rather than merely healthy.
 
+## Disconnecting the viewports
+
+Until now the two views could not diverge however the zones were arranged,
+because both pointed at the same thirteen road display lists. They were a
+mirror by construction, not by choice.
+
+Player 2 now draws from its own lists at `$2600` -- twelve bands, ten bytes
+each, the two road objects and an end marker -- fed by its own geometry. The
+addresses in them never change, only width and x, so they are baked in at boot
+and cost nothing per frame. `P2_X_OFFSET` adds a constant to player 2's road
+x, which is how the split is demonstrated before there is a second camera:
+
+* offset 0 reproduces player 1's road exactly. Road edges at rows +20, +40 and
+  +60 read (124,243), (54,257), (0,281) in **both** views.
+* offset `$18` shifts player 2's road 48 pixels while player 1's is untouched,
+  from the same frame.
+
+Cost: 120 bytes of RAM and about 384 cycles a frame.
+
+### Why player 2's viewport carries no traffic
+
+Copying player 1's lists wholesale would bring the objects along, and it is not
+affordable: they are 468 bytes, and rewriting them every frame is ~3,700
+cycles, roughly 33 scanlines -- more than the entire budget the injection
+bypass freed.
+
+It would also be wrong. Player 2's traffic has to be computed for player 2's
+camera. A copy of player 1's sits at player 1's positions, which is only
+correct while the two views agree -- precisely the property being removed.
+Objects for the second view wait on the engine producing a second set of
+positions, which is engine work rather than a rendering problem.
+
+### On the recordings
+
+This build desyncs them (`run-01` f8000 gives 021710 against stock's 028900).
+That is the boot-timing artifact recorded earlier in this document, not
+breakage: player 2's lists need a copy loop at startup, and any change to
+startup work moves every later input relative to the game. Liveness is
+unaffected -- every state field still moves and the clock still shows its
+usual 101 distinct values. The same caveat applies to anything added from here
+until the second camera exists, since each addition changes boot work again.
+
 ## What's open
 
 Corrections to earlier versions of this list are noted where they apply, since
