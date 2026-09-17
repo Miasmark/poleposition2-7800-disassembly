@@ -2318,6 +2318,65 @@ were proposed for, and remains the honest next step rather than a cleverer
 loop. The prototype and every build behind it are kept outside the tree so
 none of this has to be rediscovered.
 
+## Making both views identical, by making the road worse
+
+The mirror could never match player 1's road while the road had something the
+mirror could not afford. `DLI_InjectRowCurveX` is that something: beam
+synchronised, one `WSYNC` per road scanline, roughly **78 scanlines of stalled
+6502 every frame**, and the single largest consumer in the frame. It is why
+the road is smooth and the mirror steps.
+
+Giving it up makes the two views the same and hands the time back.
+
+`JMP` at rom:ED9D, the head of the injection, straight to that handler's own
+tail at rom:F143. The palette block above it is untouched; the whole
+per-scanline pass is skipped. Each band then carries one width and x for the
+frame, written by the same routine that feeds the mirror -- the far bands from
+`$1B4E`/`$1B00` at the band's middle scanline, the near five from the four
+arrays the injection switched to at rom:EE73, plus their second road object.
+Thirteen bands cost about 290 cycles a frame against the 78 scanlines saved.
+
+Two jobs were relying on the injection's length and had to be put back:
+
+* **BACKGRND.** The injection set it mid-road from `ram_00FA`/`ram_00FB`
+  (rom:EDAF, rom:EDC5). Without it the road drew on whatever the divider's
+  palette restore had left. `RoadTail` sets it from `ram_00FB` before jumping
+  to the tail.
+* **The black-out at rom:F158.** `STA BACKGRND` with A=0, meant for the bottom
+  margin *after* the road. With 78 scanlines no longer in front of it, it
+  landed mid-road and blacked the whole view out. NOPped; the margin now
+  shares the ground colour.
+
+### Both views from one plan
+
+With neither view getting per-scanline treatment, player 1's road can be built
+from exactly the same description as the mirror: same zone heights, same
+display lists, same dropped farthest band. 26 zones and 72 lines each.
+Measured on two frames, **0 of 11,520 sampled pixels differ between the two
+views.**
+
+The bottom giving up its farthest band frees six lines, which went to the
+blank carrier zone between the mirror and the divider -- breathing room above
+the HUD, at no cost.
+
+What this bought, measured by the same burn probe used before: the frame
+tolerated **under 2 stalled scanlines** at the frame-end hook before, and
+**10 to 30** after. That is the budget the next stage needs.
+
+A trap worth recording: the zone list is two views now, 62 zones, and the
+boot-time copy still had the old one-view length baked in. The list simply
+stopped at zone 48 and the bottom view rendered half a road. Derive the count.
+
+### Per-view skyboxes: free on lines, not yet on palette
+
+Putting the horizon (`$18FA`) and the decor strip (`$1D3B`) above the top view
+costs exactly the twenty lines zone 0 and the blank gap already spend, so the
+line budget does not object. It still does not render: zone 0's own display
+interrupt is what installs the road palettes, and it fires at the *end* of
+that zone, so the strip draws in whatever the previous frame left behind. The
+fix is to move that palette work earlier -- the vblank handler is the obvious
+home -- and is not done.
+
 ## What's open
 
 Corrections to earlier versions of this list are noted where they apply, since
