@@ -2971,6 +2971,41 @@ What happens at the nearest band is horizontal, not vertical. Its road spans
 lines, which is what stock uses, so the bottom view ends exactly where stock's
 road ends and any remaining loss is overscan that affects stock equally.
 
+## The near bands' road is drawn in two halves, and they have collapsed
+
+The five near bands draw the road as two objects -- a left half at slot +00 and
+a right half at slot +04. Probed at runtime, slot 1's x minus slot 0's x reads
+**00 on every near band in every frame**, so the halves sit on top of one
+another. That is both reported faults from one cause: player 2's left half is
+not missing but hidden behind the right one, and player 1's near bands look
+stuck in a turn because the road being drawn is half its proper width.
+
+The generated code is right and reads two different sources, `$0060+n` for the
+left half's x and `$1B30+n` for the right's. Both read zero at runtime, where
+the original dumps had them `$3C` apart. So an array upstream is not being
+filled, and *that* is the bug.
+
+Two workarounds were tried on the assumption it could be derived instead.
+Neither works, and both are worth recording:
+
+* **A constant gap.** It is not constant -- the offset is the left half's own
+  width, which varies per band and per frame. `$3A` closed the seam on the four
+  rows sampled, and left 47 rows split across three frames once measured
+  across the whole near region. Four rows is not a measurement, and it briefly
+  looked like a fix.
+* **Derived from the width**, `bytes*4 - 4`, from MARIA's width field holding
+  32 minus the byte count. This matches the original dump exactly -- 16 bytes
+  wide, `$3C` apart -- and still leaves 47 rows split.
+
+A derivation that matches the recorded data and still fails means the premise
+is wrong somewhere: most likely the HPOS-per-byte figure, or the right half's
+width being independent rather than the remainder of the left's.
+
+The next step is not a third formula. It is finding why `$1B30+n` reads zero,
+because with that array intact the original arrangement needs no derivation at
+all. `sub_E8AC` fills those near-band arrays, and the walk-tail strip at
+rom:E9BE is the only change this project has made anywhere near them.
+
 ## What's open
 
 Corrections to earlier versions of this list are noted where they apply, since
