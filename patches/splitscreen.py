@@ -347,7 +347,7 @@ CARRIER_LINES = int(os.environ.get("PP2_CARRIER", "12"))
 # set of positions for a second camera anyway; a copy of player 1's would be
 # in the wrong places by definition.
 P2_DL_BASE = 0x2600
-P2_DL_SIZE = 10
+P2_DL_SIZE = 14              # two road objects, the car, and the end marker
 P2_TEMPLATE = 0xFB80
 
 # A constant added to player 2's road x. Zero makes the two views identical
@@ -411,7 +411,8 @@ P2_SPEED = 0x2753            # player 2's own speed along the track
 # player 2's readouts. Seeded at boot from the row it replaces, so it renders
 # something recognisable before the content is rewritten.
 P2_HUD_DL = 0x2770           # player 2's HUD row: one 5-byte header + end
-P2_HUD_TEMPLATE = 0xFC00            # player 2's own speed along the track
+P2_HUD_TEMPLATE = 0xFD00            # 12 bytes; moved off $FC00 to leave
+                                    # P2_TEMPLATE room to grow
 SWCHA = 0x0280               # player 2's stick: bit 3 right, 2 left, 1 down, 0 up
 P2_HALF = 0x2756             # which half of the walk this frame runs
 P2_END = 0x2757              # the sample index this half stops at
@@ -444,6 +445,22 @@ BAND_GFX = [(0x00, 0x80), (0x06, 0x80), (0x0E, 0x80), (0x00, 0xAA),
 # None is a band whose second slot stays empty.
 BAND_SLOT1 = [None] * 8 + [(0x47, 0x80), (0x69, 0x80), (0x8D, 0x80),
                            (0xB5, 0x80), (0xE1, 0x80)]
+
+# Slot +1C of player 1's near bands is the player's car: palette 6, 8 bytes
+# wide, and -- in 5999 of the 6700 frames sampled -- x = 64. It spans bands 8
+# to 11, one graphics page per band, and the page is the base plus a lean
+# offset of 0, 8, $10, $18 or $20, with $10 upright.
+#
+# x = 64 is not a compromise for player 2, it is the right answer: the car is
+# centred and the ROAD moves under it, and player 2's road already moves with
+# player 2's steering. So width and x are baked into the template and only the
+# graphics page is copied each frame. The lean therefore still follows player
+# 1's steering, which is the one part of this that is scaffolding.
+P1_CAR_SLOT = [0x244C + 0x1C, 0x246E + 0x1C, 0x2490 + 0x1C, 0x24B2 + 0x1C]
+P2_CAR_BANDS = [8, 9, 10, 11]
+P2_CAR_SEED = [(0x08, 0x9D), (0x08, 0x97), (0xE0, 0xAA), (0x08, 0x8B)]
+P2_CAR_W = 0xD8              # palette 6, 8 bytes
+P2_CAR_X = 0x40              # 64
 
 # The road is injected two different ways and the mirror has to follow both.
 # For the eight far bands, DLI_InjectRowCurveX writes a band's slot +00 width
@@ -698,7 +715,7 @@ def hud_reassert_src(addr):
         "    JSR $%04X" % PER_FRAME_HOOK,
     ] + _unrolled_mirror_stage() + (
         [] if os.getenv("PP2_KEEP_INJECTION") else road_stage_src()
-    ) + p2_stage_src() + [
+    ) + p2_stage_src() + p2_car_src() + [
         "    RTS",
         "WrapSlot0:",
         "    CMP #$A0",
@@ -1149,8 +1166,27 @@ def p2_dl_template():
         else:
             lo1, hi1 = BAND_SLOT1[b]
             e += [lo1, 0x1F, hi1, 0x80]
+        if b in P2_CAR_BANDS:
+            clo, chi = P2_CAR_SEED[P2_CAR_BANDS.index(b)]
+            e += [clo, P2_CAR_W, chi, P2_CAR_X]
+        else:
+            e += [0x00, 0x00, 0x00, 0x00]
         out += e + [0x00, 0x00]
     return out
+
+
+def p2_car_src():
+    """Give player 2's view its own car.
+
+    Only the graphics page moves, so this is two byte copies a band. Width and
+    x stay as the template baked them.
+    """
+    lines = []
+    for src, b in zip(P1_CAR_SLOT, P2_CAR_BANDS):
+        dl = P2_DL_BASE + (b - 1) * P2_DL_SIZE
+        lines += ["    LDA $%04X" % src,       "    STA $%04X" % (dl + 8),
+                  "    LDA $%04X" % (src + 2), "    STA $%04X" % (dl + 10)]
+    return lines
 
 
 def p2_camera_src():
@@ -1472,6 +1508,22 @@ def fix_mirror_split(p):
     # The stock boot template at dat_BC7E is no longer used: sub_F171 is
     # redirected below to copy this one instead, which is larger than the 107
     # bytes that would fit between $2200 and the results screen's own list.
+    # These four live in the same free $FF run as the code blob, and the blob
+    # and the templates have both outgrown their slots more than once. An
+    # overlap shows up as an "expected ff.. but found <our own data>" mismatch
+    # on whichever put runs second, which says nothing about the real cause, so
+    # check the layout first and name the pair that collides.
+    _regions = [("DLL_TEMPLATE", DLL_TEMPLATE, DLL_ZONES * 3),
+                ("P2_TEMPLATE", P2_TEMPLATE, 12 * P2_DL_SIZE),
+                ("P2_HUD_TEMPLATE", P2_HUD_TEMPLATE, 12),
+                ("MINI_TEMPLATE", MINI_TEMPLATE, FINE_ZONES * MINI_DL_SIZE)]
+    _regions = sorted((a, n, nm) for nm, a, n in _regions if n)
+    for (a1, n1, nm1), (a2, _, nm2) in zip(_regions, _regions[1:]):
+        if a1 + n1 > a2:
+            raise SystemExit(
+                "layout overlap: %s $%04X..$%04X runs into %s at $%04X"
+                % (nm1, a1, a1 + n1 - 1, nm2, a2))
+
     p.put(DLL_TEMPLATE, dll_template(), expect=[0xFF] * (DLL_ZONES * 3))
     p.put(P2_TEMPLATE, p2_dl_template(), expect=[0xFF] * (12 * P2_DL_SIZE))
     # Seed of player 2's HUD row: the same two character objects the row it

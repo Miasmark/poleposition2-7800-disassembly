@@ -3261,3 +3261,43 @@ would need x in roughly 133..159 on a 29-31 byte band, which is what a hard left
 excursion should produce. Left unfixed pending a case that actually reproduces
 it; clamping the width would be the repair, since only invisible and spurious
 pixels lie beyond 256.
+
+## Player 2's car
+
+**Confirmed live.** The top view drew road and nothing else. The player's car is
+slot `+1C` of player 1's near-band display lists -- palette 6, 8 bytes wide, and
+x = 64 in 5999 of 6700 frames sampled -- spanning bands 8 to 11 with one
+graphics page per band. The page is a base plus a lean offset of 0, 8, `$10`,
+`$18` or `$20`, with `$10` upright. Empty object slots in those lists are parked
+at x = 161 with a 1-byte width, the same off-screen idiom the wrap guard uses.
+
+x = 64 is the correct value for player 2 as well, not an approximation: the car
+is centred and the *road* moves under it, and player 2's road already moves with
+player 2's steering. So width and x are baked into player 2's template and only
+the graphics page is copied each frame -- two byte copies a band over four
+bands.
+
+Placement checks out against the live zone list: player 2's road occupies
+scanlines 20..91 and its car lines 62..85; player 1's road occupies 145..216 and
+its car 187..210. Both are 58%..90% of their own view.
+
+`P2_DL_SIZE` went from 10 to 14 to fit the third object.
+
+### A layout trap worth naming
+
+Growing `P2_TEMPLATE` to 168 bytes ran it from `$FB80` into `P2_HUD_TEMPLATE` at
+`$FC00`. The failure surfaced as `at $FC00 expected ffffff.. but found
+80808d1f8080e0d8aa40..` -- that is, the patch found *its own* data and reported
+it as "this is not the ROM this patch was written for", which points at the
+wrong thing entirely. The blob and these templates share one free `$FF` run and
+have both outgrown their slots several times now, so there is a layout
+assertion up front that sorts the four regions and names the colliding pair.
+
+### Still scaffolding
+
+The lean follows player 1's steering, since the page is copied rather than
+selected from player 2's own state. Driving it from `P2_LATERAL` means decoding
+which bases are the car and which are the crash and spin sprites -- band 11
+alone showed `$8B00`/`$08`/`$10`/`$18`/`$20` for the car but also `$8660`,
+`$86BA` and `$98EF` in other states -- so substituting lean bits blindly would
+corrupt those.
