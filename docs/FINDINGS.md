@@ -2811,6 +2811,55 @@ Player 2's directions sit in SWCHA's low nibble, active low: bit 3 right, bit
 as trigger, so the identical shape of input is available for player 2 when its
 steering wants to be analogue rather than a stick.
 
+## What actually runs each frame: a sampling profiler
+
+Two probes in this project read numbers off builds that had already stopped
+running, so the tool for this question had to satisfy two conditions: change
+nothing in the ROM, and report liveness in the same run as the measurement.
+
+`mirror-lab/checkpoints/profile.lua` samples the program counter and buckets it
+by 256-byte page, alongside a speed/position check. On a healthy build over a
+hundred frames:
+
+    LIVENESS speed=A0 playerx=00 -> RUNNING
+    SAMPLES 101
+    PAGE $DB00   101  100.0%
+
+**Every sample lands in the vblank wait.** `$DB00` is `BIT MSTAT / BPL`,
+reached from rom:F160 inside the NMI handler. The game finishes its frame work
+and spins there. That confirms what the `sub_D8AC` sentinel implied from the
+other direction -- the per-frame work lives in the interrupt chain, and there
+is genuine idle time before vblank rather than a frame that is merely full.
+
+The sampler fires once per frame rather than continuously, so this answers
+"which routines tick every frame" and not "where do the cycles go". A real
+cycle profile would need a finer timer than the lua API offers here.
+
+### Liveness of every prototype, same probe
+
+| build | frames 1400-1450 |
+|-------|------------------|
+| lateral camera (13) | RUNNING |
+| first track walk (14) | **DEAD** |
+| walk in sub_D8AC (15) | RUNNING |
+| steering (16, the .a78) | RUNNING |
+
+Worth running before trusting any of them. It also caught a bookkeeping error:
+the `.a78` and the `.py` saved as checkpoint 16 are different builds.
+
+### Still open, and narrowed
+
+Calling player 2's per-frame work from `RoadTail` -- inside `DLI_ED4F`,
+genuinely per frame, with roughly 110 scanlines of idle ahead of the vblank
+wait -- kills the game at every frame range tested. Bounding the
+segment-advance loop to 32 steps does **not** fix it, so it is not a spin
+inside an interrupt, which was the obvious suspect.
+
+The next test is one build and separates the two remaining explanations:
+call `P2Frame` from `RoadTail` with the walk stubbed to an immediate `RTS`. If
+that runs, the problem is the walk's cost or contents; if it dies, the problem
+is calling anything from that point at all.
+
 ## What's open
 
 Corrections to earlier versions of this list are noted where they apply, since
