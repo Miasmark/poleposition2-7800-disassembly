@@ -2592,6 +2592,45 @@ One more difference from the stock loop: the segment advance becomes a loop
 rather than a single test, because six rows of distance can cross more than one
 track segment.
 
+## Why player 1 cannot share the coarse walk
+
+The obvious follow-on to the 13-step table is to give player 1 the same
+treatment and bank the saving twice: player 1's view is coarse too, one x per
+band, so the 78-row walk is computing 65 values its own road never reads.
+
+It does not hold, and the reason is worth recording before someone tries it.
+`RowCurveOffset` (`$1A31`) has two consumers outside the curve pipeline:
+
+* **rom:D1FD** reads it at a single fixed row (`LDY #$48`) and the result
+  becomes `PlayerX`. One row, and a coarse walk could carry it.
+* **rom:E502** reads it at `LDY ram_0048` -- a *variable* index -- inside the
+  object placement maths, right after `ObjLateral,Y` and before a compare that
+  decides whether the object is on screen. That is where a car or a sign gets
+  its lateral position, and the index is the object's distance.
+
+So the array is not private to the road renderer. It is the road's shape at
+arbitrary depth, and object placement samples it wherever an object happens to
+be. Thirteen band samples cannot answer that question; the walk is a sequential
+double integration, so there is no way to get row 37 without having walked
+rows 0-37.
+
+**Player 2 can still use the coarse walk, because its viewport has no objects.**
+That is what makes the second camera affordable: ~3 scanlines rather than ~20,
+paid on top of player 1's existing full walk rather than instead of it.
+
+Two ways the saving could still be had, neither taken:
+
+* Interpolate `RowCurveOffset` between band samples for object placement. The
+  double integral is smooth so the error would be small -- but it would be an
+  error in where cars are drawn and where they are hit, which is a poor place
+  to approximate.
+* Walk fully only as far as the furthest live object, coarsely beyond. The
+  saving then depends on traffic, which is exactly when the frame is busiest.
+
+And a consequence worth noting for later: when player 2 does get objects, it
+needs a full-resolution offset array of its own, and this saving disappears
+with it.
+
 ## What's open
 
 Corrections to earlier versions of this list are noted where they apply, since
