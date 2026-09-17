@@ -2898,6 +2898,51 @@ continuous, and decreasing from far to near as the geometry requires.
 Player 2's viewport is now drawn from its own track walk, its own lateral
 camera, and its own display lists, every frame.
 
+## Player 2 drives
+
+Player 2 now has its own car rather than its own view of player 1's. The stick
+is free -- the game never reads SWCHA's low nibble -- so up and down are
+throttle and brake, left and right steer. Its position along the track is its
+own: speed added to the distance into the current segment each frame, carried
+into the next segment for as long as the distance exceeds that segment's
+length, the same shape the engine uses for player 1. Nothing is copied across
+any more.
+
+Verified live: speed climbs 00 to C0, the segment index advances through the
+track, the distance accumulates, and the lateral offset runs 00 to 3C under
+steering. The two viewports show different parts of the track.
+
+### Two traps, and they cost most of the session
+
+**`-playback` overrides the input ports.** Every attempt to test player 2's
+stick under a recording silently discarded the presses. The steering looked
+dead when it was simply unreachable. SWCHA was correct throughout -- probed
+without playback it reads `$FE` for P2 Up, `$F7` for P2 Right and `$EF` for P1
+Up, exactly as documented. Input has to be tested without `-playback`, which
+means driving Select, Reset and player 1's button from lua to get into a race
+first.
+
+**Duplicate labels assemble silently.** An older steering block was still
+inside `P2Frame` when the new drive routine added its own, so two
+`P2NotRight:` labels existed. The build succeeded. Branches resolved to the
+first definition, so the new code jumped backwards into the old block -- which
+is why the steering appeared to work while the throttle never ran at all. One
+symptom present, one absent, from a single cause.
+
+The rule worth keeping: after replacing a generated block, grep for its labels
+and assert the count. The assembler will not do it, and the failure looks like
+a logic bug in whichever half you did not write most recently.
+
+### What two-player still lacks
+
+* Player 2 has no car sprite in its own view, and no traffic -- its viewport is
+  road only.
+* No HUD of its own: speed and lap are player 1's.
+* Its speed scale is uncalibrated. Adding the speed byte straight to the
+  distance is not the engine's own scale, so `$C0` is far faster than player
+  1's equivalent.
+* No collision, and no interaction between the two cars.
+
 ## What's open
 
 Corrections to earlier versions of this list are noted where they apply, since
