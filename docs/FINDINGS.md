@@ -3514,3 +3514,54 @@ A recording made on one build cannot validate the build that fixes it: changing
 the ROM desyncs it, and `-playback` overrides the input ports, so the stick
 cannot be exercised under playback at all. Both directions were checked by
 driving the ports live.
+
+## The road stripes, and the writer of $007E
+
+**Confirmed live.** The top view's stripes scrolled to *player 1's* speed,
+because player 2 took its width bytes out of player 1's arrays and the stripe
+palette rides in the same byte. With no HUD of its own, the stripes are player
+2's only speed cue, so they were actively misleading.
+
+Reading the rest of `sub_E8AC` gives the whole mechanism:
+
+    ram_00AF -= Speed/2 each frame; every time it goes negative it gains $14
+    and the phase steps on -- so roughly Speed/40 steps a frame
+    ram_00CD = phase, 0..29
+    ram_00FD/FE = $1F00 + ram_00CD
+
+    RowCurveYStaged[row] = $1F00[phase + dat_C07E[row]] | ram_1F3C[row]
+    ram_004E[row]        = $1F00[phase + dat_C07E[row]] | $10
+
+**That last line is the missing writer of `$007E`.** It is `STA ram_004E,X` at
+rom:E8F8 -- base `$004E`, and `$004E + 48 = $007E`. Earlier this array was
+recorded as having no writer anywhere in the disassembly, which was wrong: the
+search was for base `$0060`, the array's *other* half. The lesson is the same
+one `$1B30` taught -- these are not separate arrays, they are offsets into
+longer ones, and searching for the offset finds nothing.
+
+It also explains why `slot0 W == (slot1 W & $E0) | $10` held over every frame
+tested: both are the same texture byte, one ORed with the row's width field and
+the other with `$10`.
+
+Player 2 now keeps its own phase and accumulator, advanced by `P2_SPEED` using
+`sub_E8AC`'s own arithmetic, and builds its width bytes rather than copying.
+`dat_C07E[row]` is fixed per row so it is baked in, and it never exceeds 29, so
+`phase + offset` tops out at 54 -- absolute-indexed addressing is enough, where
+the engine needs a zero-page pointer because its index is a variable row.
+
+Verified three ways: **decoupled** (under playback with player 2 parked, player
+1's phase takes all 30 values across 3089 frames and player 2's never moves);
+**correct rate** (traced at speed 255 the phase runs 28, 4, 10, 17, 23, 29,
+6... = 6.375 steps a frame, exactly Speed/40); and **sane output** (all twelve
+bands' width fields match the value player 1 uses for the same row, with only
+the palette bits moving).
+
+### The same measurement trap, twice
+
+An aggregate over a frame window reported 2.749 steps/frame against a
+theoretical 6.375 -- because the window included frames before the race started,
+where `P2_SPEED` is already pinned at 255 but the walk is not running. This is
+exactly the trap that made the speed work read 12.76 instead of 21.25. **A mean
+over "frames at speed 255" is not a mean over "frames where the car was
+moving."** Trace frame by frame, or separate advancing from non-advancing
+frames, before believing an averaged rate.

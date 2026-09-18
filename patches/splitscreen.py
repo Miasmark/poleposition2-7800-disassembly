@@ -348,7 +348,7 @@ CARRIER_LINES = int(os.environ.get("PP2_CARRIER", "12"))
 # in the wrong places by definition.
 P2_DL_BASE = 0x2600
 P2_DL_SIZE = 14              # two road objects, the car, and the end marker
-P2_TEMPLATE = 0xFD80
+P2_TEMPLATE = 0xFEC0
 
 # A constant added to player 2's road x. Zero makes the two views identical
 # again, which is the regression check; anything else drives the viewports
@@ -434,6 +434,14 @@ COLLIDE_X = 0x28
 COLLIDE_PENALTY = 0x18       # speed each car loses, ONCE, per contact
 P2_HIT = 0x276D              # already touching, so the penalty is not re-paid
 P2_PREV_STATE = 0x276E       # $009D last frame, to spot a race starting
+# Player 2's own road-stripe phase. The stripes are the only speed cue in a
+# view with no HUD of its own, and they were scrolling to PLAYER 1's speed,
+# because player 2 took its width bytes straight out of player 1's arrays.
+P2_PHASE = 0x270A            # 0..29, the texture phase
+P2_PHASE_ACC = 0x270B        # its fractional accumulator
+STRIPE_TEX = 0x1F00          # sub_E8AC's texture, read at phase + dat_C07E[row]
+STRIPE_WIDTH = 0x1F3C        # per-row width field, ORed into the same byte
+ROW_TEX_INDEX = 0xC07E       # dat_C07E: each row's offset into the texture
 GAME_STATE = 0x009D          # $02 qualifying drive, $03 race drive
 P2_START_LATERAL = 0x30      # player 2 lines up beside player 1, clear of the
                              # collision box, so the grid is not an overlap
@@ -444,7 +452,7 @@ P2_START_LATERAL = 0x30      # player 2 lines up beside player 1, clear of the
 # player 2's readouts. Seeded at boot from the row it replaces, so it renders
 # something recognisable before the content is rewritten.
 P2_HUD_DL = 0x2770           # player 2's HUD row: one 5-byte header + end
-P2_HUD_TEMPLATE = 0xFE40            # 12 bytes; moved off $FC00 to leave
+P2_HUD_TEMPLATE = 0xFF70            # 12 bytes; moved off $FC00 to leave
                                     # P2_TEMPLATE room to grow
 SWCHA = 0x0280               # player 2's stick: bit 3 right, 2 left, 1 down, 0 up
 P2_HALF = 0x2756             # which half of the walk this frame runs
@@ -457,8 +465,8 @@ TRACK_LEN = 0x00C1
 BAND_SAMPLE = int(os.environ.get("PP2_SAMPLE", "3"))
 PLACEHOLDER_W = int(os.environ.get("PP2_PW", "0x1F"), 16)
 PLACEHOLDER_X = int(os.environ.get("PP2_PX", "0x80"), 16)
-DLL_TEMPLATE = 0xFD00          # boot image of the zone list, clear of the code blob
-MINI_TEMPLATE = 0xFE80         # boot image of the mini display lists
+DLL_TEMPLATE = 0xFE58          # boot image of the zone list, clear of the code blob
+MINI_TEMPLATE = 0xFF7C         # boot image of the mini display lists
 
 # Road band slot +00, the road surface itself: (address low, address high).
 # Confirmed static across frames -- the injection rewrites only this slot's
@@ -1393,6 +1401,32 @@ def p2_drive_src():
         "P2SpdOk:",
         "    STA $%04X" % P2_SPEED,
         "P2NotDown:",
+        # --- road-stripe phase, exactly as sub_E8AC advances player 1's -----
+        # AF drops by Speed/2 each frame and every time it goes negative it
+        # gains 20 and the phase steps on, so the stripes scroll at about
+        # Speed/40 steps a frame. Mirrored rather than reinvented so the two
+        # views scroll at the same rate for the same speed.
+        "    LDX #$00",
+        "    LDA $%04X" % P2_SPEED,
+        "    LSR A",
+        "    EOR #$FF",
+        "    SEC",
+        "    ADC $%04X" % P2_PHASE_ACC,
+        "    BPL P2PhStore",
+        "P2PhLoop:",
+        "    INX",
+        "    ADC #$14",
+        "    BMI P2PhLoop",
+        "P2PhStore:",
+        "    STA $%04X" % P2_PHASE_ACC,
+        "    TXA",
+        "    CLC",
+        "    ADC $%04X" % P2_PHASE,
+        "    CMP #$1E",
+        "    BMI P2PhOk",
+        "    SBC #$1E",
+        "P2PhOk:",
+        "    STA $%04X" % P2_PHASE,
         # --- steering ------------------------------------------------------
         # A RISING lateral moves the car LEFT, not right. Measured both ways:
         # holding player 2's stick right moved P2_LATERAL +1.000 a frame and
@@ -1647,6 +1681,7 @@ def p2_race_init_src():
         "    LDA #$%02X" % P2_START_LATERAL, "    STA $%04X" % P2_LATERAL,
         "    LDA #$00",
         "    STA $%04X" % P2_SPEED, "    STA $%04X" % P2_FRAC,
+        "    STA $%04X" % P2_PHASE, "    STA $%04X" % P2_PHASE_ACC,
         "    STA $%04X" % P2_HIT,
         "    STA $%04X" % GAP_LO,  "    STA $%04X" % GAP_HI,
         "    LDY $%04X" % P1_SEG, "    STY $%04X" % P2_TRACK_SEG,
@@ -1687,7 +1722,10 @@ def p2_stage_src():
         i = 6 * b + BAND_SAMPLE
         def emit(wsrc, xsrc, advance):
             S = P2_SCRATCH
-            out = ["    LDA $%s" % wsrc, "    STA $%04X" % dl_w]
+            # wsrc None means the width byte is already in A, built from
+            # player 2's own stripe phase rather than read from player 1's array
+            out = ([] if wsrc is None else ["    LDA $%s" % wsrc])
+            out += ["    STA $%04X" % dl_w]
             xsrc = "%04X" % (P2_BANDX + band_index)
             if advance:
                 out += ["    CLC",
@@ -1702,7 +1740,8 @@ def p2_stage_src():
             return out
         if i < NEAR_FIRST_ROW:
             dl_w, dl_x = dl + 1, dl + 3
-            lines += emit("%04X" % (ROW_CURVE_Y + i), "%04X" % (ROW_CURVE_X + i), True)
+            lines += stripe_src(i) + ["    ORA $%04X" % (STRIPE_WIDTH + i)]
+            lines += emit(None, "%04X" % (ROW_CURVE_X + i), True)
         else:
             # The same rebuild player 1's near bands get. emit() cannot be
             # reused here: it puts the walk's answer in BOTH slots, which is
@@ -1712,9 +1751,11 @@ def p2_stage_src():
             # rather than run twice.
             n = i - NEAR_FIRST_ROW
             S = P2_SCRATCH
-            lines += [
-                "    LDA $%04X" % (NEAR_SLOT1_W + n), "    STA $%04X" % (dl + 5),
-                "    AND #$E0", "    ORA #$10", "    STA $%04X" % (dl + 1),
+            lines += stripe_src(i) + [
+                "    TAX",                              # keep the stripe byte
+                "    ORA $%04X" % (STRIPE_WIDTH + i), "    STA $%04X" % (dl + 5),
+                "    TXA",
+                "    ORA #$10", "    STA $%04X" % (dl + 1),
                 "    CLC",
                 "    LDA $%04X" % (S + 5), "    ADC $%04X" % (S + 3),
                 "    STA $%04X" % (S + 5),
@@ -1729,6 +1770,33 @@ def p2_stage_src():
             lines += wrap_guard()
             lines += ["    STA $%04X" % (dl + 3)]
     return lines
+
+
+def stripe_src(row):
+    """Leave this row's stripe byte in A, at PLAYER 2's phase.
+
+    sub_E8AC builds player 1's width byte as
+
+        RowCurveYStaged[row] = $1F00[phase + dat_C07E[row]] | ram_1F3C[row]
+
+    and its slot0 companion as the same texture byte ORed with $10 -- which is
+    also where `ram_004E,X` writes, the array that looked like it had no writer
+    at all because only the base $0060 was searched for. Player 2 now does the
+    same with its own phase, so the stripes scroll to ITS speed.
+
+    dat_C07E[row] is fixed per row so it is baked in, and it never exceeds 29,
+    so phase + offset tops out at 54 and plain absolute-indexed addressing is
+    enough -- no zero-page pointer needed, unlike the engine's own (ram_00FD),Y.
+    """
+    import io as _io
+    rom = bytearray(_io.open(load_source()[0], "rb").read())
+    rom = rom[len(rom) - ROM_SIZE:]
+    off = rom[ROW_TEX_INDEX + row - BASE]
+    assert off + 29 <= 0xFF, "row %d texture index would overflow" % row
+    return ["    LDA $%04X" % P2_PHASE,
+            "    CLC", "    ADC #$%02X" % off,
+            "    TAY",
+            "    LDA $%04X,Y" % STRIPE_TEX]
 
 
 def mirror_plan():
