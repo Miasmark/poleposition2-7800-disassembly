@@ -404,6 +404,8 @@ P2_TRACK_LO = 0x2751
 P2_TRACK_HI = 0x2752
 P2_WALK = 0x2720             # walk scratch: dist, seg, v, p, curvature
 P2_SPEED = 0x2753            # player 2's own speed along the track
+P2_FRAC = 0x2755             # remainder of the /12 advance, always < 12
+P2_QUOT = 0x2758             # whole track units to advance this frame
 
 # The divider is shared: its top row belongs to player 2 and its lower rows to
 # player 1, matching the viewport above and below it. Player 2's row needs a
@@ -1325,10 +1327,10 @@ def p2_drive_src():
         "    AND #$01",
         "    BNE P2NotUp",
         "    LDA $%04X" % P2_SPEED,
-        "    CMP #$C0",
+        "    CMP #$FF",
         "    BCS P2NotUp",
         "    CLC",
-        "    ADC #$02",
+        "    ADC #$01",
         "    STA $%04X" % P2_SPEED,
         "P2NotUp:",
         "    LDA $%04X" % SWCHA,
@@ -1336,7 +1338,7 @@ def p2_drive_src():
         "    BNE P2NotDown",
         "    LDA $%04X" % P2_SPEED,
         "    SEC",
-        "    SBC #$04",
+        "    SBC #$02",
         "    BCS P2SpdOk",
         "    LDA #$00",
         "P2SpdOk:",
@@ -1368,8 +1370,31 @@ def p2_drive_src():
         "    STA $%04X" % P2_LATERAL,
         "P2NotLeft:",
         # --- advance along the track ---------------------------------------
+        # Player 1 advances by Speed/12 per frame, measured: Speed 16 -> 1.33
+        # units, 106 -> 8.83, 198 -> 16.50, 210 -> 17.50. Player 2 was adding
+        # its speed raw, which at its old $C0 cap was 192 units a frame against
+        # player 1's 21.25 at full tilt -- about nine times too fast.
+        #
+        # So divide by 12, carrying the remainder between frames rather than
+        # throwing it away, which would lose up to 11/12 of a unit each frame.
+        # Repeated subtraction is exact and small; the count is bounded because
+        # the remainder is always left below 12, so the worst case is 21 passes
+        # and a carry out of the add is handled by pre-subtracting 192.
+        "    LDA #$00", "    STA $%04X" % P2_QUOT,
+        "    LDA $%04X" % P2_FRAC, "    CLC", "    ADC $%04X" % P2_SPEED,
+        "    BCC P2DivLoop",
+        "    ADC #$3F",                       # carry set, so +$40 = value - 192
+        "    LDY #$10", "    STY $%04X" % P2_QUOT,
+        "P2DivLoop:",
+        "    CMP #$0C",
+        "    BCC P2DivDone",
+        "    SBC #$0C",                       # CMP left carry set
+        "    INC $%04X" % P2_QUOT,
+        "    BCS P2DivLoop",                  # SBC cannot borrow here
+        "P2DivDone:",
+        "    STA $%04X" % P2_FRAC,
         "    CLC",
-        "    LDA $%04X" % P2_TRACK_LO, "    ADC $%04X" % P2_SPEED,
+        "    LDA $%04X" % P2_TRACK_LO, "    ADC $%04X" % P2_QUOT,
         "    STA $%04X" % P2_TRACK_LO,
         "    LDA $%04X" % P2_TRACK_HI, "    ADC #$00",
         "    STA $%04X" % P2_TRACK_HI,

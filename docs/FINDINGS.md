@@ -3348,3 +3348,43 @@ it only covered the four templates, not the blob; it now measures the blob first
 and includes it in the check. `FINE_ZONES` is 0, so `MINI_TEMPLATE` is unused
 and everything above `$FD0C` was free -- the templates moved up and the blob has
 `$F400..$FCFF`, currently 1858 bytes with 446 spare.
+
+## Player 2's speed, put on player 1's scale
+
+**Confirmed live.** Player 1's track advance is **exactly Speed/12** per frame:
+
+    Speed  16 -> 1.33 units    Speed 143 -> 11.83
+    Speed 106 -> 8.83          Speed 198 -> 16.50
+    Speed 123 -> 10.17         Speed 210 -> 17.50
+
+and its speed byte tops out at 255, rising by 1 on 52% of rising frames and
+falling by 2 on 47% of falling ones (the larger drops are crashes and
+off-road). Player 2 was adding its speed byte to its position raw and capping at
+`$C0` -- 192 units a frame against player 1's 21.25, about nine times too fast.
+
+Player 2 now uses the same cap (`$FF`), the same ramp (+1 / -2) and divides its
+advance by 12, **carrying the remainder between frames** rather than discarding
+it, which would lose up to 11/12 of a unit every frame. Repeated subtraction is
+exact and small, and the loop is bounded: the remainder is always left below 12,
+so the worst case is 21 passes, and a carry out of the add is handled by
+pre-subtracting 192 (`ADC #$3F` with carry set adds `$40`). No division table
+was needed after all.
+
+Verified: the quotient cycles 22, 21, 21, 21 at full speed, a mean of 21.25 over
+949 advancing frames -- exactly 255/12.
+
+### Two measurement traps, both mine
+
+**A signed delta.** The first attempt to measure player 1's rate reported 0.00
+units/frame at *every* speed, because the probe filtered on `delta >= 0` and
+player 1's `$00D5/$00D6` counts **down** -- it is distance remaining in the
+segment. A filter that excludes the sign the counter actually moves in produces
+a clean, entirely wrong table of zeros.
+
+**Averaging in frames that are not racing.** An aggregate over a frame window
+then reported player 2 advancing 12.76 units/frame instead of 21.25. 467 of the
+1416 frames at speed 255 were before the race began, where the speed byte is
+already pinned at 255 but the walk is not running, so they contributed zero.
+21.25 x (949/1416) = 14.2, and over the wider window 12.76. Counting advancing
+and non-advancing frames *separately* settled it. A mean over "frames at speed
+255" is not a mean over "frames where the car was moving".
