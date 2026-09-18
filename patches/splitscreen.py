@@ -406,6 +406,37 @@ P2_WALK = 0x2720             # walk scratch: dist, seg, v, p, curvature
 P2_SPEED = 0x2753            # player 2's own speed along the track
 P2_FRAC = 0x2755             # remainder of the /12 advance, always < 12
 P2_QUOT = 0x2758             # whole track units to advance this frame
+# The signed track-unit gap between the two cameras, positive when player 1 is
+# ahead. Everything that has to relate the two cars -- drawing one in the
+# other's view, and collisions -- is built on this.
+GAP_PSEG = 0x2759            # player 1's segment last frame
+GAP_PLO = 0x275A             # player 1's in-segment position last frame
+GAP_PHI = 0x275B
+GAP_LO = 0x275C              # the gap itself, signed 16-bit
+GAP_HI = 0x275D
+GAP_TLO = 0x275E             # scratch for this frame's player 1 advance
+GAP_THI = 0x275F
+P1_SEG = 0x00CF              # player 1's segment
+P1_POS_LO = 0x00D5           # player 1's DISTANCE REMAINING in that segment,
+P1_POS_HI = 0x00D6           # counting down -- not distance travelled
+P1_SPEED = 0x00CE            # player 1's speed byte, same scale as P2_SPEED
+PLAYER_X = 0x00D1            # player 1's lateral offset, signed, 0 = centre
+
+# Collision box between the two cars, in the units each axis already uses.
+# Longitudinal: the cars advance about 21 units a frame at full speed, so $50
+# is roughly a car length at racing speed. Lateral: player 1 reaches about
+# +-104 at the rumble strips and the road is about 160 pixels wide there, so a
+# lateral unit is roughly 0.77 pixels and the 32-pixel car is about 41 units.
+# Both are deliberately single constants, and both are estimates meant to be
+# tuned by feel rather than derived.
+COLLIDE_Z = 0x50
+COLLIDE_X = 0x28
+COLLIDE_PENALTY = 0x18       # speed each car loses, ONCE, per contact
+P2_HIT = 0x276D              # already touching, so the penalty is not re-paid
+P2_PREV_STATE = 0x276E       # $009D last frame, to spot a race starting
+GAME_STATE = 0x009D          # $02 qualifying drive, $03 race drive
+P2_START_LATERAL = 0x30      # player 2 lines up beside player 1, clear of the
+                             # collision box, so the grid is not an overlap
 
 # The divider is shared: its top row belongs to player 2 and its lower rows to
 # player 1, matching the viewport above and below it. Player 2's row needs a
@@ -730,6 +761,7 @@ def hud_reassert_src(addr):
         "    SEC",
         "    SBC #$3C",
         "    RTS",
+    ] + p2_race_init_src() + [
         "DividerPaletteOnly:",
         "    STA $00FF",
         "    JMP PaletteRestore",
@@ -1322,6 +1354,23 @@ def p2_drive_src():
     entirely.
     """
     return [
+        # Start a race by watching the game's own state byte rather than by
+        # hooking the race-start routine. A JSR inside StartDriveHud cost
+        # enough time to change how the race ran -- run-02's race ended some
+        # 4000 frames early -- which is the same cycle sensitivity that already
+        # forced the light and banner templates to be matched line for line.
+        # Out here in RoadTail there is headroom, and the trigger is free.
+        "    LDA $%04X" % GAME_STATE,
+        "    CMP $%04X" % P2_PREV_STATE,
+        "    BEQ P2InitSkip",
+        "    STA $%04X" % P2_PREV_STATE,
+        "    CMP #$02",                       # qualifying drive
+        "    BEQ P2DoInit",
+        "    CMP #$03",                       # race drive
+        "    BNE P2InitSkip",
+        "P2DoInit:",
+        "    JSR P2RaceInit",
+        "P2InitSkip:",
         # --- throttle: stick up accelerates, down brakes ------------------
         "    LDA $%04X" % SWCHA,
         "    AND #$01",
@@ -1415,6 +1464,191 @@ def p2_drive_src():
         "    STY $%04X" % P2_TRACK_SEG,
         "    JMP P2Carry",
         "P2Rolled:",
+    ] + p2_gap_src()
+
+
+def p2_gap_src():
+    """Maintain the signed track gap between the two cameras.
+
+    Both cars advance in the same units -- segment lengths and the perspective
+    Z table are one and the same scale, which is what makes this worth having:
+    an object's distance from player 2 is its distance from player 1 plus this
+    gap, and the ROM's own Z-to-row search at rom:E3CD then turns that into a
+    row for player 2 exactly as it does for player 1.
+
+    The gap is accumulated from what each camera ACTUALLY moved rather than
+    from speed, which would drift. Player 1's position counts DOWN as distance
+    remaining in its segment, so its advance is prev - now, except across a
+    segment boundary where it is prev + (new segment's length - now). One
+    boundary per frame is the most that can happen: the fastest advance is
+    21 units and the shortest segment is far longer.
+    """
+    return [
+        "    LDY $%04X" % P1_SEG,
+        "    CPY $%04X" % GAP_PSEG,
+        "    BEQ P2GapSame",
+        # crossed into a new segment: advance = prev + (seglen[new] - now)
+        "    SEC",
+        "    LDA $%04X,Y" % SEG_LEN_LO, "    SBC $%04X" % P1_POS_LO,
+        "    STA $%04X" % GAP_TLO,
+        "    LDA $%04X,Y" % SEG_LEN_HI, "    SBC $%04X" % P1_POS_HI,
+        "    STA $%04X" % GAP_THI,
+        "    CLC",
+        "    LDA $%04X" % GAP_TLO, "    ADC $%04X" % GAP_PLO,
+        "    STA $%04X" % GAP_TLO,
+        "    LDA $%04X" % GAP_THI, "    ADC $%04X" % GAP_PHI,
+        "    STA $%04X" % GAP_THI,
+        "    JMP P2GapAdd",
+        "P2GapSame:",
+        "    SEC",
+        "    LDA $%04X" % GAP_PLO, "    SBC $%04X" % P1_POS_LO,
+        "    STA $%04X" % GAP_TLO,
+        "    LDA $%04X" % GAP_PHI, "    SBC $%04X" % P1_POS_HI,
+        "    STA $%04X" % GAP_THI,
+        "P2GapAdd:",
+        # gap += player 1's advance, then -= player 2's
+        "    CLC",
+        "    LDA $%04X" % GAP_LO, "    ADC $%04X" % GAP_TLO,
+        "    STA $%04X" % GAP_LO,
+        "    LDA $%04X" % GAP_HI, "    ADC $%04X" % GAP_THI,
+        "    STA $%04X" % GAP_HI,
+        "    SEC",
+        "    LDA $%04X" % GAP_LO, "    SBC $%04X" % P2_QUOT,
+        "    STA $%04X" % GAP_LO,
+        "    LDA $%04X" % GAP_HI, "    SBC #$00",
+        "    STA $%04X" % GAP_HI,
+        # Saturate. The gap is a running total and player 1 laps the track, so
+        # left alone it overflows -- measured -32747..32689 over one run -- and
+        # every wrap through zero reads as the two cars being in the same place.
+        # Anything past +-$4000 means they are nowhere near each other, so
+        # pinning it there costs nothing and removes the phantom contacts.
+        "    LDA $%04X" % GAP_HI,
+        "    BMI P2GapNeg",
+        "    CMP #$40", "    BCC P2GapDone",
+        "    LDA #$40", "    STA $%04X" % GAP_HI,
+        "    LDA #$00", "    STA $%04X" % GAP_LO,
+        "    JMP P2GapDone",
+        "P2GapNeg:",
+        "    CMP #$C0", "    BCS P2GapDone",
+        "    LDA #$C0", "    STA $%04X" % GAP_HI,
+        "    LDA #$00", "    STA $%04X" % GAP_LO,
+        "P2GapDone:",
+        # remember where player 1 was, for next frame
+        "    LDA $%04X" % P1_SEG,  "    STA $%04X" % GAP_PSEG,
+        "    LDA $%04X" % P1_POS_LO, "    STA $%04X" % GAP_PLO,
+        "    LDA $%04X" % P1_POS_HI, "    STA $%04X" % GAP_PHI,
+    ] + p2_collide_src()
+
+
+def p2_collide_src():
+    """Knock the two cars apart when they touch.
+
+    The gap is the exact longitudinal separation, so the test is a box: |gap|
+    under COLLIDE_Z and the lateral offsets within COLLIDE_X.
+
+    Two things here are not obvious, and the first version got both wrong.
+
+    The speed penalty is paid ONCE per contact, not every frame. Charged every
+    frame it is not a collision, it is a clamp: the cars start the race on the
+    same piece of track, so they touch from frame one, and player 1 could never
+    accelerate off the line -- run-02 went from HEALTHY to STALLED, with player
+    1's speed pinned at 0 for the first 1500 frames.
+
+    And contact PUSHES player 2 sideways, away from player 1, so the overlap
+    actually resolves instead of persisting until something else happens to
+    separate them. Only player 2 is pushed; shoving player 1's lateral would be
+    reaching into the game's own physics rather than alongside it.
+    """
+    if os.getenv("PP2_NO_COLLIDE"):
+        return []
+    return [
+        # |gap| < COLLIDE_Z, with the gap signed 16-bit
+        "    LDA $%04X" % GAP_HI,
+        "    BEQ P2HitZPos",
+        "    CMP #$FF",
+        "    BNE P2NoHit",
+        "    LDA $%04X" % GAP_LO,               # negative: -COLLIDE_Z..-1
+        "    CMP #$%02X" % (0x100 - COLLIDE_Z),
+        "    BCC P2NoHit",
+        "    JMP P2HitX",
+        "P2HitZPos:",
+        "    LDA $%04X" % GAP_LO,
+        "    CMP #$%02X" % COLLIDE_Z,
+        "    BCS P2NoHit",
+        "P2HitX:",
+        # signed lateral difference, kept for the push direction
+        "    LDA $%04X" % P2_LATERAL,
+        "    SEC", "    SBC $%04X" % PLAYER_X,
+        "    STA $%04X" % GAP_TLO,
+        "    BPL P2HitAbs",
+        "    EOR #$FF", "    CLC", "    ADC #$01",
+        "P2HitAbs:",
+        "    CMP #$%02X" % COLLIDE_X,
+        "    BCS P2NoHit",
+        # --- touching: push player 2 clear, respecting the camera's limits ---
+        "    LDA $%04X" % GAP_TLO,
+        "    BMI P2PushLeft",
+        "    LDA $%04X" % P2_LATERAL, "    CLC", "    ADC #$01",
+        "    CMP #$%02X" % (P2_LIMIT + 1), "    BNE P2PushStore",
+        "    LDA #$%02X" % P2_LIMIT,
+        "    JMP P2PushStore",
+        "P2PushLeft:",
+        "    LDA $%04X" % P2_LATERAL, "    SEC", "    SBC #$01",
+        "    CMP #$%02X" % ((0x100 - P2_LIMIT - 1) & 0xFF), "    BNE P2PushStore",
+        "    LDA #$%02X" % ((0x100 - P2_LIMIT) & 0xFF),
+        "P2PushStore:",
+        "    STA $%04X" % P2_LATERAL,
+        # --- the speed penalty, once per contact ---
+        "    LDA $%04X" % P2_HIT,
+        "    BNE P2HitEnd",
+        "    LDA #$01", "    STA $%04X" % P2_HIT,
+        "    LDA $%04X" % P2_SPEED,
+        "    SEC", "    SBC #$%02X" % COLLIDE_PENALTY,
+        "    BCS P2HitP2Ok", "    LDA #$00",
+        "P2HitP2Ok:",
+        "    STA $%04X" % P2_SPEED,
+        "    LDA $%04X" % P1_SPEED,
+        "    SEC", "    SBC #$%02X" % COLLIDE_PENALTY,
+        "    BCS P2HitP1Ok", "    LDA #$00",
+        "P2HitP1Ok:",
+        "    STA $%04X" % P1_SPEED,
+        "    JMP P2HitEnd",
+        "P2NoHit:",
+        "    LDA #$00", "    STA $%04X" % P2_HIT,
+        "P2HitEnd:",
+    ]
+
+
+def p2_race_init_src():
+    """Put player 2 on the grid beside player 1, once, when a race starts.
+
+    Without this, player 2's state is whatever RAM held at power-on and the gap
+    starts from a garbage previous-frame reading. Player 2 lines up level with
+    player 1 along the track and P2_START_LATERAL to the side, which is outside
+    the collision box, so the race does not begin with the two cars inside each
+    other.
+
+    Player 1's position word is distance REMAINING in its segment and player
+    2's is distance CONSUMED, hence the subtraction.
+    """
+    return [
+        "P2RaceInit:",
+        "    LDA #$%02X" % P2_START_LATERAL, "    STA $%04X" % P2_LATERAL,
+        "    LDA #$00",
+        "    STA $%04X" % P2_SPEED, "    STA $%04X" % P2_FRAC,
+        "    STA $%04X" % P2_HIT,
+        "    STA $%04X" % GAP_LO,  "    STA $%04X" % GAP_HI,
+        "    LDY $%04X" % P1_SEG, "    STY $%04X" % P2_TRACK_SEG,
+        "    SEC",
+        "    LDA $%04X,Y" % SEG_LEN_LO, "    SBC $%04X" % P1_POS_LO,
+        "    STA $%04X" % P2_TRACK_LO,
+        "    LDA $%04X,Y" % SEG_LEN_HI, "    SBC $%04X" % P1_POS_HI,
+        "    STA $%04X" % P2_TRACK_HI,
+        # seed the gap's memory so the first frame's advance reads as zero
+        "    STY $%04X" % GAP_PSEG,
+        "    LDA $%04X" % P1_POS_LO, "    STA $%04X" % GAP_PLO,
+        "    LDA $%04X" % P1_POS_HI, "    STA $%04X" % GAP_PHI,
+        "    RTS",
     ]
 
 

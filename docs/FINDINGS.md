@@ -3388,3 +3388,98 @@ already pinned at 255 but the walk is not running, so they contributed zero.
 21.25 x (949/1416) = 14.2, and over the wider window 12.76. Counting advancing
 and non-advancing frames *separately* settled it. A mean over "frames at speed
 255" is not a mean over "frames where the car was moving".
+
+## The track gap between the two cameras
+
+**Confirmed live.** Everything that has to relate the two cars -- drawing one in
+the other's view, collisions, and traffic -- rests on one number: the signed
+track-unit gap between the cameras.
+
+It is worth having because **segment lengths and the perspective Z table are the
+same units**. `AccumulateRowCurveOffset` adds `SegLenLo/Hi` into the very
+accumulator it then compares against `dat_EB56`/`dat_EAB9`, so an object's
+distance from player 2 is simply its distance from player 1 plus the gap. That
+means the ROM's own Z-to-row search, `sub_E3CD` (a linear walk from row `$4D`
+down, comparing a 16-bit Z against the perspective table), can place objects for
+player 2 exactly as it does for player 1. Traffic does not need a new
+projection, only the gap.
+
+The gap is accumulated from what each camera **actually moved**, not from speed,
+which would drift. Player 1's `$00D5/$00D6` is **distance remaining** in its
+segment and counts DOWN (measured: 127 units per 6 frames at full speed, i.e.
+21.2/frame), while player 2's counts up from the segment start -- hence the
+subtraction, and the separate branch for a segment boundary. Only one boundary
+can be crossed per frame: the fastest advance is 21 units and segments are
+thousands long.
+
+Verified against a gap computed independently from both (segment, position)
+pairs: **1500 frames, 0 disagreements, worst error 0 units.**
+
+It is saturated at +-`$4000`. It is a running total and player 1 laps the track,
+so left alone it overflows -- measured `-32747..32689` over one run -- and every
+wrap through zero reads as the two cars occupying the same place.
+
+## Car-to-car collision, and three ways it went wrong
+
+**Confirmed live.** The test is a box: `|gap|` under `COLLIDE_Z` and the two
+lateral offsets within `COLLIDE_X`. The constants are estimates meant to be
+tuned by feel -- about a car length at racing speed, and about a car width given
+that player 1 reaches +-104 across a road roughly 160 pixels wide.
+
+**The penalty must be paid once per contact, not per frame.** Charged every
+frame it is not a collision, it is a clamp. The cars start the race on the same
+piece of track, so they touch from frame one, and player 1 could never
+accelerate off the line: run-02 went from HEALTHY to STALLED with player 1's
+speed pinned at 0 for the first 1500 frames, 1566 of 6700 frames inside the box.
+Contact now also pushes player 2 sideways so the overlap resolves rather than
+persisting until something else separates them. Only player 2 is pushed --
+shoving player 1's lateral would be reaching into the game's physics rather than
+working alongside it.
+
+**There was no race initialisation at all.** Player 2 began from whatever RAM
+held at power-on and the gap from a garbage previous-frame reading. `P2RaceInit`
+now lines player 2 up level with player 1 along the track and `P2_START_LATERAL`
+to the side, outside the collision box, so the grid is not an overlap.
+
+**And that init must not be hooked into the race-start routine.** A `JSR
+P2RaceInit` inside `StartDriveHud` cost enough time to change how the race ran
+-- run-02's race ended some 4000 frames early. This is the same cycle
+sensitivity that already forced the light and banner templates to be matched
+line for line. It now triggers off a transition of the game's own state byte
+`$009D` into `$02` (qualifying drive) or `$03` (race drive), read out in
+`RoadTail` where there is headroom. The trigger costs nothing in the hot path.
+
+Isolated with `PP2_NO_COLLIDE`:
+
+    baseline (checkpoint 28)      HEALTHY  296 @ f592   101 clock values
+    gap + init, collision off     HEALTHY  296 @ f592   101 clock values
+    gap + init, collision on      STALLED  395 @ f5959  101 clock values
+
+The gap and init are byte-identical to baseline. The remaining difference is the
+collision working as intended: under these recordings player 2 sits parked on
+the racing line forever, so player 1 laps into it, loses time, and the race ends
+earlier, leaving an idle stretch inside the 7000-frame window. The game recovers
+after f5959, so it is not a hang -- but a recording with two cars actually being
+driven is the only honest test of this, which is what `Record a test run.bat`
+is for.
+
+## Traffic: not done, and what it needs
+
+Player 2 still has no traffic. The projection is solved -- gap plus `sub_E3CD`,
+above -- but the **display list has no room**. Player 2's bands are 14 bytes:
+two road objects, the car, and the end marker. Player 1's are 34, with six
+object slots at `+08`..`+1C` (empties parked at x = 161 with a 1-byte width, the
+same off-screen idiom the wrap guard uses) and the car at `+1C`.
+
+Giving player 2 the same six slots means `P2_DL_SIZE` 34, so 12 x 34 = 408 bytes
+from `$2600`, which runs to `$2797` and straight through player 2's own
+variables at `$2702`..`$276E`. So traffic needs those variables relocated first,
+and `$2730` is already known not to be free. One extra slot (`P2_DL_SIZE` 18,
+ending at `$26D7`) would fit without moving anything, which is enough to draw
+player 1's car in player 2's view and vice versa -- arguably the more valuable
+half of "traffic" for a two-player mod, and the next thing to do.
+
+Objects are 21-entry parallel arrays at `$1A7F`, `$1A94` (row), `$1AA9`,
+`$1ABE`, `$1AD3`, `$1AE8`, with `ObjZLo`/`ObjZHi` at `$19C4`/`$19D4` holding each
+object's Z **relative to player 1** -- which is exactly the quantity the gap
+converts.
