@@ -3657,3 +3657,50 @@ The "no car to draw" parking path never runs in these recordings: player 1
 always has a car once a race is under way, and the frames where it does not are
 before the mirror code runs at all, where player 2's list still holds its
 template. That path is defensive only and has not been exercised.
+
+## Player 2's controls, mirroring player 1's
+
+**Confirmed live.** Player 2 had invented its own scheme -- stick up and down
+for throttle -- where player 1 uses the two buttons for gas and brake and the
+stick to shift gear. Player 2 now mirrors player 1 exactly.
+
+**Buttons.** Port 2's two buttons land on `INPT3` and `INPT2`, mirroring player
+1's `INPT1` (gas) and `INPT0` (brake) read at rom:C188. Verified by pressing
+each in turn: P2 Button 1 gives `INPT3 = $80`, P2 Button 2 gives `INPT2 = $80`,
+and player 1's give `INPT1`/`INPT0` the same way -- bit 7 set when pressed.
+
+**Gear.** Player 2 now has one, and it uses player 1's own table:
+`dat_C3C1[(Speed>>4) + Gear]`, a **signed** step, which is what makes a gear
+mean anything:
+
+    lo gear   3  5  7  8  7  6  5  4  3  2  0  0 -1 -1 -2 -4
+    hi gear   1  1  1  2  3  5  7  6  5  4  3  2  1  1  1  1
+
+Held from a standstill, lo gear rockets to 160 and stalls exactly where its
+table reaches zero, and hi gear bogs to 42 before climbing 176, 224, 255.
+
+**The race gate** is player 1's own, at rom:C2D4: outside state `$01`, if both
+halves of the race clock (`$00DE`/`$00DF`) are zero then the countdown is still
+running and speed is bled off rather than driven. Player 2 had no such gate and
+could drive off the line early. Verified by forcing 200 into player 2's speed
+during a real countdown: it bled off at exactly `$0F` a frame, the rate rom:C2EB
+uses for player 1.
+
+**Steering authority now scales with speed.** An accumulator gains the speed
+byte each frame and one unit is steered per carry out, so it is about one unit a
+frame at full speed and nothing at all at a standstill:
+
+    speed   0 ->  0.000 units/frame        speed 128 ->  0.506
+    speed  32 ->  0.124                    speed 255 ->  1.000
+    speed  64 ->  0.247
+
+### Measurement note
+
+The first two steering sweeps reported **0.000 at both 128 and 255** -- for two
+different reasons at once. The sweep ran past the end of the attract demo, where
+the mirror code stops running entirely; and at the higher rates the lateral
+reached its +-60 clamp inside the sampling window and sat on it, dragging the
+average down. Compressing the sweep into the drivable window and reversing
+direction every 20 frames fixed both. Two independent artifacts producing the
+same wrong number is a good argument for sweeping a parameter rather than
+trusting a single measurement.

@@ -440,7 +440,16 @@ P2_PREV_STATE = 0x276E       # $009D last frame, to spot a race starting
 P2_PHASE = 0x270A            # 0..29, the texture phase
 P2_PHASE_ACC = 0x270B        # its fractional accumulator
 P2_LEAN = 0x270C             # this frame's lean for player 2, $00..$20
-P2_CAR_OK = 0x270D           # player 1's car is in its ordinary driving state
+P2_CAR_OK = 0x270D           # (no longer used; the car reads nothing of player 1's)
+P2_GEAR = 0x270E             # $00 lo, $10 hi -- the same values player 1 uses
+P2_STEER_ACC = 0x270F        # steering authority accumulator, scaled by speed
+
+# Player 2's controls now mirror player 1's exactly: the two buttons are gas and
+# brake, the stick shifts gear up and down, and left/right steer.
+INPT2, INPT3 = 0x000A, 0x000B    # port 2's two buttons; player 1 uses INPT0/1
+ACCEL_TABLE = 0xC3C1         # dat_C3C1[(Speed>>4) + Gear], signed
+RACE_CLOCK_LO = 0x00DF       # both zero during the countdown, which is how
+RACE_CLOCK_HI = 0x00DE       # rom:C2DA knows the race has not started
 
 # Band 10's car sprite comes from one of TWO sheets, and the alternation
 # between them is the wheel flicker. Measured over a run, in the driving state:
@@ -1412,28 +1421,69 @@ def p2_drive_src():
         "P2DoInit:",
         "    JSR P2RaceInit",
         "P2InitSkip:",
-        # --- throttle: stick up accelerates, down brakes ------------------
+        # --- is the race actually under way? --------------------------------
+        # rom:C2D4 gates player 1 the same way: outside state 1, if both halves
+        # of the race clock are zero the countdown is still running and speed is
+        # bled off rather than driven. Player 2 was free to drive off the line
+        # early because it had no such gate.
+        "    LDA $%04X" % GAME_STATE,
+        "    CMP #$01",
+        "    BEQ P2CanDrive",
+        "    LDA $%04X" % RACE_CLOCK_HI,
+        "    ORA $%04X" % RACE_CLOCK_LO,
+        "    BNE P2CanDrive",
+        "    LDA $%04X" % P2_SPEED,
+        "    SEC", "    SBC #$0F",
+        "    BCS P2CdStore", "    LDA #$00",
+        "P2CdStore:",
+        "    STA $%04X" % P2_SPEED,
+        "    JMP P2DriveDone",
+        "P2CanDrive:",
+        # --- gear: stick up shifts to hi, down to lo ------------------------
         "    LDA $%04X" % SWCHA,
         "    AND #$01",
         "    BNE P2NotUp",
-        "    LDA $%04X" % P2_SPEED,
-        "    CMP #$FF",
-        "    BCS P2NotUp",
-        "    CLC",
-        "    ADC #$01",
-        "    STA $%04X" % P2_SPEED,
+        "    LDA #$10", "    STA $%04X" % P2_GEAR,
         "P2NotUp:",
         "    LDA $%04X" % SWCHA,
         "    AND #$02",
         "    BNE P2NotDown",
-        "    LDA $%04X" % P2_SPEED,
-        "    SEC",
-        "    SBC #$02",
-        "    BCS P2SpdOk",
-        "    LDA #$00",
-        "P2SpdOk:",
-        "    STA $%04X" % P2_SPEED,
+        "    LDA #$00", "    STA $%04X" % P2_GEAR,
         "P2NotDown:",
+        # --- throttle: the gas button, through player 1's own accel table ----
+        # dat_C3C1[(Speed>>4) + Gear] is a SIGNED step, which is what makes the
+        # gears behave: lo gear pulls hard low down and turns negative past its
+        # top speed, hi gear bogs off the line and holds speed up high.
+        "    LDA $%04X" % INPT3,
+        "    BPL P2NoGas",
+        "    LDA $%04X" % P2_SPEED,
+        "    LSR A", "    LSR A", "    LSR A", "    LSR A",
+        "    CLC", "    ADC $%04X" % P2_GEAR,
+        "    TAX",
+        "    LDA $%04X,X" % ACCEL_TABLE,
+        "    BMI P2GasNeg",
+        "    CLC", "    ADC $%04X" % P2_SPEED,
+        "    BCC P2GasStore",
+        "    LDA #$FF",
+        "P2GasStore:",
+        "    STA $%04X" % P2_SPEED,
+        "    JMP P2NoGas",
+        "P2GasNeg:",
+        "    CLC", "    ADC $%04X" % P2_SPEED,
+        "    BCS P2GasStore2",
+        "    LDA #$00",
+        "P2GasStore2:",
+        "    STA $%04X" % P2_SPEED,
+        "P2NoGas:",
+        # --- brake ----------------------------------------------------------
+        "    LDA $%04X" % INPT2,
+        "    BPL P2NoBrake",
+        "    LDA $%04X" % P2_SPEED,
+        "    SEC", "    SBC #$08",
+        "    BCS P2BrStore", "    LDA #$00",
+        "P2BrStore:",
+        "    STA $%04X" % P2_SPEED,
+        "P2NoBrake:",
         # --- road-stripe phase, exactly as sub_E8AC advances player 1's -----
         # AF drops by Speed/2 each frame and every time it goes negative it
         # gains 20 and the phase steps on, so the stripes scroll at about
@@ -1472,6 +1522,15 @@ def p2_drive_src():
         # box compare P2_LATERAL against PlayerX directly. So the fix for
         # player 2's reversed steering belongs here and nowhere else: right
         # steers toward the negative end, left toward the positive one.
+        # Steering authority scales with speed. The accumulator gains the
+        # speed byte each frame and a step is taken on each carry out, so it is
+        # about one unit a frame at full speed, half that at half speed, and
+        # nothing at all at a standstill -- the car cannot be swung sideways
+        # while stopped, which it could before.
+        "    LDA $%04X" % P2_STEER_ACC,
+        "    CLC", "    ADC $%04X" % P2_SPEED,
+        "    STA $%04X" % P2_STEER_ACC,
+        "    BCC P2NoSteer",
         "    LDA $%04X" % SWCHA,
         "    AND #$%02X" % P2_RIGHT,
         "    BNE P2NotRight",
@@ -1496,6 +1555,7 @@ def p2_drive_src():
         "P2StoreL:",
         "    STA $%04X" % P2_LATERAL,
         "P2NotLeft:",
+        "P2NoSteer:",
         # --- advance along the track ---------------------------------------
         # Player 1 advances by Speed/12 per frame, measured: Speed 16 -> 1.33
         # units, 106 -> 8.83, 198 -> 16.50, 210 -> 17.50. Player 2 was adding
@@ -1542,6 +1602,7 @@ def p2_drive_src():
         "    STY $%04X" % P2_TRACK_SEG,
         "    JMP P2Carry",
         "P2Rolled:",
+        "P2DriveDone:",
     ] + p2_gap_src()
 
 
@@ -1715,6 +1776,7 @@ def p2_race_init_src():
         "    LDA #$00",
         "    STA $%04X" % P2_SPEED, "    STA $%04X" % P2_FRAC,
         "    STA $%04X" % P2_PHASE, "    STA $%04X" % P2_PHASE_ACC,
+        "    STA $%04X" % P2_GEAR, "    STA $%04X" % P2_STEER_ACC,
         "    STA $%04X" % P2_HIT,
         "    STA $%04X" % GAP_LO,  "    STA $%04X" % GAP_HI,
         "    LDY $%04X" % P1_SEG, "    STY $%04X" % P2_TRACK_SEG,
