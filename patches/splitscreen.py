@@ -439,6 +439,19 @@ P2_PREV_STATE = 0x276E       # $009D last frame, to spot a race starting
 # because player 2 took its width bytes straight out of player 1's arrays.
 P2_PHASE = 0x270A            # 0..29, the texture phase
 P2_PHASE_ACC = 0x270B        # its fractional accumulator
+P2_LEAN = 0x270C             # this frame's lean for player 2, $00..$20
+P2_CAR_OK = 0x270D           # player 1's car is in its ordinary driving state
+
+# Band 10's car sprite comes from one of TWO sheets, and the alternation
+# between them is the wheel flicker. Measured over a run, in the driving state:
+#     high byte $AA -> low byte = $D8 + lean
+#     high byte $91 -> low byte =       lean
+# Both ascend with lean, which is why the lean delta was already right for this
+# band. What was wrong is that the SHEET was copied from player 1, so player 2's
+# wheels flickered in lockstep with player 1's.
+TIRE_SHEET_A_HI, TIRE_SHEET_A_LO = 0xAA, 0xD8
+TIRE_SHEET_B_HI, TIRE_SHEET_B_LO = 0x91, 0x00
+TIRE_BAND = 10
 STRIPE_TEX = 0x1F00          # sub_E8AC's texture, read at phase + dat_C07E[row]
 STRIPE_WIDTH = 0x1F3C        # per-row width field, ORed into the same byte
 ROW_TEX_INDEX = 0xC07E       # dat_C07E: each row's offset into the texture
@@ -1255,6 +1268,7 @@ def p2_car_src():
     lines = [
         "    LDA #$00",
         "    STA $%04X" % P2_CAR_DELTA,
+        "    STA $%04X" % P2_CAR_OK,
         "    LDA $%04X" % (P1_CAR_SLOT[3] + 2),      # band 11's high byte
         "    CMP #$8B",
         "    BNE P2LeanDone",
@@ -1262,17 +1276,26 @@ def p2_car_src():
         "    CMP #$21",
         "    BCS P2LeanDone",
         "    STA $%04X" % P2_CAR_DELTA,              # stash L1
-        "    LDX #$10",                              # upright
+        # $08 leans RIGHT and $18 leans LEFT, not the other way round. The
+        # earlier reading came from correlating player 1's lean against PlayerX
+        # deltas and rested on 42 and 24 samples; repeating it against LatVel
+        # over whole runs gave contradictory signs on run-01 and run-02, so that
+        # evidence was worthless. Forcing each sprite and photographing it
+        # settled it: $08 carries the body mass to the right, $18 to the left.
+        "    LDX #$%02X" % int(os.environ.get("PP2_FORCE_LEAN", "0x10"), 16),
         "    LDA $%04X" % SWCHA,
         "    AND #$%02X" % P2_LEFT,
         "    BNE P2LeanNotL",
-        "    LDX #$08",
+        "    LDX #$18",
         "P2LeanNotL:",
         "    LDA $%04X" % SWCHA,
         "    AND #$%02X" % P2_RIGHT,
         "    BNE P2LeanNotR",
-        "    LDX #$18",
+        "    LDX #$08",
         "P2LeanNotR:",
+        "    STX $%04X" % P2_LEAN,                   # band 10 needs L2 itself
+        "    LDA #$01",
+        "    STA $%04X" % P2_CAR_OK,
         "    TXA",
         "    SEC",
         "    SBC $%04X" % P2_CAR_DELTA,              # L2 - L1
@@ -1281,10 +1304,41 @@ def p2_car_src():
     ]
     for src, b in zip(P1_CAR_SLOT, P2_CAR_BANDS):
         dl = P2_DL_BASE + (b - 1) * P2_DL_SIZE
-        lines += ["    LDA $%04X" % src,
-                  "    CLC", "    ADC $%04X" % P2_CAR_DELTA,
-                  "    STA $%04X" % (dl + 8),
-                  "    LDA $%04X" % (src + 2), "    STA $%04X" % (dl + 10)]
+        if b == TIRE_BAND:
+            # The wheel flicker: pick the sheet from player 2's own stripe
+            # phase, which already advances at about its Speed/40 a frame, so
+            # the wheels flicker faster the faster player 2 goes -- and never in
+            # step with player 1. Only in the ordinary driving state; otherwise
+            # fall through to copying, so crash and spin sprites still animate.
+            lines += [
+                "    LDA $%04X" % P2_CAR_OK,
+                "    BEQ P2TireCopy",
+                "    LDA $%04X" % P2_PHASE,
+                "    AND #$01",
+                "    BEQ P2TireB",
+                "    LDA #$%02X" % TIRE_SHEET_A_HI, "    STA $%04X" % (dl + 10),
+                "    LDA $%04X" % P2_LEAN,
+                "    CLC", "    ADC #$%02X" % TIRE_SHEET_A_LO,
+                "    STA $%04X" % (dl + 8),
+                "    JMP P2TireDone",
+                "P2TireB:",
+                "    LDA #$%02X" % TIRE_SHEET_B_HI, "    STA $%04X" % (dl + 10),
+                "    LDA $%04X" % P2_LEAN,
+                "    CLC", "    ADC #$%02X" % TIRE_SHEET_B_LO,
+                "    STA $%04X" % (dl + 8),
+                "    JMP P2TireDone",
+                "P2TireCopy:",
+                "    LDA $%04X" % src,
+                "    CLC", "    ADC $%04X" % P2_CAR_DELTA,
+                "    STA $%04X" % (dl + 8),
+                "    LDA $%04X" % (src + 2), "    STA $%04X" % (dl + 10),
+                "P2TireDone:",
+            ]
+        else:
+            lines += ["    LDA $%04X" % src,
+                      "    CLC", "    ADC $%04X" % P2_CAR_DELTA,
+                      "    STA $%04X" % (dl + 8),
+                      "    LDA $%04X" % (src + 2), "    STA $%04X" % (dl + 10)]
     return lines
 
 

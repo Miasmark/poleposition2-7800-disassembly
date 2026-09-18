@@ -3565,3 +3565,53 @@ exactly the trap that made the speed work read 12.76 instead of 21.25. **A mean
 over "frames at speed 255" is not a mean over "frames where the car was
 moving."** Trace frame by frame, or separate advancing from non-advancing
 frames, before believing an averaged rate.
+
+## The car lean is $08 right, $18 left -- correcting an earlier finding
+
+**Confirmed live, and this reverses what was recorded before.** Checkpoint 27
+concluded that a higher lean value meant leaning right. That was wrong.
+
+The original evidence was a correlation of player 1's lean byte against
+`PlayerX` deltas, resting on **42 and 24 samples** -- `PlayerX` only updates
+every few frames, so almost every frame was discarded. Repeating the measurement
+against `LatVel`, which moves every frame, made it worse rather than better:
+run-01 gave `+0.173` and run-02 `-1.206` for the same correlation, i.e.
+**contradictory signs**, and `LatVel` is almost never negative (240 and 0 frames
+across two runs), so there was nothing to correlate against.
+
+What settled it was not a correlation at all. Two ROMs were built with the lean
+pinned to `$08` and to `$18`, and each photographed: `$08` carries the car's
+body mass to the right, `$18` to the left. **When a correlation keeps giving
+weak or contradictory answers, force the variable and look at the result.**
+
+It only surfaced after the steering fix because the two errors cancelled: before
+that, right steered left *and* leaned left, which is self-consistent, so only
+the steering looked wrong.
+
+## The wheel flicker, and making it player 2's own
+
+**Confirmed live.** Band 10's car sprite comes from one of two sheets, and the
+alternation between them is the wheel flicker. In the ordinary driving state:
+
+    high byte $AA  ->  low byte = $D8 + lean
+    high byte $91  ->  low byte =       lean
+
+Both **ascend** with lean, which is why the lean delta was already correct for
+this band -- the thing being copied from player 1 was the *sheet*, so player 2's
+wheels flickered in lockstep with player 1's.
+
+The sheet is chosen at rom:E7D3, which overwrites band 10 with
+`dat_B2ED[ram_00E1/2]` and high byte `$AA` only when `ram_00E1` is below `$0A`
+and even; otherwise the generic object emitter's `$91` sprite stands. `$00E1` is
+seeded to `$05` at rom:D0D5 and set from the crash timer at rom:C5FD.
+
+Rather than reproduce `$00E1`, player 2 picks its sheet from bit 0 of its own
+stripe phase, which already advances at about its `Speed/40` a frame -- so the
+wheels flicker faster the faster player 2 goes, and never in step with player 1.
+Outside the driving state band 10 still copies player 1's page, so crash and
+spin sprites keep animating.
+
+Verified: under playback with player 2 parked, player 1's sheet changes 486
+times and player 2's 18 -- and those 18 are frames where player 1 enters or
+leaves a crash state and band 10 takes the copy path, which is intended. Band
+10's low byte matched its sheet's mapping on every frame of the run.
