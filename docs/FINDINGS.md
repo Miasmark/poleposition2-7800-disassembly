@@ -3301,3 +3301,50 @@ which bases are the car and which are the crash and spin sprites -- band 11
 alone showed `$8B00`/`$08`/`$10`/`$18`/`$20` for the car but also `$8660`,
 `$86BA` and `$98EF` in other states -- so substituting lean bits blindly would
 corrupt those.
+
+## Player 2's car lean
+
+**Confirmed live.** The lean is not worth decoding from `dat_E83E` -- that table
+is indexed by object type at rom:E577, not by lean. There is a far simpler
+handle: all four car bands carry the same lean, and band 11's base is `$8B00`,
+so **band 11's low byte is player 1's lean** -- one of `$00 $08 $10 $18 $20`,
+with `$10` upright.
+
+Every band's page is base + lean, so adding `(L2 - L1)` to player 1's low byte
+turns his car into player 2's with no knowledge of any band's base. Band 10's
+base moves between `$AAE0` and `$9100` with the wheel animation at rom:E7D3, and
+the delta absorbs that for free.
+
+Guarded on band 11 being the ordinary driving sprite: high byte `$8B`, low byte
+no greater than `$20`. The crash, spin and start sprites are on other pages --
+`$8660`, `$86BA`, `$98EF` and friends were all observed -- and offsetting into
+those would draw garbage, so in those states the page copies through unchanged
+and player 2's car shares player 1's animation.
+
+Player 2's lean is three-state, straight off the stick, where player 1's is a
+five-state gradual one. Matching the easing would mean reproducing whatever
+drives player 1's, and **no single RAM byte determines it**: every zero-page
+address was checked for a consistent value-to-lean mapping over 5933 frames and
+none held.
+
+### Two method notes
+
+**A same-frame comparison of the two cars is not a valid check.** The copy
+happens during MirrorStage and player 1's slot can be rewritten later in the
+same frame, so an end-of-frame sample compares a value written at one moment
+against one written at another. That produced 56 "wrong" copies and 4 impossible
+lean values, all of which were sampling artifacts. The invariant that actually
+holds is time-independent: *every page player 2's car shows must be one player
+1's car also uses*. Over run-02 that holds on all four bands, with no extras.
+
+**And the stick cannot be tested under `-playback`**, which overrides the input
+ports -- the first attempt appeared to show the left lean doing nothing, when in
+fact the race had not started and player 2's list still held its template seed.
+
+### Layout, again
+
+The blob overran `DLL_TEMPLATE`. The checkpoint 26 assertion missed it because
+it only covered the four templates, not the blob; it now measures the blob first
+and includes it in the check. `FINE_ZONES` is 0, so `MINI_TEMPLATE` is unused
+and everything above `$FD0C` was free -- the templates moved up and the blob has
+`$F400..$FCFF`, currently 1858 bytes with 446 spare.

@@ -348,7 +348,7 @@ CARRIER_LINES = int(os.environ.get("PP2_CARRIER", "12"))
 # in the wrong places by definition.
 P2_DL_BASE = 0x2600
 P2_DL_SIZE = 14              # two road objects, the car, and the end marker
-P2_TEMPLATE = 0xFB80
+P2_TEMPLATE = 0xFD80
 
 # A constant added to player 2's road x. Zero makes the two views identical
 # again, which is the regression check; anything else drives the viewports
@@ -411,7 +411,7 @@ P2_SPEED = 0x2753            # player 2's own speed along the track
 # player 2's readouts. Seeded at boot from the row it replaces, so it renders
 # something recognisable before the content is rewritten.
 P2_HUD_DL = 0x2770           # player 2's HUD row: one 5-byte header + end
-P2_HUD_TEMPLATE = 0xFD00            # 12 bytes; moved off $FC00 to leave
+P2_HUD_TEMPLATE = 0xFE40            # 12 bytes; moved off $FC00 to leave
                                     # P2_TEMPLATE room to grow
 SWCHA = 0x0280               # player 2's stick: bit 3 right, 2 left, 1 down, 0 up
 P2_HALF = 0x2756             # which half of the walk this frame runs
@@ -424,8 +424,8 @@ TRACK_LEN = 0x00C1
 BAND_SAMPLE = int(os.environ.get("PP2_SAMPLE", "3"))
 PLACEHOLDER_W = int(os.environ.get("PP2_PW", "0x1F"), 16)
 PLACEHOLDER_X = int(os.environ.get("PP2_PX", "0x80"), 16)
-DLL_TEMPLATE = 0xFB00          # boot image of the zone list, clear of the code blob
-MINI_TEMPLATE = 0xFDC0         # boot image of the mini display lists
+DLL_TEMPLATE = 0xFD00          # boot image of the zone list, clear of the code blob
+MINI_TEMPLATE = 0xFE80         # boot image of the mini display lists
 
 # Road band slot +00, the road surface itself: (address low, address high).
 # Confirmed static across frames -- the injection rewrites only this slot's
@@ -461,6 +461,7 @@ P2_CAR_BANDS = [8, 9, 10, 11]
 P2_CAR_SEED = [(0x08, 0x9D), (0x08, 0x97), (0xE0, 0xAA), (0x08, 0x8B)]
 P2_CAR_W = 0xD8              # palette 6, 8 bytes
 P2_CAR_X = 0x40              # 64
+P2_CAR_DELTA = 0x2754        # this frame's lean adjustment, L2 - L1
 
 # The road is injected two different ways and the mirror has to follow both.
 # For the eight far bands, DLI_InjectRowCurveX writes a band's slot +00 width
@@ -974,6 +975,17 @@ def wrap_guard():
     return ["    JSR WrapSlot0"]
 
 
+def _blob_len():
+    """Length of the generated code blob, for the layout check.
+
+    The blob has to be measured before anything is written, because it is the
+    piece that keeps outgrowing its slot -- and when it runs into a template the
+    failure reads as "expected ff.. but found <template data>", which names the
+    victim rather than the culprit.
+    """
+    return len(_assemble(hud_reassert_src(HUD_REASSERT_ADDR))[0])
+
+
 def band_base(row):
     """dat_EBA4[dat_BB7E[row]] -- the fixed perspective base the engine adds to
     RowCurveOffset at rom:E9D0. Constant per row, so it need not be looked up
@@ -1176,15 +1188,60 @@ def p2_dl_template():
 
 
 def p2_car_src():
-    """Give player 2's view its own car.
+    """Give player 2's view its own car, leaning to player 2's own steering.
 
-    Only the graphics page moves, so this is two byte copies a band. Width and
-    x stay as the template baked them.
+    All four bands carry the same lean, and band 11's base is $8B00, so that
+    band's low byte IS player 1's lean -- one of $00, $08, $10, $18, $20, with
+    $10 upright. That makes the whole thing a single delta: every band's page is
+    base + lean, so adding (L2 - L1) to player 1's low byte turns his car into
+    player 2's without needing to know any band's base. Band 10's base moves
+    between $AAE0 and $9100 depending on the wheel animation at rom:E7D3, and
+    the delta handles that for free.
+
+    Guarded on band 11 being the ordinary driving sprite -- high byte $8B and
+    low byte no greater than $20. The crash, spin and start sprites live at
+    other pages ($8660, $86BA, $98EF and friends were all observed), and
+    offsetting into those would draw garbage, so in those states the page is
+    copied through unchanged and player 2's car shares player 1's animation.
+
+    The lean is three-state, taken straight from the stick, where player 1's is
+    a five-state gradual one. It banks the right way when player 2 steers, which
+    is the point; matching the easing would mean reproducing whatever drives
+    player 1's, and no single RAM byte determines it (checked against every
+    zero-page address over 5933 frames).
     """
-    lines = []
+    lines = [
+        "    LDA #$00",
+        "    STA $%04X" % P2_CAR_DELTA,
+        "    LDA $%04X" % (P1_CAR_SLOT[3] + 2),      # band 11's high byte
+        "    CMP #$8B",
+        "    BNE P2LeanDone",
+        "    LDA $%04X" % P1_CAR_SLOT[3],            # band 11's low byte == L1
+        "    CMP #$21",
+        "    BCS P2LeanDone",
+        "    STA $%04X" % P2_CAR_DELTA,              # stash L1
+        "    LDX #$10",                              # upright
+        "    LDA $%04X" % SWCHA,
+        "    AND #$%02X" % P2_LEFT,
+        "    BNE P2LeanNotL",
+        "    LDX #$08",
+        "P2LeanNotL:",
+        "    LDA $%04X" % SWCHA,
+        "    AND #$%02X" % P2_RIGHT,
+        "    BNE P2LeanNotR",
+        "    LDX #$18",
+        "P2LeanNotR:",
+        "    TXA",
+        "    SEC",
+        "    SBC $%04X" % P2_CAR_DELTA,              # L2 - L1
+        "    STA $%04X" % P2_CAR_DELTA,
+        "P2LeanDone:",
+    ]
     for src, b in zip(P1_CAR_SLOT, P2_CAR_BANDS):
         dl = P2_DL_BASE + (b - 1) * P2_DL_SIZE
-        lines += ["    LDA $%04X" % src,       "    STA $%04X" % (dl + 8),
+        lines += ["    LDA $%04X" % src,
+                  "    CLC", "    ADC $%04X" % P2_CAR_DELTA,
+                  "    STA $%04X" % (dl + 8),
                   "    LDA $%04X" % (src + 2), "    STA $%04X" % (dl + 10)]
     return lines
 
@@ -1513,7 +1570,8 @@ def fix_mirror_split(p):
     # overlap shows up as an "expected ff.. but found <our own data>" mismatch
     # on whichever put runs second, which says nothing about the real cause, so
     # check the layout first and name the pair that collides.
-    _regions = [("DLL_TEMPLATE", DLL_TEMPLATE, DLL_ZONES * 3),
+    _regions = [("code blob", HUD_REASSERT_ADDR, _blob_len()),
+                ("DLL_TEMPLATE", DLL_TEMPLATE, DLL_ZONES * 3),
                 ("P2_TEMPLATE", P2_TEMPLATE, 12 * P2_DL_SIZE),
                 ("P2_HUD_TEMPLATE", P2_HUD_TEMPLATE, 12),
                 ("MINI_TEMPLATE", MINI_TEMPLATE, FINE_ZONES * MINI_DL_SIZE)]
@@ -1602,6 +1660,8 @@ def fix_mirror_split(p):
 
     # -- the one piece of new code this patch needs --------------------------
     code, syms = _assemble(hud_reassert_src(HUD_REASSERT_ADDR))
+    assert len(code) == _blob_len(),         "blob length moved between the layout check and the put"
+
     p.put(HUD_REASSERT_ADDR, code, expect=[0xFF] * len(code))
     reassert_addr = syms["HudReassert"]
     start_drive_addr = syms["StartDriveHud"]
