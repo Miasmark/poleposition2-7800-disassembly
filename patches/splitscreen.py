@@ -380,7 +380,16 @@ LATERAL_RAMP = 0xEA41
 # analogue rather than a stick.
 SWCHA = 0x0280
 P2_RIGHT, P2_LEFT = 0x08, 0x04
-P2_LIMIT = 0x3C              # how far player 2's camera may lean either way
+P2_LIMIT = 0x47              # how far player 2's camera may lean either way.
+                             # Was $3C, one unit past the road edge, so player 2
+                             # could never actually reach the rumble strips. $47
+                             # is the largest the camera's single-byte lateral
+                             # ramp allows: dat_EADE, the ramp's HIGH byte, is
+                             # zero only up to index 71, and p2_camera_src reads
+                             # the low byte alone. Checked at build time below.
+LATERAL_RAMP_HI = 0xEADE     # high byte of dat_EA41, must be zero across range
+ROAD_EDGE = 0x3B             # |lateral| at or past this is off the racing line,
+                             # the same threshold player 1 uses at rom:C210
 
 # ---------------------------------------------------------------------------
 # Player 2's own position along the track.
@@ -1475,6 +1484,29 @@ def p2_drive_src():
         "P2GasStore2:",
         "    STA $%04X" % P2_SPEED,
         "P2NoGas:",
+        # --- off the racing line: drag ---------------------------------------
+        # rom:C200 takes |PlayerX|, and at $3B or beyond calls SkidDrag, which
+        # subtracts the top two bits of Speed -- 0 to 3 a frame, so the faster
+        # you are the harder the rumble strip bites. Player 2 now pays the same.
+        # The CLC the ROM leaves out is added here so the three ROLs are exactly
+        # Speed >> 6 rather than depending on the carry it happens to arrive
+        # with.
+        "    LDA $%04X" % P2_LATERAL,
+        "    BPL P2OffAbs",
+        "    EOR #$FF", "    CLC", "    ADC #$01",
+        "P2OffAbs:",
+        "    CMP #$%02X" % ROAD_EDGE,
+        "    BCC P2OnRoad",
+        "    CLC",
+        "    LDA $%04X" % P2_SPEED,
+        "    ROL A", "    ROL A", "    ROL A",
+        "    AND #$03",
+        "    SEC", "    EOR #$FF",
+        "    ADC $%04X" % P2_SPEED,
+        "    BCS P2DragStore", "    LDA #$00",
+        "P2DragStore:",
+        "    STA $%04X" % P2_SPEED,
+        "P2OnRoad:",
         # --- brake ----------------------------------------------------------
         "    LDA $%04X" % INPT2,
         "    BPL P2NoBrake",
@@ -2014,6 +2046,17 @@ def fix_mirror_split(p):
             raise SystemExit(
                 "layout overlap: %s $%04X..$%04X runs into %s at $%04X"
                 % (nm1, a1, a1 + n1 - 1, nm2, a2))
+
+    # p2_camera_src reads only the low byte of the lateral ramp, so the limit
+    # must stay inside the range where the high byte is zero.
+    import io as _io
+    _rom = bytearray(_io.open(load_source()[0], "rb").read())
+    _rom = _rom[len(_rom) - ROM_SIZE:]
+    if _rom[LATERAL_RAMP_HI + P2_LIMIT - BASE] != 0:
+        raise SystemExit(
+            "P2_LIMIT $%02X is past the lateral ramp's single-byte range: "
+            "dat_EADE[%d] is $%02X, not zero"
+            % (P2_LIMIT, P2_LIMIT, _rom[LATERAL_RAMP_HI + P2_LIMIT - BASE]))
 
     p.put(DLL_TEMPLATE, dll_template(), expect=[0xFF] * (DLL_ZONES * 3))
     p.put(P2_TEMPLATE, p2_dl_template(), expect=[0xFF] * (12 * P2_DL_SIZE))

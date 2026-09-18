@@ -3704,3 +3704,39 @@ average down. Compressing the sweep into the drivable window and reversing
 direction every 20 frames fixed both. Two independent artifacts producing the
 same wrong number is a good argument for sweeping a parameter rather than
 trusting a single measurement.
+
+## Player 2 and the rumble strips
+
+**Confirmed live.** Leaving the racing line now costs player 2 speed, on player
+1's own terms. rom:C200 computes `|PlayerX|` and, at `$3B` or beyond, calls
+`SkidDrag`:
+
+    SkidDrag:  Speed -= (Speed >> 6)     ; 0..3 a frame
+
+so the faster the car is going the harder the strip bites. Player 2 runs the
+same test against its own lateral.
+
+**The real obstacle was that player 2 could not reach the rumble strips at
+all.** Its camera limit was `$3C` -- exactly one unit past the `$3B` road edge.
+Raised to `$47`, which is as far as the camera can go: `p2_camera_src` reads
+only the **low** byte of the lateral ramp, and `dat_EADE`, the ramp's high byte,
+is zero only up to index 71. A build-time check now fails loudly by name if the
+limit is ever pushed past that.
+
+That leaves player 2 with a rumble band of 59..71 against player 1's 59..82, so
+player 2 still cannot reach open grass. Widening it means handling the camera's
+lateral ramp as a 16-bit value.
+
+Verified: in hi gear player 2 reaches 255 on the road, and steering off the line
+drops it to **189**, where it holds -- exactly the equilibrium where hi-gear
+acceleration (+2 at that speed) cancels the drag (189 >> 6 = 2). The same test
+in lo gear moves 160 to 158, which looks like almost nothing until you notice lo
+gear already plateaus at 160 where its table reaches zero, so 2 is the whole
+margin available.
+
+### A detail worth copying deliberately
+
+The ROM's `SkidDrag` performs its three `ROL`s **without a preceding `CLC`**, so
+the value it subtracts depends on whatever carry the routine happens to be
+entered with. Player 2's copy adds the `CLC`, making it exactly `Speed >> 6`.
+That is a deliberate divergence, not an oversight.
