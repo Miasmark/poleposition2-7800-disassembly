@@ -3483,3 +3483,34 @@ Objects are 21-entry parallel arrays at `$1A7F`, `$1A94` (row), `$1AA9`,
 `$1ABE`, `$1AD3`, `$1AE8`, with `ObjZLo`/`ObjZHi` at `$19C4`/`$19D4` holding each
 object's Z **relative to player 1** -- which is exactly the quantity the gap
 converts.
+
+## Lateral sign: a rising lateral moves the car LEFT, for both players
+
+**Confirmed live.** Player 2's steering was reversed. Measured on a two-player
+recording: holding right moved `P2_LATERAL` **+1.000 a frame** and player 2's
+road x **+1.018 a frame** -- and a road moving right is a car moving left.
+
+Player 1 uses the same convention. Correlating `PlayerX` deltas against road x
+did **not** settle it -- 45 usable samples averaging exactly 0.00, no
+correlation -- because player 1's road x also moves with the curve, which
+swamps the lateral contribution. What settled it was forcing `PlayerX` to `+40`
+and `-40` on alternating four-frame blocks, so both samples see the same stretch
+of track: mean road x was **54.6** and **43.6** respectively. Positive `PlayerX`
+puts the road further right, so **positive `PlayerX` is a car to the LEFT**.
+
+This matters beyond the bug. Because both laterals rise leftward, the collision
+box comparing `P2_LATERAL` against `PlayerX` is comparing like with like and
+needed no change. Only the steering was wrong, so only the steering was
+touched: right now steers toward the negative end, left toward the positive.
+
+The lean was already right and was left alone. Averaging player 1's lean byte
+over frames where it was moving each way gave `$11` moving right against `$0B`
+moving left, with `$10` upright -- so a higher value is a lean to the right,
+which is what the `$18`/`$08` mapping already produced.
+
+### Method note
+
+A recording made on one build cannot validate the build that fixes it: changing
+the ROM desyncs it, and `-playback` overrides the input ports, so the stick
+cannot be exercised under playback at all. Both directions were checked by
+driving the ports live.

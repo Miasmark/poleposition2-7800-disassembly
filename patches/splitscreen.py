@@ -1394,27 +1394,38 @@ def p2_drive_src():
         "    STA $%04X" % P2_SPEED,
         "P2NotDown:",
         # --- steering ------------------------------------------------------
+        # A RISING lateral moves the car LEFT, not right. Measured both ways:
+        # holding player 2's stick right moved P2_LATERAL +1.000 a frame and
+        # player 2's road x +1.018 a frame, and a road moving right is a car
+        # moving left. Player 1 works the same way -- forcing PlayerX to +40
+        # and -40 on alternating frames put its road at x 54.6 and 43.6, so
+        # positive PlayerX is also a car to the left.
+        #
+        # The two therefore share a convention, which is what lets the collision
+        # box compare P2_LATERAL against PlayerX directly. So the fix for
+        # player 2's reversed steering belongs here and nowhere else: right
+        # steers toward the negative end, left toward the positive one.
         "    LDA $%04X" % SWCHA,
-        "    AND #$08",
+        "    AND #$%02X" % P2_RIGHT,
         "    BNE P2NotRight",
         "    LDA $%04X" % P2_LATERAL,
-        "    CLC",
-        "    ADC #$01",
-        "    CMP #$3D",
+        "    SEC",
+        "    SBC #$01",
+        "    CMP #$%02X" % ((0x100 - P2_LIMIT - 1) & 0xFF),
         "    BNE P2StoreR",
-        "    LDA #$3C",
+        "    LDA #$%02X" % ((0x100 - P2_LIMIT) & 0xFF),
         "P2StoreR:",
         "    STA $%04X" % P2_LATERAL,
         "P2NotRight:",
         "    LDA $%04X" % SWCHA,
-        "    AND #$04",
+        "    AND #$%02X" % P2_LEFT,
         "    BNE P2NotLeft",
         "    LDA $%04X" % P2_LATERAL,
-        "    SEC",
-        "    SBC #$01",
-        "    CMP #$C3",
+        "    CLC",
+        "    ADC #$01",
+        "    CMP #$%02X" % (P2_LIMIT + 1),
         "    BNE P2StoreL",
-        "    LDA #$C4",
+        "    LDA #$%02X" % P2_LIMIT,
         "P2StoreL:",
         "    STA $%04X" % P2_LATERAL,
         "P2NotLeft:",
