@@ -3615,3 +3615,45 @@ Verified: under playback with player 2 parked, player 1's sheet changes 486
 times and player 2's 18 -- and those 18 are frames where player 1 enters or
 leaves a crash state and band 10 takes the copy path, which is intended. Band
 10's low byte matched its sheet's mapping on every frame of the run.
+
+## Disconnecting player 2's crash
+
+**Confirmed live.** Player 2's car was built by copying player 1's graphics page
+and adding a lean delta, so it inherited player 1's *state* as well as its lean:
+when player 1 spun or crashed, player 2's car spun with it, in a view where
+player 2 was still driving normally.
+
+Fixed by removing the dependency rather than widening the guard. The car's pages
+are constants -- measured over 5163 driving frames of run-01 and 5933 of run-02,
+with zero exceptions:
+
+    band  8   high $9D   low = lean
+    band  9   high $97   low = lean
+    band 11   high $8B   low = lean
+    band 10   high $AA   low = $D8 + lean      (wheel sheet A)
+              high $91   low =       lean      (wheel sheet B)
+
+so player 2's car is a base plus its own lean, with band 10 picking a wheel
+sheet from its own stripe phase. This deleted the lean delta, the guard flag and
+every read of player 1's slots -- the routine is shorter than the one it
+replaced. A dependency that has to be guarded in three places is usually a
+dependency that should not exist.
+
+The one thing still read from player 1 is *whether there is a car to draw at
+all*: its slot holds `$0000` before a race, and both cars come and go together,
+so player 2's is parked at x = `$A1`, the idiom the stock lists use for an empty
+object slot.
+
+Verified over run-02, restricted to frames where a race is actually running:
+**player 1 crashing or spinning on 768 frames, player 2 still driving on all
+768**, and player 1 driving on 4407 with player 2 driving on all of them.
+
+Player 2 now never shows a crash animation, since it has no crash of its own
+yet. That is the right failure mode here -- crashing in sympathy was the bug.
+
+### Unverified
+
+The "no car to draw" parking path never runs in these recordings: player 1
+always has a car once a race is under way, and the frames where it does not are
+before the mirror code runs at all, where player 2's list still holds its
+template. That path is defensive only and has not been exercised.

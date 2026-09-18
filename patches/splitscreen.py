@@ -452,6 +452,8 @@ P2_CAR_OK = 0x270D           # player 1's car is in its ordinary driving state
 TIRE_SHEET_A_HI, TIRE_SHEET_A_LO = 0xAA, 0xD8
 TIRE_SHEET_B_HI, TIRE_SHEET_B_LO = 0x91, 0x00
 TIRE_BAND = 10
+# The other three bands' pages, constant in every driving frame measured.
+P2_CAR_BASE_HI = {8: 0x9D, 9: 0x97, 11: 0x8B}
 STRIPE_TEX = 0x1F00          # sub_E8AC's texture, read at phase + dat_C07E[row]
 STRIPE_WIDTH = 0x1F3C        # per-row width field, ORed into the same byte
 ROW_TEX_INDEX = 0xC07E       # dat_C07E: each row's offset into the texture
@@ -1243,45 +1245,43 @@ def p2_dl_template():
 
 
 def p2_car_src():
-    """Give player 2's view its own car, leaning to player 2's own steering.
+    """Draw player 2's car entirely from its own state.
 
-    All four bands carry the same lean, and band 11's base is $8B00, so that
-    band's low byte IS player 1's lean -- one of $00, $08, $10, $18, $20, with
-    $10 upright. That makes the whole thing a single delta: every band's page is
-    base + lean, so adding (L2 - L1) to player 1's low byte turns his car into
-    player 2's without needing to know any band's base. Band 10's base moves
-    between $AAE0 and $9100 depending on the wheel animation at rom:E7D3, and
-    the delta handles that for free.
+    Nothing here reads player 1's sprite any more. It used to copy player 1's
+    graphics page and add a lean delta, which meant player 2 inherited player
+    1's CRASH: when player 1 spun, player 2's car spun with it, in a view where
+    player 2 was still driving perfectly well.
 
-    Guarded on band 11 being the ordinary driving sprite -- high byte $8B and
-    low byte no greater than $20. The crash, spin and start sprites live at
-    other pages ($8660, $86BA, $98EF and friends were all observed), and
-    offsetting into those would draw garbage, so in those states the page is
-    copied through unchanged and player 2's car shares player 1's animation.
+    The pages are constants. Measured over 5163 frames of run-01 and 5933 of
+    run-02, in every single ordinary driving frame:
 
-    The lean is three-state, taken straight from the stick, where player 1's is
-    a five-state gradual one. It banks the right way when player 2 steers, which
-    is the point; matching the easing would mean reproducing whatever drives
-    player 1's, and no single RAM byte determines it (checked against every
-    zero-page address over 5933 frames).
+        band  8   high $9D   low = lean
+        band  9   high $97   low = lean
+        band 11   high $8B   low = lean
+        band 10   high $AA   low = $D8 + lean   <- one of two wheel sheets
+                  high $91   low =       lean   <- the other
+
+    so the whole car is a base plus this frame's lean, with band 10 also picking
+    a wheel sheet. Player 2 picks that from bit 0 of its own stripe phase, which
+    advances at about its own Speed/40 a frame.
+
+    The one thing still taken from player 1 is WHETHER there is a car to draw at
+    all. Before a race its slot holds $0000, and both cars come and go together,
+    so player 2's is parked off-screen at x = $A1 -- the same idiom the stock
+    lists use for an empty object slot -- rather than drawn over a menu.
+
+    Player 2 therefore never shows a crash animation, because player 2 has no
+    crash of its own yet. Not crashing is the right failure here: sympathetic
+    crashing was the bug.
     """
-    lines = [
-        "    LDA #$00",
-        "    STA $%04X" % P2_CAR_DELTA,
-        "    STA $%04X" % P2_CAR_OK,
-        "    LDA $%04X" % (P1_CAR_SLOT[3] + 2),      # band 11's high byte
-        "    CMP #$8B",
-        "    BNE P2LeanDone",
-        "    LDA $%04X" % P1_CAR_SLOT[3],            # band 11's low byte == L1
-        "    CMP #$21",
-        "    BCS P2LeanDone",
-        "    STA $%04X" % P2_CAR_DELTA,              # stash L1
-        # $08 leans RIGHT and $18 leans LEFT, not the other way round. The
-        # earlier reading came from correlating player 1's lean against PlayerX
-        # deltas and rested on 42 and 24 samples; repeating it against LatVel
-        # over whole runs gave contradictory signs on run-01 and run-02, so that
-        # evidence was worthless. Forcing each sprite and photographing it
-        # settled it: $08 carries the body mass to the right, $18 to the left.
+    lines = ["    LDA $%04X" % (P1_CAR_SLOT[3] + 2), "    BNE P2CarDraw"]
+    for b in P2_CAR_BANDS:
+        dl = P2_DL_BASE + (b - 1) * P2_DL_SIZE
+        lines += ["    LDA #$A1", "    STA $%04X" % (dl + 11)]
+    lines += ["    JMP P2CarEnd", "P2CarDraw:"]
+
+    # this frame's lean, straight off the stick: $08 right, $18 left, $10 level
+    lines += [
         "    LDX #$%02X" % int(os.environ.get("PP2_FORCE_LEAN", "0x10"), 16),
         "    LDA $%04X" % SWCHA,
         "    AND #$%02X" % P2_LEFT,
@@ -1293,26 +1293,14 @@ def p2_car_src():
         "    BNE P2LeanNotR",
         "    LDX #$08",
         "P2LeanNotR:",
-        "    STX $%04X" % P2_LEAN,                   # band 10 needs L2 itself
-        "    LDA #$01",
-        "    STA $%04X" % P2_CAR_OK,
-        "    TXA",
-        "    SEC",
-        "    SBC $%04X" % P2_CAR_DELTA,              # L2 - L1
-        "    STA $%04X" % P2_CAR_DELTA,
-        "P2LeanDone:",
+        "    STX $%04X" % P2_LEAN,
     ]
-    for src, b in zip(P1_CAR_SLOT, P2_CAR_BANDS):
+
+    for b in P2_CAR_BANDS:
         dl = P2_DL_BASE + (b - 1) * P2_DL_SIZE
+        lines += ["    LDA #$%02X" % P2_CAR_X, "    STA $%04X" % (dl + 11)]
         if b == TIRE_BAND:
-            # The wheel flicker: pick the sheet from player 2's own stripe
-            # phase, which already advances at about its Speed/40 a frame, so
-            # the wheels flicker faster the faster player 2 goes -- and never in
-            # step with player 1. Only in the ordinary driving state; otherwise
-            # fall through to copying, so crash and spin sprites still animate.
             lines += [
-                "    LDA $%04X" % P2_CAR_OK,
-                "    BEQ P2TireCopy",
                 "    LDA $%04X" % P2_PHASE,
                 "    AND #$01",
                 "    BEQ P2TireB",
@@ -1323,22 +1311,13 @@ def p2_car_src():
                 "    JMP P2TireDone",
                 "P2TireB:",
                 "    LDA #$%02X" % TIRE_SHEET_B_HI, "    STA $%04X" % (dl + 10),
-                "    LDA $%04X" % P2_LEAN,
-                "    CLC", "    ADC #$%02X" % TIRE_SHEET_B_LO,
-                "    STA $%04X" % (dl + 8),
-                "    JMP P2TireDone",
-                "P2TireCopy:",
-                "    LDA $%04X" % src,
-                "    CLC", "    ADC $%04X" % P2_CAR_DELTA,
-                "    STA $%04X" % (dl + 8),
-                "    LDA $%04X" % (src + 2), "    STA $%04X" % (dl + 10),
+                "    LDA $%04X" % P2_LEAN, "    STA $%04X" % (dl + 8),
                 "P2TireDone:",
             ]
         else:
-            lines += ["    LDA $%04X" % src,
-                      "    CLC", "    ADC $%04X" % P2_CAR_DELTA,
-                      "    STA $%04X" % (dl + 8),
-                      "    LDA $%04X" % (src + 2), "    STA $%04X" % (dl + 10)]
+            lines += ["    LDA #$%02X" % P2_CAR_BASE_HI[b], "    STA $%04X" % (dl + 10),
+                      "    LDA $%04X" % P2_LEAN, "    STA $%04X" % (dl + 8)]
+    lines += ["P2CarEnd:"]
     return lines
 
 
