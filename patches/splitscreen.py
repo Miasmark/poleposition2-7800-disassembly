@@ -482,8 +482,11 @@ STRIPE_TEX = 0x1F00          # sub_E8AC's texture, read at phase + dat_C07E[row]
 STRIPE_WIDTH = 0x1F3C        # per-row width field, ORed into the same byte
 ROW_TEX_INDEX = 0xC07E       # dat_C07E: each row's offset into the texture
 GAME_STATE = 0x009D          # $02 qualifying drive, $03 race drive
-P2_START_LATERAL = 0x30      # player 2 lines up beside player 1, clear of the
-                             # collision box, so the grid is not an overlap
+GRID_LANE = 0x20             # half the gap between the two grid lanes, 32.
+                             # 64 apart is outside the collision box of 40 and
+                             # well inside the road edge at 59.
+GRID_MIN_MIRROR = 0x10       # below this, player 1's slot is too near the
+                             # centre to mirror usefully, so fall back
 
 # The divider is shared: its top row belongs to player 2 and its lower rows to
 # player 1, matching the viewport above and below it. Player 2's row needs a
@@ -1820,7 +1823,35 @@ def p2_race_init_src():
     """
     return [
         "P2RaceInit:",
-        "    LDA #$%02X" % P2_START_LATERAL, "    STA $%04X" % P2_LATERAL,
+        # --- grid placement -------------------------------------------------
+        # The RACE already places player 1 from its qualifying lap -- PlayerX
+        # reads 35 a frame before the state even changes -- so player 2 mirrors
+        # that into the other lane and gets the same mechanism for free.
+        #
+        # QUALIFYING has no such result to go on, and the stock game simply puts
+        # the car in the centre, which with two cars means both in the same
+        # place: measured, they began the race 14 apart, inside the collision
+        # box of 40, already touching. So qualifying is placed symmetrically
+        # instead, one car per lane.
+        "    LDA $%04X" % GAME_STATE,
+        "    CMP #$%02X" % (0xFF if os.getenv("PP2_GRID_FORCE_RACE") else 0x02),
+        "    BEQ P2GridSym",
+        "    LDA $%04X" % PLAYER_X,
+        "    BPL P2GridAbs",
+        "    EOR #$FF", "    CLC", "    ADC #$01",
+        "P2GridAbs:",
+        "    CMP #$%02X" % GRID_MIN_MIRROR,
+        "    BCC P2GridSym",
+        "    LDA $%04X" % PLAYER_X,
+        "    EOR #$FF", "    CLC", "    ADC #$01",
+        "    STA $%04X" % P2_LATERAL,
+        "    JMP P2GridDone",
+        "P2GridSym:",
+        "    LDA #$%02X" % ((0x100 - GRID_LANE) & 0xFF),
+        "    STA $%04X" % PLAYER_X,
+        "    LDA #$%02X" % GRID_LANE,
+        "    STA $%04X" % P2_LATERAL,
+        "P2GridDone:",
         "    LDA #$00",
         "    STA $%04X" % P2_SPEED, "    STA $%04X" % P2_FRAC,
         "    STA $%04X" % P2_PHASE, "    STA $%04X" % P2_PHASE_ACC,

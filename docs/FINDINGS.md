@@ -3992,3 +3992,33 @@ so the ordering of the two writes has to be checked rather than assumed.
 
 This has to be fixed **before** the other car is drawn as an object, or the
 first thing either player will see is the other car inside their own.
+
+## Grid placement: the race already had the mechanism
+
+**Confirmed live.** The two cars were starting on top of each other -- in the
+race both left of centre and 14 apart, inside the collision box of 40, so they
+began in contact and were both charged a collision penalty for it.
+
+The **race** needed nothing new. It already places player 1 from the qualifying
+lap, and `PlayerX` reads 35 a full frame *before* the state changes to `$03`, so
+player 2 can simply mirror it into the other lane and inherit the same
+mechanism. Verified at three slots: 35 gives -35 (70 apart), 60 gives -60 (120),
+and 4 -- too near the centre to mirror usefully -- falls back to the symmetric
+pair (64 apart).
+
+**Qualifying** has no result to go on, and the stock game just centres the car,
+which with two cars means both in the same place. It is now placed
+symmetrically, one car per lane at +-32: 64 apart, outside the collision box,
+well inside the road edge at 59.
+
+Verified: **0 frames inside the collision box in the first 300 frames of a
+session**, where before they started in contact.
+
+### Both recordings are now stale
+
+This moves *player 1's* start position, so run-01 and run-02 no longer replay
+the race they recorded. run-01 still grades as baseline and run-02 diverges --
+the documented desync rule, not a regression. They remain useful as liveness
+checks and nothing more. `PP2_GRID_FORCE_RACE` is kept as a test switch, since
+neither recording reaches a real race any more and the mirror branch would
+otherwise be unexercisable.
