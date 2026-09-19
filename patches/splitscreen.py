@@ -481,7 +481,8 @@ P2_CAR_BASE_HI = {8: 0x9D, 9: 0x97, 11: 0x8B}
 STRIPE_TEX = 0x1F00          # sub_E8AC's texture, read at phase + dat_C07E[row]
 STRIPE_WIDTH = 0x1F3C        # per-row width field, ORed into the same byte
 ROW_TEX_INDEX = 0xC07E       # dat_C07E: each row's offset into the texture
-GAME_STATE = 0x009D          # $02 qualifying drive, $03 race drive
+GAME_STATE = 0x009D          # $02 qualifying drive, $03 race drive,
+                             # $10 and $11 the banner runs that precede them
 GRID_LANE = 0x20             # half the gap between the two grid lanes, 32.
                              # 64 apart is outside the collision box of 40 and
                              # well inside the road edge at 59.
@@ -1437,12 +1438,27 @@ def p2_drive_src():
         "    CMP $%04X" % P2_PREV_STATE,
         "    BEQ P2InitSkip",
         "    STA $%04X" % P2_PREV_STATE,
-        "    CMP #$02",                       # qualifying drive
+        # The banner runs during $10 and $11, with the car already rolling --
+        # measured, player 1 reaches speed 77 in $10 before the qualifying lap
+        # state $02 even begins. Setting up at $02 therefore left both cars
+        # sitting in the centre through the whole banner and snapped them apart
+        # the moment driving started. Set up at the BANNER instead.
+        "    CMP #$10",
         "    BEQ P2DoInit",
-        "    CMP #$03",                       # race drive
-        "    BNE P2InitSkip",
+        "    CMP #$11",
+        "    BEQ P2DoInit",
+        # $03 gets one more visit, because player 1's race grid slot does not
+        # exist yet during its banner: PlayerX reads 44 there, a leftover from
+        # the previous lap, and only becomes the real slot as $03 begins. So the
+        # race re-places player 2 alone then, without disturbing anything else.
+        "    CMP #$%02X" % (0x02 if os.getenv("PP2_PLACE_ON_QUAL") else 0x03),
+        "    BEQ P2DoPlace",
+        "    JMP P2InitSkip",
         "P2DoInit:",
         "    JSR P2RaceInit",
+        "    JMP P2InitSkip",
+        "P2DoPlace:",
+        "    JSR P2PlaceMirror",
         "P2InitSkip:",
         # --- is the race actually under way? --------------------------------
         # rom:C2D4 gates player 1 the same way: outside state 1, if both halves
@@ -1822,20 +1838,12 @@ def p2_race_init_src():
     2's is distance CONSUMED, hence the subtraction.
     """
     return [
-        "P2RaceInit:",
-        # --- grid placement -------------------------------------------------
-        # The RACE already places player 1 from its qualifying lap -- PlayerX
-        # reads 35 a frame before the state even changes -- so player 2 mirrors
-        # that into the other lane and gets the same mechanism for free.
-        #
-        # QUALIFYING has no such result to go on, and the stock game simply puts
-        # the car in the centre, which with two cars means both in the same
-        # place: measured, they began the race 14 apart, inside the collision
-        # box of 40, already touching. So qualifying is placed symmetrically
-        # instead, one car per lane.
-        "    LDA $%04X" % GAME_STATE,
-        "    CMP #$%02X" % (0xFF if os.getenv("PP2_GRID_FORCE_RACE") else 0x02),
-        "    BEQ P2GridSym",
+        # Re-place player 2 alone, mirroring whatever grid slot the game has
+        # just given player 1 from its qualifying lap. Nothing else is touched,
+        # so this is safe to call after the session is already running. If
+        # player 1 is too near the centre to mirror usefully, the symmetric pair
+        # is used instead.
+        "P2PlaceMirror:",
         "    LDA $%04X" % PLAYER_X,
         "    BPL P2GridAbs",
         "    EOR #$FF", "    CLC", "    ADC #$01",
@@ -1845,13 +1853,17 @@ def p2_race_init_src():
         "    LDA $%04X" % PLAYER_X,
         "    EOR #$FF", "    CLC", "    ADC #$01",
         "    STA $%04X" % P2_LATERAL,
-        "    JMP P2GridDone",
+        "    RTS",
+        # One car per lane. Used for the qualifying banner, where there is no
+        # qualifying result to place anyone by, and as the mirror's fallback.
         "P2GridSym:",
         "    LDA #$%02X" % ((0x100 - GRID_LANE) & 0xFF),
         "    STA $%04X" % PLAYER_X,
         "    LDA #$%02X" % GRID_LANE,
         "    STA $%04X" % P2_LATERAL,
-        "P2GridDone:",
+        "    RTS",
+        "P2RaceInit:",
+        "    JSR P2GridSym",
         "    LDA #$00",
         "    STA $%04X" % P2_SPEED, "    STA $%04X" % P2_FRAC,
         "    STA $%04X" % P2_PHASE, "    STA $%04X" % P2_PHASE_ACC,

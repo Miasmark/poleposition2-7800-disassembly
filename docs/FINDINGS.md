@@ -4022,3 +4022,40 @@ the documented desync rule, not a regression. They remain useful as liveness
 checks and nothing more. `PP2_GRID_FORCE_RACE` is kept as a test switch, since
 neither recording reaches a real race any more and the mirror branch would
 otherwise be unexercisable.
+
+## Correction: the lap starts at the banner, not at the driving state
+
+**Confirmed live.** The previous entry placed the cars on entry to state `$02`.
+That is where *driving* starts, not where the lap starts. The banner run is
+state `$10`, and the car is **already rolling through it**:
+
+    f685  state $04 -> $10   PlayerX=0    P1spd=0     banner begins
+    f775  state $10          PlayerX=0    P1spd=77    still centred, rolling
+    f781  state $10 -> $02   PlayerX=-32  P2=32       snapped apart here
+
+So both cars sat in the centre for the whole banner and jumped apart the instant
+`$02` arrived. Setup now happens on entry to `$10` or `$11`, before player 1 has
+moved at all.
+
+### And a claim from the previous entry was wrong
+
+It said player 1's race grid slot "reads 35 a full frame before the state
+changes", and concluded the slot could be read early. That was true only of the
+single frame immediately before `$03`. Measured across the whole of state `$11`,
+`PlayerX` reads **44** -- a leftover from the previous lap -- and only becomes
+the real slot `35` as `$03` begins. Sampling one frame either side of a
+transition says nothing about the period leading up to it.
+
+Placement is therefore split in two:
+
+* `P2RaceInit` sets everything up at the banner, using the symmetric pair.
+* `P2PlaceMirror` re-places **player 2 alone** at `$03`, once the slot exists,
+  touching nothing else -- so it is safe to call into a running session.
+
+Verified with `PP2_PLACE_ON_QUAL`, which fires the mirror at `$02` so it can be
+exercised at all: slot 35 gives -35 (70 apart), -40 gives +40 (80 apart,
+correctly crossing to the other side), and 6 -- too central -- falls back to
++-32. Zero frames inside the collision box in the first 300 of a session.
+
+No recording reaches a race any longer, so that switch is the only way to test
+the mirror branch and is kept deliberately.
