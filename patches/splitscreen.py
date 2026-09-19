@@ -432,6 +432,7 @@ P2_LIMIT = 0x68              # how far player 2's camera may lean either way.
                              # as the 16-bit value it actually is removed that
                              # ceiling; the remaining one is the table's length.
 P2_STEP_HI = 0x2710          # high byte of the per-row lateral step
+P2_STAGE_TMP = 0x2715        # the stripe byte, held across the near-band write
 LATERAL_RAMP_HI = 0xEADE     # dat_EA41's HIGH byte. The ramp is a 16-bit value,
                              # about 3.55 per unit, and it passes 256 at index
                              # 72 -- which is exactly why reading only the low
@@ -845,6 +846,7 @@ def hud_reassert_src(addr):
         [] if os.getenv("PP2_KEEP_INJECTION") else road_stage_src()
     ) + p2_stage_src() + p2_car_src() + [
         "    RTS",
+    ] + p2_stage_tables() + [
         "WrapSlot0:",
         "    CMP #$A0",
         "    BCC WrapKeep",
@@ -1944,63 +1946,110 @@ def p2_follow_src():
     ]
 
 
-def p2_stage_src():
-    """Player 2's road geometry, once per frame, from its own source."""
-    lines = p2_camera_src()
+def p2_stage_tables():
+    """The per-band constants the staging loops index.
+
+    Everything is a single byte, because every address involved shares a page:
+    the stripe texture and the width table both sit in $1F, and all of player
+    2's lists in $26. So a band is described by three bytes rather than by
+    sixty of unrolled code.
+    """
+    import io as _io
+    rom = bytearray(_io.open(load_source()[0], "rb").read())
+    rom = rom[len(rom) - ROM_SIZE:]
     lay = p2_band_layout()
+    tex, wid, dst = [], [], []
     for b in range(1, 13):
-        dl = lay[b]["addr"]
-        band_index = b
         i = 6 * b + BAND_SAMPLE
-        def emit(wsrc, xsrc, advance):
-            S = P2_SCRATCH
-            # wsrc None means the width byte is already in A, built from
-            # player 2's own stripe phase rather than read from player 1's array
-            out = ([] if wsrc is None else ["    LDA $%s" % wsrc])
-            out += ["    STA $%04X" % dl_w]
-            xsrc = "%04X" % (P2_BANDX + band_index)
-            if advance:
-                out += ["    CLC",
-                        "    LDA $%04X" % (S + 5), "    ADC $%04X" % (S + 3),
-                        "    STA $%04X" % (S + 5),
-                        "    LDA $%04X" % (S + 6), "    ADC $%04X" % (S + 4),
-                        "    STA $%04X" % (S + 6)]
-            out += ["    LDA $%s" % xsrc, "    CLC", "    ADC $%04X" % (S + 6)]
-            if P2_X_OFFSET:
-                out += ["    CLC", "    ADC #$%02X" % (P2_X_OFFSET & 0xFF)]
-            out += ["    STA $%04X" % dl_x]
-            return out
-        if i < NEAR_FIRST_ROW:
-            dl_w, dl_x = dl + 1, dl + 3
-            lines += stripe_src(i) + ["    ORA $%04X" % (STRIPE_WIDTH + i)]
-            lines += emit(None, "%04X" % (ROW_CURVE_X + i), True)
-        else:
-            # The same rebuild player 1's near bands get. emit() cannot be
-            # reused here: it puts the walk's answer in BOTH slots, which is
-            # exactly the collapse being fixed, and it would take slot0's width
-            # from $007E, the dead zero-page copy. The walk accumulator must
-            # still advance exactly once for the band, so that step is inlined
-            # rather than run twice.
-            n = i - NEAR_FIRST_ROW
-            S = P2_SCRATCH
-            lines += stripe_src(i) + [
-                "    TAX",                              # keep the stripe byte
-                "    ORA $%04X" % (STRIPE_WIDTH + i), "    STA $%04X" % (dl + 5),
-                "    TXA",
-                "    ORA #$10", "    STA $%04X" % (dl + 1),
-                "    CLC",
+        off = rom[ROW_TEX_INDEX + i - BASE]
+        assert off + 29 <= 0xFF, "row %d texture index overflows" % i
+        tex.append(off)
+        assert (STRIPE_WIDTH + i) >> 8 == STRIPE_TEX >> 8, "width table changed page"
+        wid.append((STRIPE_WIDTH + i) & 0xFF)
+        assert lay[b]["addr"] >> 8 == P2_DL_BASE >> 8, "band lists changed page"
+        dst.append(lay[b]["addr"] & 0xFF)
+    return [
+        "P2StTex:", "    .byte " + ",".join("$%02X" % v for v in tex),
+        "P2StWid:", "    .byte " + ",".join("$%02X" % v for v in wid),
+        "P2StDst:", "    .byte " + ",".join("$%02X" % v for v in dst),
+    ]
+
+
+def p2_stage_src():
+    """Player 2's road geometry, once per frame, from its own source.
+
+    Two loops rather than twelve unrolled blocks -- one for the far bands,
+    which draw the road with a single object, and one for the near bands, which
+    need two plus the fixed $3C offset between them. Unrolled this was about
+    sixty bytes a band; the loops and their tables are a fraction of that, and
+    the space is needed for the object pass.
+
+    The bands must still be walked in order, because the camera accumulator
+    advances exactly once per band, so the far loop runs first and the near
+    loop continues from where it left off.
+    """
+    S = P2_SCRATCH
+    lines = p2_camera_src()
+
+    def advance():
+        return ["    CLC",
                 "    LDA $%04X" % (S + 5), "    ADC $%04X" % (S + 3),
                 "    STA $%04X" % (S + 5),
                 "    LDA $%04X" % (S + 6), "    ADC $%04X" % (S + 4),
-                "    STA $%04X" % (S + 6),
-                "    LDA $%04X" % (P2_BANDX + band_index),
-                "    CLC", "    ADC $%04X" % (S + 6),
-            ]
-            if P2_X_OFFSET:
-                lines += ["    CLC", "    ADC #$%02X" % (P2_X_OFFSET & 0xFF)]
-            lines += ["    STA $%04X" % (dl + 7)]
-            lines += wrap_guard()
-            lines += ["    STA $%04X" % (dl + 3)]
+                "    STA $%04X" % (S + 6)]
+
+    def stripe():
+        # this band's stripe byte, at player 2's own phase
+        return ["    LDA $%04X" % P2_PHASE,
+                "    CLC", "    ADC P2StTex,X",
+                "    TAY",
+                "    LDA $%04X,Y" % STRIPE_TEX]
+
+    def band_x():
+        out = ["    LDA $%04X,X" % (P2_BANDX + 1),
+               "    CLC", "    ADC $%04X" % (S + 6)]
+        if P2_X_OFFSET:
+            out += ["    CLC", "    ADC #$%02X" % (P2_X_OFFSET & 0xFF)]
+        return out
+
+    # --- far bands: one road object -------------------------------------
+    lines += ["    LDX #$00", "P2StFar:"]
+    lines += stripe()
+    lines += [
+        "    LDY P2StWid,X",
+        "    ORA $%04X,Y" % STRIPE_TEX,
+        "    LDY P2StDst,X",
+        "    STA $%04X,Y" % (P2_DL_BASE + 1),
+    ] + advance() + band_x() + [
+        "    LDY P2StDst,X",
+        "    STA $%04X,Y" % (P2_DL_BASE + 3),
+        "    INX",
+        "    CPX #$%02X" % (NEAR_FIRST_ROW // 6 - 1),
+        "    BNE P2StFar",
+    ]
+
+    # --- near bands: two road objects, slot0 a fixed $3C to the left ------
+    lines += ["P2StNear:"]
+    lines += stripe()
+    lines += [
+        "    STA $%04X" % P2_STAGE_TMP,
+        "    LDY P2StWid,X",
+        "    ORA $%04X,Y" % STRIPE_TEX,
+        "    LDY P2StDst,X",
+        "    STA $%04X,Y" % (P2_DL_BASE + 5),
+        "    LDA $%04X" % P2_STAGE_TMP,
+        "    ORA #$10",
+        "    STA $%04X,Y" % (P2_DL_BASE + 1),
+    ] + advance() + band_x() + [
+        "    LDY P2StDst,X",
+        "    STA $%04X,Y" % (P2_DL_BASE + 7),
+    ] + wrap_guard() + [
+        "    LDY P2StDst,X",
+        "    STA $%04X,Y" % (P2_DL_BASE + 3),
+        "    INX",
+        "    CPX #$0C",
+        "    BNE P2StNear",
+    ]
     return lines
 
 

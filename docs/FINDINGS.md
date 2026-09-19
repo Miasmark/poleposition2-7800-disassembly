@@ -4133,3 +4133,45 @@ are now reached, where seven were not.**
 57 bytes spare, and the object pass needs more than that. The obvious next
 saving is `DLL_TEMPLATE`'s 102 bytes: it is a boot image copied once to $2500,
 so it could be built by a loop rather than stored whole.
+
+## Unrolled staging became two loops: 427 bytes back
+
+Player 2's twelve unrolled band-staging blocks are now two loops -- one for the
+far bands, one for the near -- over three one-byte tables.
+
+They fit in one byte each because **every address involved shares a page**: the
+stripe texture and the width table both sit in `$1F`, and all of player 2's
+lists in `$26`. So a band costs three bytes of table rather than about sixty of
+code. The order still matters, since the camera accumulator advances exactly
+once per band, so the far loop runs first and the near loop continues from it.
+
+    blob 2618 -> 2191, saving 427 bytes
+    spare in the free run: 57 -> 484
+
+Verified byte for byte: player 2's whole 156-byte list was dumped at six frames
+from both builds and compared. **Identical throughout** -- which is the right
+check for a refactor that must change nothing.
+
+The same treatment is available for `road_stage_src` (~260 bytes unrolled) and
+`p2_drive_src` if more room is needed.
+
+## Audio for player 2: the allocator already exists
+
+**Decoded from rom:DEF3.** `SoundStart` is not a two-channel poke -- it is a
+**priority-based two-voice allocator**:
+
+    scan voices 1 then 0 for a free one (SndVoiceId, $FF means free)
+    if none is free:
+        compare dat_E1CB[new sound] against dat_E1CB[voice 1's current]
+        steal voice 1 if the new sound ranks at least as high
+        otherwise compare against voice 0 and steal that
+        otherwise drop the new sound entirely
+
+So the game already arbitrates more logical sounds than it has voices, through a
+priority table indexed by sound id. Player 2's engine would be another sound id
+with a chosen priority rather than a new mixer.
+
+That does not remove the hard limit -- two voices between two engines and the
+effects -- but it does mean the work is choosing priorities, not building
+arbitration. The likely shape is that each engine outranks the other player's
+effects but yields to its own, so a crash still cuts through.
