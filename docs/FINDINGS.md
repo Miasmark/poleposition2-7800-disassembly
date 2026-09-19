@@ -4059,3 +4059,50 @@ correctly crossing to the other side), and 6 -- too central -- falls back to
 
 No recording reaches a race any longer, so that switch is the only way to test
 the mirror branch and is kept deliberately.
+
+## The race grid: qualifying position picks a row and a lane
+
+**Decoded from rom:D1AD-D204.** The race start is not a fixed position. It is a
+grid of rows of two, indexed by the qualifying position in `ram_00A6` (1-based):
+
+    L_D1AD:
+      LDY ram_00A6          qualifying position
+      DEY / TYA / LSR A     (pos-1)/2  =  the grid ROW
+      STA ram_00D6          -> player 1's track position high byte, i.e. how
+      LDA #$64 / STA ram_00D5   far back down the grid the car starts
+      LDY ObjSlotList,X
+      JSR sub_CF47          x3 -- the enemy cars placed around it
+    ...
+      LDA ram_00A6 / AND #$01   (pos-1)&1  =  the LANE
+      -> lateral $02 or $20, projected through sub_E676 at row $48 and
+         turned into PlayerX by SBC RowCurveOffset,Y / SBC #$3F
+
+So the qualifying position determines **both** how far back the car starts and
+which of the two lanes it occupies, and the enemy cars fill the other slots.
+
+### What this means for player 2
+
+`P2PlaceMirror` mirrors player 1's lateral, which -- by accident rather than
+design -- lands player 2 in **the other lane of player 1's own row**. That is a
+legitimate grid slot and the two players cannot collide there, so it is closer
+to correct than it looks. What it does *not* do is stop the enemy car that was
+assigned to that slot from also being there.
+
+A proper implementation needs, in order:
+
+1. **Player 2 needs a qualifying time at all.** It has no lap timing today, so
+   there is nothing to rank it by. This is the prerequisite for everything else.
+2. A rank for player 2, and a rule that the two players cannot be given the same
+   position -- otherwise both resolve to one slot.
+3. Player 2 placed from its own position with the same row/lane arithmetic,
+   setting its track position as well as its lateral, rather than mirroring.
+4. **Suppression of the enemy car occupying player 2's slot**, which is the part
+   that is actually missing right now rather than merely approximate.
+
+Step 4 is worth doing on its own even before 1 to 3, since it removes a visible
+overlap under the placement that already exists.
+
+### Note on state $10
+
+It is the rolling section BEFORE the starting line, which is why placing there
+is right: the lap does not begin, or end, until the line is crossed.
