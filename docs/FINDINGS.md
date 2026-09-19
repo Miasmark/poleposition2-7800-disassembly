@@ -3940,3 +3940,55 @@ touching the layout. More importantly the other car needs no projection
 guesswork and cannot pop in: its distance is the gap, exactly, and its lateral
 is a variable already held -- both are known every frame rather than inferred
 from a display list.
+
+## The object window CANNOT be widened: the 16 slots are already full
+
+**Measured live, and this overturns the plan in the previous entry.**
+
+    spacing between distinct object distances   median 122 units, 25th pct 16
+    objects sharing a single distance           often 7 to 9 (a row across the track)
+    slots not tracking anything                 0 free 78% of the time
+                                                1 free 18%, 2 free 4%
+
+The list runs at capacity. Widening it to span both cars would need slots that
+do not exist, so the load/release threshold change described above is not
+implementable as written -- there is nothing to load the next object into.
+
+### What replaces it: player 2 gets its own window
+
+Rather than share player 1's 16 slots, player 2 keeps **its own smaller set of
+slots with its own cursor** over the same track object data (`ObjSegLenLo/Hi`).
+This is better on every count that matters here:
+
+* **No exhaustion.** Player 1's list is untouched and player 2's is sized to
+  what is left.
+* **No pop-in, with no extra machinery.** Player 2's window loads from player
+  2's OWN horizon, so objects always enter from the far plane. Neither the
+  per-slot "seen beyond my horizon" flag nor the widened thresholds are needed.
+* **Genuinely independent views**, which was the requirement all along.
+* **The gap is not even needed for this.** Player 2's track position is already
+  maintained exactly, so its cursor is driven directly from it.
+
+The remaining unknown is where a slot's `ObjType` and `ObjLateral` come from
+when the cursor loads one -- the code around rom:CC23 and rom:CF9C -- since
+player 2's cursor must read the same source data.
+
+## The two cars start on top of each other
+
+**Measured live.** At the start of each session:
+
+    qualifying (state $02)   PlayerX = 0  (centre)   P2_LATERAL = 48 (left)
+    race       (state $03)   PlayerX = 35 (left)     P2_LATERAL = 49 (left)
+
+In the race they are both left of centre and **14 apart**, well inside the
+COLLIDE_X box of 40 -- so they begin the race already touching, which the
+one-penalty-per-contact rule then charges them both for.
+
+They need placing symmetrically at init, one either side: `PlayerX` negative and
+`P2_LATERAL` positive, around +-32, which is 64 apart (outside the collision
+box) and comfortably inside the road edge at 59. Note that `P2RaceInit` runs off
+the `$009D` transition in RoadTail, while the game sets `PlayerX = 35` itself,
+so the ordering of the two writes has to be checked rather than assumed.
+
+This has to be fixed **before** the other car is drawn as an object, or the
+first thing either player will see is the other car inside their own.
