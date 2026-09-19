@@ -433,6 +433,12 @@ P2_LIMIT = 0x68              # how far player 2's camera may lean either way.
                              # ceiling; the remaining one is the table's length.
 P2_STEP_HI = 0x2710          # high byte of the per-row lateral step
 P2_STAGE_TMP = 0x2715        # the stripe byte, held across the near-band write
+P2_DRIFT_IDX = 0x2716        # curve index, SegCurve + 5, kept for the sign test
+P2_DRIFT_RATE = 0x2717       # this frame's signed drift rate
+P2_DRIFT_ACC = 0x2718        # the rate accumulated once per speed threshold
+SEG_CURVE_TBL = 0x1900       # SegCurve, indexed by segment
+SPEED_STEPS = 0xB4F8         # dat_B4F8: eight speed thresholds, high to low
+DRIFT_PTR_LO, DRIFT_PTR_HI = 0xAA24, 0xAB24   # per-curve pointers to a row of 8
 LATERAL_RAMP_HI = 0xEADE     # dat_EA41's HIGH byte. The ramp is a 16-bit value,
                              # about 3.55 per unit, and it passes 256 at index
                              # 72 -- which is exactly why reading only the low
@@ -846,7 +852,7 @@ def hud_reassert_src(addr):
         [] if os.getenv("PP2_KEEP_INJECTION") else road_stage_src()
     ) + p2_stage_src() + p2_car_src() + [
         "    RTS",
-    ] + p2_stage_tables() + [
+    ] + p2_stage_tables() + p2_drift_table() + [
         "WrapSlot0:",
         "    CMP #$A0",
         "    BCC WrapKeep",
@@ -1670,6 +1676,7 @@ def p2_drive_src():
         "    STA $%04X" % P2_LATERAL,
         "P2NotLeft:",
         "P2NoSteer:",
+    ] + p2_drift_src() + [
         # --- advance along the track ---------------------------------------
         # Player 1 advances by Speed/12 per frame, measured: Speed 16 -> 1.33
         # units, 106 -> 8.83, 198 -> 16.50, 210 -> 17.50. Player 2 was adding
@@ -1943,6 +1950,100 @@ def p2_follow_src():
         "    LDA $00CF", "    STA $%04X" % P2_TRACK_SEG,
         "    LDA $00D5", "    STA $%04X" % P2_TRACK_LO,
         "    LDA $00D6", "    STA $%04X" % P2_TRACK_HI,
+    ]
+
+
+def p2_drift_table():
+    """Flatten the engine's curve-drift table so player 2 can index it directly.
+
+    The engine holds it as eleven pointers (dat_AA24 / dat_AB24, one per curve
+    index SegCurve + 5) each to a row of eight, indexed by Speed >> 5. Following
+    a pointer needs a zero-page pair, and the two the engine uses -- $40 / $41 --
+    belong to the object emitter, which RoadTail has no business borrowing. So
+    the eleven rows are dereferenced here and laid out flat, 88 bytes, indexed
+    by (curve index * 8) + (Speed >> 5).
+    """
+    import io as _io
+    rom = bytearray(_io.open(load_source()[0], "rb").read())
+    rom = rom[len(rom) - ROM_SIZE:]
+    at = lambda a: rom[a - BASE]
+    flat = []
+    for idx in range(11):
+        ptr = at(DRIFT_PTR_HI + idx) * 256 + at(DRIFT_PTR_LO + idx)
+        assert BASE <= ptr <= 0xFFF8, "curve %d points outside ROM at $%04X" % (idx, ptr)
+        flat += [at(ptr + k) for k in range(8)]
+    return ["P2DriftTab:", "    .byte " + ",".join("$%02X" % v for v in flat)]
+
+
+def p2_drift_src():
+    """Let the curve push player 2 sideways, as it pushes player 1.
+
+    Player 1's rule, at rom:C1D3 and rom:C4FE: a rate is looked up by the
+    segment's curvature and the speed band, negated for one direction of curve,
+    then accumulated ONCE PER SPEED THRESHOLD it exceeds and divided by four.
+    That is what makes the push grow with speed rather than being a constant.
+    Player 2 now does the same from its own segment and its own speed.
+
+    Omitted: player 1 adds RoadCurve to the rate before scaling. That is its
+    smoothed visual curvature, which player 2 has no equivalent of, so the
+    segment term alone is used -- the dominant one, and the same source player
+    1's own LateralVel comes from.
+    """
+    return [
+        "    LDA $%04X" % P2_SPEED,
+        "    BEQ P2NoDrift",                       # nothing pushes a parked car
+        "    LDX $%04X" % P2_TRACK_SEG,
+        "    LDA $%04X,X" % SEG_CURVE_TBL,
+        "    CLC", "    ADC #$05",                 # curve index, 0..10
+        "    STA $%04X" % P2_DRIFT_IDX,
+        "    ASL A", "    ASL A", "    ASL A",     # row of eight
+        "    STA $%04X" % P2_DRIFT_ACC,            # borrowed as scratch
+        "    LDA $%04X" % P2_SPEED,
+        "    LSR A", "    LSR A", "    LSR A", "    LSR A", "    LSR A",
+        "    CLC", "    ADC $%04X" % P2_DRIFT_ACC,
+        "    TAY",
+        "    LDA P2DriftTab,Y",
+        "    LDX $%04X" % P2_DRIFT_IDX,
+        "    CPX #$06",
+        "    BMI P2DriftPos",
+        "    EOR #$FF", "    CLC", "    ADC #$01",
+        "P2DriftPos:",
+        "    STA $%04X" % P2_DRIFT_RATE,
+        # accumulate once for each speed threshold passed, then divide by four
+        "    LDA #$00",
+        "    STA $%04X" % P2_DRIFT_ACC,
+        "    LDY #$07",
+        "P2DriftLoop:",
+        "    LDA $%04X" % P2_SPEED,
+        "    CMP $%04X,Y" % SPEED_STEPS,
+        "    BCC P2DriftDone",
+        "    LDA $%04X" % P2_DRIFT_ACC,
+        "    CLC", "    ADC $%04X" % P2_DRIFT_RATE,
+        "    STA $%04X" % P2_DRIFT_ACC,
+        "    DEY",
+        "    BPL P2DriftLoop",
+        "P2DriftDone:",
+        "    LSR $%04X" % P2_DRIFT_ACC,
+        "    LSR $%04X" % P2_DRIFT_ACC,
+        "    LDA $%04X" % P2_DRIFT_ACC,
+        "    LDX $%04X" % P2_DRIFT_RATE,
+        "    BPL P2DriftAdd",
+        "    ORA #$C0",                            # sign-extend the two shifts
+        "P2DriftAdd:",
+        "    CLC", "    ADC $%04X" % P2_LATERAL,
+        # hold it inside the camera's range, as the steering does
+        "    BMI P2DrNeg",
+        "    CMP #$%02X" % (P2_LIMIT + 1),
+        "    BCC P2DrStore",
+        "    LDA #$%02X" % P2_LIMIT,
+        "    JMP P2DrStore",
+        "P2DrNeg:",
+        "    CMP #$%02X" % ((0x100 - P2_LIMIT) & 0xFF),
+        "    BCS P2DrStore",
+        "    LDA #$%02X" % ((0x100 - P2_LIMIT) & 0xFF),
+        "P2DrStore:",
+        "    STA $%04X" % P2_LATERAL,
+        "P2NoDrift:",
     ]
 
 

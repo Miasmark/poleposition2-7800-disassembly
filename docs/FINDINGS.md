@@ -4175,3 +4175,33 @@ That does not remove the hard limit -- two voices between two engines and the
 effects -- but it does mean the work is choosing priorities, not building
 arbitration. The likely shape is that each engine outranks the other player's
 effects but yields to its own, so a crash still cuts through.
+
+## Curve drift for player 2
+
+Player 2 tracked the road as though on rails -- curves did not push it at all,
+while player 1 drifts outward.
+
+Player 1's rule, at rom:C1D3 and rom:C4FE:
+
+    rate = driftTable[SegCurve + 5][Speed >> 5]     negated when index >= 6
+    accumulate that rate ONCE PER SPEED THRESHOLD in dat_B4F8 it exceeds
+    divide by four with sign extension, and add to PlayerX
+
+The per-threshold accumulation is the part that matters: it is what makes the
+push grow with speed rather than being a fixed amount per curve.
+
+The engine keeps the table as eleven pointers (`dat_AA24`/`dat_AB24`) to rows of
+eight. Following one needs a zero-page pair, and the engine's `$40`/`$41` belong
+to the object emitter, which RoadTail has no business borrowing -- so the rows
+are dereferenced **at build time** and laid out flat, 88 bytes indexed by
+`(curve index * 8) + (Speed >> 5)`. Curve index 5, a straight, is all zeros; the
+rows grow with curvature and speed band and are symmetric about the straight.
+
+Omitted deliberately: player 1 adds `RoadCurve` to the rate before scaling, and
+that is its smoothed visual curvature, which player 2 has no equivalent of. Only
+the segment term is used -- the dominant one, and the same source player 1's own
+`LateralVel` comes from.
+
+Verified with the throttle held and the stick untouched: **493 straight frames
+with zero lateral movement, 2506 curve frames with 904 units of movement, and
+zero frames pushed the wrong way.**
