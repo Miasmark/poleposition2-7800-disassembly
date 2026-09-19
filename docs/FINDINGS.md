@@ -3837,3 +3837,54 @@ back in.
 It needs only the gap and the two laterals, which already exist and are exact --
 the same box test the car-to-car collision uses. It was held back only because
 colliding with objects player 2 cannot see would be worse than not colliding.
+
+## How objects reach the track: a rolling 16-slot window
+
+**Measured live.** Objects do not spawn at a distance. There are **16 slots**,
+each holding an object's distance from player 1, counting down as the car
+advances; an object becomes visible when that distance falls below the horizon.
+
+    visible depth              Z = 0 (bumper) .. 1300 (horizon, row 0)
+    objects visible at once    7..13, usually 9 or 10
+
+Where the 16 slots sit, as a share of all slot-frames over one run:
+
+    already passed (Z < 0)        5.9%
+    visible (0..1300)            58.7%
+    ahead 1301..5000             12.1%
+    ahead 5001..20000            21.8%
+    over 20000                    1.6%
+
+So a third of the list is tracked *beyond* what can be seen. Slots are recycled
+-- about 30 times in 6400 frames -- but at a median Z of **6421**, five times
+past the horizon, so recycling is invisible in normal play.
+
+### Why this matters for player 2, and what it forces
+
+The list is keyed to **player 1's** position. One reload was observed at Z =
+256, well inside the visible depth. That is harmless for player 1, but player 2
+sits at `Z1 + gap`, so with player 2 running ahead, a slot recycling anywhere in
+1300..6000 lands inside player 2's visible range and the object **pops in
+close**.
+
+This rules out the approach the backed-out attempt used. Reading objects out of
+player 1's *display list* carries no object identity, so there is no way to tell
+"this slot just recycled" from "this object has been approaching for seconds".
+
+Reading the **16-slot object array** instead makes the slot index an identity,
+so player 2 can hold one byte per slot meaning *"I have seen this object beyond
+my own horizon"* and refuse to materialise anything that did not arrive from the
+far plane. That fixes the pop-in and makes player 2's object set derive from
+world positions rather than from whatever player 1 is drawing -- genuinely
+independent views, which is the requirement.
+
+The cost is that sprite selection is type-dispatched (`sub_E475` and the paths
+around it), so fetching graphics for an object player 1 cannot currently see
+needs that dispatch understood. That is the remaining unknown.
+
+### Order of work
+
+1. Variable-length per-band lists (needed regardless, and stands alone).
+2. Object array read, with the per-slot "seen beyond the horizon" flag.
+3. Object collision -- which needs only the gap and the two laterals, both of
+   which already exist and are exact.
