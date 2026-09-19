@@ -3740,3 +3740,46 @@ The ROM's `SkidDrag` performs its three `ROL`s **without a preceding `CLC`**, so
 the value it subtracts depends on whatever carry the routine happens to be
 entered with. Player 2's copy adds the `CLC`, making it exactly `Speed >> 6`.
 That is a deliberate divergence, not an oversight.
+
+## The lateral ramp is 16-bit, and that was the range ceiling
+
+**Confirmed live, and this supersedes the previous entry's limit.** `dat_EA41`
+is not an 8-bit table with a separate companion: it is the **low half of a
+16-bit ramp**, about 3.55 per unit, and `dat_EADE` is its high byte. The value
+passes 256 at index 72, which is precisely why reading only the low byte capped
+player 2's travel -- past that index the step wrapped and the road would have
+jumped backwards.
+
+Reading both halves removes the ceiling entirely. `P2_LIMIT` is now `$68` (104),
+matching the furthest player 1 was observed to reach, which puts the rumble
+strip and **open grass** inside player 2's range. The only limit left is the
+table's 120 entries, and the build-time check tests that instead.
+
+Verified by forcing the lateral across 8..104 in steps of 8 and watching player
+2's road: the per-band shift ran 0, 8, 16, 24, 33, 41, 50, 59, 67, 76, 84, 92,
+101 with **zero backward steps** -- the wrap at index 72 is gone. Under stick
+control the car crosses the road edge at 59, the rumble strip, and out onto
+grass at 104, speed falling 255 to 189.
+
+Grass costs the same drag as the rumble strip, which is faithful rather than
+incomplete: player 1 applies the same `SkidDrag` anywhere past `$3B` and makes
+grass worse through **scenery collisions**, not a deeper drag. The signs are
+what is still missing.
+
+## Correction: SkidDrag has no carry dependency
+
+The previous entry recorded that the ROM's `SkidDrag` depended on whatever carry
+it was entered with -- it rotates three times without clearing first -- and
+described player 2's added `CLC` as a deliberate divergence. **That was wrong.**
+
+After three rotations the entry carry sits in **bit 2**, and the `AND #$03`
+discards it; bits 1 and 0 hold the original bits 7 and 6 either way. Checked
+exhaustively over all 256 speeds against both entry carries: **identical every
+time**. The ROM is already exactly `Speed >> 6`.
+
+So there is nothing to bring into line -- player 1 needs no change at all. The
+`CLC` stays as a harmless no-op with the reasoning written beside it, because a
+reader will otherwise wonder the same thing and re-derive it.
+
+The general lesson: three `ROL`s look carry-dependent and a masked result often
+is not. Work out where the injected bit lands before calling something a bug.

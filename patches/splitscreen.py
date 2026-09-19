@@ -380,14 +380,20 @@ LATERAL_RAMP = 0xEA41
 # analogue rather than a stick.
 SWCHA = 0x0280
 P2_RIGHT, P2_LEFT = 0x08, 0x04
-P2_LIMIT = 0x47              # how far player 2's camera may lean either way.
-                             # Was $3C, one unit past the road edge, so player 2
-                             # could never actually reach the rumble strips. $47
-                             # is the largest the camera's single-byte lateral
-                             # ramp allows: dat_EADE, the ramp's HIGH byte, is
-                             # zero only up to index 71, and p2_camera_src reads
-                             # the low byte alone. Checked at build time below.
-LATERAL_RAMP_HI = 0xEADE     # high byte of dat_EA41, must be zero across range
+P2_LIMIT = 0x68              # how far player 2's camera may lean either way.
+                             # $68 is 104, the furthest player 1 was observed to
+                             # reach, which puts open grass and the scenery line
+                             # inside player 2's range too. It was $3C -- one
+                             # unit past the road edge -- then $47, as far as a
+                             # single-byte lateral ramp allows. Reading the ramp
+                             # as the 16-bit value it actually is removed that
+                             # ceiling; the remaining one is the table's length.
+P2_STEP_HI = 0x2710          # high byte of the per-row lateral step
+LATERAL_RAMP_HI = 0xEADE     # dat_EA41's HIGH byte. The ramp is a 16-bit value,
+                             # about 3.55 per unit, and it passes 256 at index
+                             # 72 -- which is exactly why reading only the low
+                             # byte capped how far player 2 could go.
+LATERAL_RAMP_LEN = 120       # both halves run $EA41..$EAB8 and $EADE..$EB55
 ROAD_EDGE = 0x3B             # |lateral| at or past this is off the racing line,
                              # the same threshold player 1 uses at rom:C210
 
@@ -1360,11 +1366,16 @@ def p2_camera_src():
         "    ADC #$01",
         "P2Mag:",
         "    TAX",
+        # The ramp is 16 bits. Taking only the low byte silently wrapped past
+        # index 71, which is what limited how far player 2 could travel.
         "    LDA $%04X,X" % LATERAL_RAMP,
         "    STA $%04X" % S,
-        # step3 = step * 3
+        "    LDA $%04X,X" % LATERAL_RAMP_HI,
+        "    STA $%04X" % P2_STEP_HI,
+        # step3 = step * 3, now from a 16-bit step
+        "    LDA $%04X" % S,
         "    STA $%04X" % (S + 1),
-        "    LDA #$00",
+        "    LDA $%04X" % P2_STEP_HI,
         "    STA $%04X" % (S + 2),
         "    ASL $%04X" % (S + 1),
         "    ROL $%04X" % (S + 2),
@@ -1373,7 +1384,7 @@ def p2_camera_src():
         "    ADC $%04X" % S,
         "    STA $%04X" % (S + 1),
         "    LDA $%04X" % (S + 2),
-        "    ADC #$00",
+        "    ADC $%04X" % P2_STEP_HI,
         "    STA $%04X" % (S + 2),
         # step6 = step3 * 2
         "    LDA $%04X" % (S + 1),
@@ -1487,10 +1498,15 @@ def p2_drive_src():
         # --- off the racing line: drag ---------------------------------------
         # rom:C200 takes |PlayerX|, and at $3B or beyond calls SkidDrag, which
         # subtracts the top two bits of Speed -- 0 to 3 a frame, so the faster
-        # you are the harder the rumble strip bites. Player 2 now pays the same.
-        # The CLC the ROM leaves out is added here so the three ROLs are exactly
-        # Speed >> 6 rather than depending on the carry it happens to arrive
-        # with.
+        # you are the harder the rumble strip bites. Player 2 pays the same.
+        #
+        # The CLC here is cosmetic. It was added on the belief that the ROM's
+        # SkidDrag depended on whatever carry it was entered with, since it
+        # rotates three times without clearing first. It does not: after three
+        # rotations the entry carry sits in bit 2 and the AND #$03 discards it,
+        # leaving bits 1 and 0 holding the original bits 7 and 6. Checked over
+        # all 256 speeds against both entry carries -- identical every time. The
+        # ROM is already exactly Speed >> 6, and player 1 needs no correction.
         "    LDA $%04X" % P2_LATERAL,
         "    BPL P2OffAbs",
         "    EOR #$FF", "    CLC", "    ADC #$01",
@@ -2047,16 +2063,13 @@ def fix_mirror_split(p):
                 "layout overlap: %s $%04X..$%04X runs into %s at $%04X"
                 % (nm1, a1, a1 + n1 - 1, nm2, a2))
 
-    # p2_camera_src reads only the low byte of the lateral ramp, so the limit
-    # must stay inside the range where the high byte is zero.
-    import io as _io
-    _rom = bytearray(_io.open(load_source()[0], "rb").read())
-    _rom = _rom[len(_rom) - ROM_SIZE:]
-    if _rom[LATERAL_RAMP_HI + P2_LIMIT - BASE] != 0:
+    # The camera now reads the ramp as 16 bits, so the only ceiling left is the
+    # table's own length -- run off the end and the lateral step comes from
+    # whatever follows it in ROM.
+    if P2_LIMIT >= LATERAL_RAMP_LEN:
         raise SystemExit(
-            "P2_LIMIT $%02X is past the lateral ramp's single-byte range: "
-            "dat_EADE[%d] is $%02X, not zero"
-            % (P2_LIMIT, P2_LIMIT, _rom[LATERAL_RAMP_HI + P2_LIMIT - BASE]))
+            "P2_LIMIT %d runs off the lateral ramp, which has %d entries"
+            % (P2_LIMIT, LATERAL_RAMP_LEN))
 
     p.put(DLL_TEMPLATE, dll_template(), expect=[0xFF] * (DLL_ZONES * 3))
     p.put(P2_TEMPLATE, p2_dl_template(), expect=[0xFF] * (12 * P2_DL_SIZE))
