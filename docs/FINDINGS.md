@@ -3888,3 +3888,55 @@ needs that dispatch understood. That is the remaining unknown.
 2. Object array read, with the per-slot "seen beyond the horizon" flag.
 3. Object collision -- which needs only the gap and the two laterals, both of
    which already exist and are exact.
+
+## What is in the object list, and where it comes from
+
+**Measured live.** Three classes are visible (`ObjType & 7`, the value the
+pipeline dispatches on at rom:E434):
+
+    class 0   56188 slot-frames   mean |lateral|  1.5, max 32   traffic
+    class 1    3573 slot-frames   mean |lateral| 35.4, max 36   SIGNS
+    class 2     306 slot-frames   mean |lateral| 16.0, max 16   fixed marker
+
+**Signs are in the same list as the traffic**, as class 1, pinned to +-35/36
+every time, with their own path at `L_E4A1` that applies a height adjustment --
+what a tall roadside object needs. One implementation therefore covers both.
+
+**And the track's objects are data, not spawns.** `ram_00A8`/`ram_00A9` is a
+16-bit **cursor** that advances through `ObjSegLenLo`/`ObjSegLenHi` -- per-object
+spacings laid along the track -- at rom:CF8A, and retreats at rom:CC0F. The 16
+slots are a sliding window over that list. Nothing is created at the horizon;
+objects are read in as the cursor reaches them.
+
+## The right fix for pop-in: widen the window to cover both cars
+
+Because the window is driven by one cursor, and that cursor follows player 1, a
+slot can recycle inside player 2's visible range. The fix is to make the window
+span **both** cars rather than to hide the symptom: load an object when the car
+FURTHEST AHEAD is a horizon away from it, and release it only once the car
+FURTHEST BEHIND has passed.
+
+In player-1-relative Z, with `gap = P1global - P2global`:
+
+    load when     Z1 <= 1300 + max(0, -gap)      ; the leader's horizon
+    release when  Z1 <  min(0, -gap)             ; the trailer's zero
+
+When player 1 leads (`gap > 0`) the load threshold is unchanged and slots are
+held further into negative Z1 until player 2 has passed. When player 2 leads
+(`gap < 0`) objects load earlier by exactly player 2's lead, so they enter from
+player 2's horizon rather than appearing mid-view.
+
+This removes the need for the per-slot "seen beyond my own horizon" flag
+described earlier: with the window widened at the source, nothing can appear
+inside either car's visible range in the first place. It needs the cursor's
+advance and retreat thresholds hooked, at rom:CF8A and rom:CC0F.
+
+## Reserve a slot for the other car
+
+Each car should appear in the other's view, and that is better done as a
+reserved slot than as a general object. Player 1's near band lists have six
+object slots and at most three were ever in use, so there is room without
+touching the layout. More importantly the other car needs no projection
+guesswork and cannot pop in: its distance is the gap, exactly, and its lateral
+is a variable already held -- both are known every frame rather than inferred
+from a display list.
