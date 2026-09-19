@@ -3783,3 +3783,57 @@ reader will otherwise wonder the same thing and re-derive it.
 
 The general lesson: three `ROL`s look carry-dependent and a masked result often
 is not. Work out where the injected bit lands before calling something a bug.
+
+## Objects for player 2: projection solved, blocked on the list layout
+
+**The projection is solved**, and it needs none of the object arrays. Player 1's
+near band lists already carry each drawn object's graphics, width and x, and the
+band it sits in gives its row -- hence its distance from player 1, straight out
+of the perspective table:
+
+    band  8  row 51  Z = $0066        band 11  row 69  Z = $000C
+    band  9  row 57  Z = $003D        band 12  row 75  Z = $0002
+    band 10  row 63  Z = $0020
+
+Add the camera gap and that is the object's distance from **player 2**, and
+`sub_E3CD` turns it back into a row. Three rejections fall out for free: the
+search leaves `X = $FF` past the far plane, a negative Z means the object is
+behind player 2, and row 0-5 maps to band 0, which player 2 has no list for. x
+transfers as the object's offset from the road **centre**, since that is what is
+fixed to the track.
+
+It was written, and then **backed out** for two reasons.
+
+**Space.** The build came to 3070 bytes against the 2945 the only free `$FF` run
+holds. A whole-ROM scan found no other run over 96 bytes except two ~100-byte
+`$00` runs at `$A12F` and `$A22F`, which sit inside tables and are probably real
+data. The object pass itself is only 140 bytes; most of the growth was
+`P2_DL_SIZE` going 14 to 18.
+
+**And the far bands cannot hold an object at all.** Bands 1-7 have no second
+road object, so their list has **zeros at offset +04**, and MARIA reads a zero
+width byte as end-of-list. Anything placed after it is never reached. Objects
+would have appeared only in the five nearest bands -- and near-objects-only has
+already been rejected once in this project, for the road.
+
+### Both point at the same fix
+
+Make the per-band lists **variable length**, laid out by what each band actually
+needs, with the object slot immediately after the road objects rather than after
+a car slot the far bands never use:
+
+    far  bands 1-7     road0, object, end                10 bytes
+    near bands 8-11    road0, road1, car, object, end    18
+    near band  12      road0, road1, object, end         14
+
+156 bytes against 216 -- it saves 60 **and** puts the object where MARIA will
+reach it. The cost is that band addresses stop being `base + n * size`, so
+`mirror_plan`, `p2_stage_src`, `p2_car_src` and the object pass all have to take
+them from one table. That refactor is worth doing on its own, before objects go
+back in.
+
+### Object collision is not blocked by any of this
+
+It needs only the gap and the two laterals, which already exist and are exact --
+the same box test the car-to-car collision uses. It was held back only because
+colliding with objects player 2 cannot see would be worse than not colliding.
