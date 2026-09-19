@@ -4106,3 +4106,30 @@ overlap under the placement that already exists.
 
 It is the rolling section BEFORE the starting line, which is why placing there
 is right: the lap does not begin, or end, until the line is crossed.
+
+## Variable-length band lists, and why the bytes were not the point
+
+Player 2's bands no longer share one stride. Each list is sized to what that
+band holds, with the object slot immediately after the road objects:
+
+    band  1-7    $2600..$2645   road0, object, end                10 bytes
+    band  8-11   $2646..$268D   road0, road1, car, object, end    18
+    band  12     $268E..$269B   road0, road1, object, end         14
+
+156 bytes against the 216 a uniform 18 would have cost, leaving 102 bytes of
+headroom before player 2's variables at `$2702`.
+
+**The saving was the lesser reason.** With a fixed stride the far bands had
+**zeros** where their second road object would go, and MARIA reads a zero width
+byte as end-of-list -- so an object slot at a fixed offset was unreachable in
+exactly the seven bands that most need one. Verified by walking the lists as the
+hardware does, header by header until the end marker: **all twelve object slots
+are now reached, where seven were not.**
+
+### Space is still the constraint
+
+    blob 2618 + templates 270 = 2888 of the 2945 the free $FF run holds
+
+57 bytes spare, and the object pass needs more than that. The obvious next
+saving is `DLL_TEMPLATE`'s 102 bytes: it is a boot image copied once to $2500,
+so it could be built by a loop rather than stored whole.

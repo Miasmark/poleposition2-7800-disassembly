@@ -347,7 +347,50 @@ CARRIER_LINES = int(os.environ.get("PP2_CARRIER", "12"))
 # set of positions for a second camera anyway; a copy of player 1's would be
 # in the wrong places by definition.
 P2_DL_BASE = 0x2600
-P2_DL_SIZE = 14              # two road objects, the car, and the end marker
+# Player 2's bands no longer share one stride. A fixed stride meant every band
+# paid for a car slot only four of them use, and -- the reason this had to
+# change -- the far bands had ZEROS where their second road object would go,
+# which MARIA reads as end-of-list. Anything placed after that was never drawn,
+# so an object slot at a fixed offset was unreachable in exactly the seven bands
+# that most need one. Sized per band instead, the object slot sits immediately
+# after the road objects, where MARIA always reaches it:
+#
+#     far  bands 1-7    road0, object, end                10 bytes
+#     near bands 8-11   road0, road1, car, object, end    18
+#     near band  12     road0, road1, object, end         14
+#
+# 156 bytes against the 216 a uniform 18 would have cost.
+
+
+def p2_band_layout():
+    """Each band's list address and the offsets within it.
+
+    Returns band -> dict with 'addr', 'road1', 'car' and 'obj'. 'road1' and
+    'car' are None for bands that have neither.
+    """
+    out, addr = {}, P2_DL_BASE
+    for b in range(1, 13):
+        near = b >= 8
+        has_car = b in P2_CAR_BANDS
+        off = 4
+        road1 = None
+        car = None
+        if near:
+            road1 = off
+            off += 4
+        if has_car:
+            car = off
+            off += 4
+        obj = off
+        out[b] = {"addr": addr, "road1": road1, "car": car, "obj": obj}
+        addr += obj + 4 + 2          # the object slot, then the end marker
+    return out
+
+
+def p2_dl_bytes():
+    """Total size of player 2's lists, for the copy loop and the layout check."""
+    lay = p2_band_layout()
+    return lay[12]["addr"] + lay[12]["obj"] + 6 - P2_DL_BASE
 P2_TEMPLATE = 0xFEC0
 
 # A constant added to player 2's road x. Zero makes the two views identical
@@ -785,7 +828,7 @@ def hud_reassert_src(addr):
         "    LDA $%04X,X" % P2_TEMPLATE,
         "    STA $%04X,X" % P2_DL_BASE,
         "    INX",
-        "    CPX #$%02X" % (12 * P2_DL_SIZE),
+        "    CPX #$%02X" % p2_dl_bytes(),
         "    BNE P2Loop",
         "    RTS",
         # Once per frame, straight after the game stages the per-scanline road
@@ -1246,7 +1289,8 @@ def p2_walk_src():
 def p2_plan():
     """Player 2's viewport: the same zone shape as player 1's, but every zone
     pointed at player 2's own display list rather than the shared road."""
-    return [(6, P2_DL_BASE + i * P2_DL_SIZE, None) for i in range(12)]
+    lay = p2_band_layout()
+    return [(6, lay[b]["addr"], None) for b in range(1, 13)]
 
 
 def p2_dl_template():
@@ -1254,21 +1298,21 @@ def p2_dl_template():
     only width and x do -- so they are baked in and cost nothing per frame.
     Bands without a second road object get a zero width byte there, which is
     MARIA's end-of-list marker, so the list simply stops after the first."""
+    lay = p2_band_layout()
     out = []
     for b in range(1, 13):
         lo, hi = BAND_GFX[b]
         e = [lo, 0x1F, hi, 0x80]
-        if BAND_SLOT1[b] is None:
-            e += [0x00, 0x00, 0x00, 0x00]
-        else:
+        if lay[b]["road1"] is not None:
             lo1, hi1 = BAND_SLOT1[b]
             e += [lo1, 0x1F, hi1, 0x80]
-        if b in P2_CAR_BANDS:
+        if lay[b]["car"] is not None:
             clo, chi = P2_CAR_SEED[P2_CAR_BANDS.index(b)]
             e += [clo, P2_CAR_W, chi, P2_CAR_X]
-        else:
-            e += [0x00, 0x00, 0x00, 0x00]
-        out += e + [0x00, 0x00]
+        # the object slot, parked off-screen until something is put in it, then
+        # the two-byte end marker
+        e += [0x00, 0x1F, 0x00, 0xA1, 0x00, 0x00]
+        out += e
     return out
 
 
@@ -1303,9 +1347,10 @@ def p2_car_src():
     crashing was the bug.
     """
     lines = ["    LDA $%04X" % (P1_CAR_SLOT[3] + 2), "    BNE P2CarDraw"]
+    lay = p2_band_layout()
     for b in P2_CAR_BANDS:
-        dl = P2_DL_BASE + (b - 1) * P2_DL_SIZE
-        lines += ["    LDA #$A1", "    STA $%04X" % (dl + 11)]
+        dl = lay[b]["addr"] + lay[b]["car"]
+        lines += ["    LDA #$A1", "    STA $%04X" % (dl + 3)]
     lines += ["    JMP P2CarEnd", "P2CarDraw:"]
 
     # this frame's lean, straight off the stick: $08 right, $18 left, $10 level
@@ -1325,26 +1370,26 @@ def p2_car_src():
     ]
 
     for b in P2_CAR_BANDS:
-        dl = P2_DL_BASE + (b - 1) * P2_DL_SIZE
-        lines += ["    LDA #$%02X" % P2_CAR_X, "    STA $%04X" % (dl + 11)]
+        dl = lay[b]["addr"] + lay[b]["car"]
+        lines += ["    LDA #$%02X" % P2_CAR_X, "    STA $%04X" % (dl + 3)]
         if b == TIRE_BAND:
             lines += [
                 "    LDA $%04X" % P2_PHASE,
                 "    AND #$01",
                 "    BEQ P2TireB",
-                "    LDA #$%02X" % TIRE_SHEET_A_HI, "    STA $%04X" % (dl + 10),
+                "    LDA #$%02X" % TIRE_SHEET_A_HI, "    STA $%04X" % (dl + 2),
                 "    LDA $%04X" % P2_LEAN,
                 "    CLC", "    ADC #$%02X" % TIRE_SHEET_A_LO,
-                "    STA $%04X" % (dl + 8),
+                "    STA $%04X" % (dl + 0),
                 "    JMP P2TireDone",
                 "P2TireB:",
-                "    LDA #$%02X" % TIRE_SHEET_B_HI, "    STA $%04X" % (dl + 10),
-                "    LDA $%04X" % P2_LEAN, "    STA $%04X" % (dl + 8),
+                "    LDA #$%02X" % TIRE_SHEET_B_HI, "    STA $%04X" % (dl + 2),
+                "    LDA $%04X" % P2_LEAN, "    STA $%04X" % (dl + 0),
                 "P2TireDone:",
             ]
         else:
-            lines += ["    LDA #$%02X" % P2_CAR_BASE_HI[b], "    STA $%04X" % (dl + 10),
-                      "    LDA $%04X" % P2_LEAN, "    STA $%04X" % (dl + 8)]
+            lines += ["    LDA #$%02X" % P2_CAR_BASE_HI[b], "    STA $%04X" % (dl + 2),
+                      "    LDA $%04X" % P2_LEAN, "    STA $%04X" % (dl + 0)]
     lines += ["P2CarEnd:"]
     return lines
 
@@ -1902,8 +1947,9 @@ def p2_follow_src():
 def p2_stage_src():
     """Player 2's road geometry, once per frame, from its own source."""
     lines = p2_camera_src()
+    lay = p2_band_layout()
     for b in range(1, 13):
-        dl = P2_DL_BASE + (b - 1) * P2_DL_SIZE
+        dl = lay[b]["addr"]
         band_index = b
         i = 6 * b + BAND_SAMPLE
         def emit(wsrc, xsrc, advance):
@@ -2096,7 +2142,7 @@ def fix_mirror_split(p):
     # check the layout first and name the pair that collides.
     _regions = [("code blob", HUD_REASSERT_ADDR, _blob_len()),
                 ("DLL_TEMPLATE", DLL_TEMPLATE, DLL_ZONES * 3),
-                ("P2_TEMPLATE", P2_TEMPLATE, 12 * P2_DL_SIZE),
+                ("P2_TEMPLATE", P2_TEMPLATE, p2_dl_bytes()),
                 ("P2_HUD_TEMPLATE", P2_HUD_TEMPLATE, 12),
                 ("MINI_TEMPLATE", MINI_TEMPLATE, FINE_ZONES * MINI_DL_SIZE)]
     _regions = sorted((a, n, nm) for nm, a, n in _regions if n)
@@ -2115,7 +2161,7 @@ def fix_mirror_split(p):
             % (P2_LIMIT, LATERAL_RAMP_LEN))
 
     p.put(DLL_TEMPLATE, dll_template(), expect=[0xFF] * (DLL_ZONES * 3))
-    p.put(P2_TEMPLATE, p2_dl_template(), expect=[0xFF] * (12 * P2_DL_SIZE))
+    p.put(P2_TEMPLATE, p2_dl_template(), expect=[0xFF] * p2_dl_bytes())
     # Seed of player 2's HUD row: the same two character objects the row it
     # replaces uses, so it draws legibly from the first frame. Rewriting the
     # characters it points at is what makes it player 2's, and is not done yet.
