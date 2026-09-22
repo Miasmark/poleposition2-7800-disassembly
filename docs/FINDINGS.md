@@ -4205,3 +4205,42 @@ the segment term is used -- the dominant one, and the same source player 1's own
 Verified with the throttle held and the stick untouched: **493 straight frames
 with zero lateral movement, 2506 curve frames with 904 units of movement, and
 zero frames pushed the wrong way.**
+
+## Player 1's far band lists, and a second object attempt
+
+**Mapped for the first time.** Player 1's far band lists are uniform: the road
+at +00, then **eight object slots at +04..+20**, then the end marker at +24. The
+near bands run +08..+1C, because their second road object sits at +04 -- so
+reading a near band as though it were far would take road1 for an object.
+
+    $2300 $2326 $234C $2372 $2398 $23BE | $2400 $2426 $244C $246E $2490 $24B2 $24D4
+
+Thirteen bands across **two pages**, unevenly spaced. Absolute-indexed
+addressing therefore needs one pass per page, with each band carrying its offset
+within its page.
+
+**There is no free zero-page pair** to avoid that with an indirect pointer.
+`$02..$1F` are hardware registers rather than RAM, and scanning the disassembly
+for unreferenced zero page is misleading in any case: it cannot see indexed
+arrays, such as the one `STA ram_004E,X` fills across `$7E..$9B`.
+
+**And the loop-back branch does not reach.** A band's body is far longer than
+128 bytes, so each pass has to close with a jump, with the branch only skipping
+it.
+
+The pass assembles and is believed correct, but:
+
+    blob 2401 -> 2824, so the object pass costs 423 bytes
+    total 3094 against the 2945 available: 149 OVER
+
+`patches/splitscreen.py` is restored to checkpoint 42 and verified to rebuild
+byte-identical. Two savings are identified and are sufficient together:
+
+1. `road_stage_src` -- 13 unrolled bands, about 260 bytes -- to loops, the same
+   treatment that took 427 bytes off `p2_stage_src`. Worth about 126, and it
+   needs three loops rather than two because player 1's band addresses straddle
+   `$23` and `$24` in the same way.
+2. The object pass duplicates its entire copy and x arithmetic once per page.
+   Fetching the four object bytes and player 1's road x into scratch in the
+   page-specific part, then sharing the map, arithmetic and write, is worth
+   about 80.
