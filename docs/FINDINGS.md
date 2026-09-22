@@ -4357,3 +4357,54 @@ The first thing to check is the start offset: a far band's first object slot is
 object at `+04`. If that start is ever taken from the wrong entry, a near band's
 road1 reads as an object and *every* band finds a hit -- which would produce
 exactly the 12 of 12 observed.
+
+## Why copying objects corrupts: graphics pages are band-relative
+
+The object pass's fault is structural, not a coding slip, and it was narrowed in
+three steps.
+
+**The per-band end offset was wrong.** Near bands end at `+20` and far bands at
+`+24`, measured live -- so scanning every band to `+24` read the byte past a near
+band's end marker, which is the next band's road width and never `$A1`. All five
+near bands reported a spurious object every frame. That took 12 destinations of
+12 down to 11, and the game still stalled.
+
+**Bounding the destination index changed nothing**, ruling out an out-of-range
+table read.
+
+**Disabling only the WRITES, keeping the scan and mapping, restored the camera
+gap** -- 5015, 11879, 14048 where it had collapsed to 0. So the copy is the
+corrupter.
+
+### The reason
+
+rom:E7A9 writes an object's graphics **high byte from `ram_0046`, then adds 6**:
+
+    LDA ram_0046 / STA (ptr),Y / CLC / ADC #$06 / STA ram_0046
+
+The page is allocated as objects are emitted, stepping **six pages per band**,
+because MARIA advances a zone's graphics one page per scanline and a band is six
+lines. A sprite tall enough to cross bands is therefore written into *several*
+of player 1's bands, with pages `P`, `P+6`, `P+12`.
+
+Copying one such entry into one of player 2's bands draws a **six-line slice of
+the sprite** with nothing above or below it -- the graphical corruption seen in
+play -- and a garbage-width object overruns DMA, starving the CPU and stopping
+the clock.
+
+### What that means for the design
+
+**Player 2's one-object-slot-per-band layout cannot represent a multi-band
+sprite.** Two ways forward:
+
+* Write a placed object into as many consecutive destination bands as it spans,
+  stepping the page by 6 each time. That needs the sprite's height, which player
+  1's emitter knows through its band loop but does not record anywhere the pass
+  can read -- so it would have to be derived, or the source bands scanned for
+  runs of the same object.
+* Or place only single-band objects and leave the tall ones out, which for
+  signs -- the class that is always tall -- means leaving out most of them.
+
+The first is the real answer. It also explains why the earlier
+read-from-the-object-arrays design was the better one: an object's height is a
+property of the object, not of a display list entry.
