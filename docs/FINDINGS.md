@@ -4408,3 +4408,32 @@ sprite.** Two ways forward:
 The first is the real answer. It also explains why the earlier
 read-from-the-object-arrays design was the better one: an object's height is a
 property of the object, not of a display list entry.
+
+### Correction: the band-span claim is not established
+
+The entry above explains the copy corruption by objects being sliced across
+bands with pages P, P+6, P+12. **That is not yet established.**
+
+rom:E751 does loop an object across bands -- `LDY ram_0044 / DEY /
+CPY ram_0045 / BPL L_E751` walks from one band index down to another, writing a
+slice each time and stepping the page by 6. But a measurement of how many bands
+objects actually span came back **100% single-band**, which contradicts it.
+
+That measurement is the unreliable one: it identified a run by the object being
+at the *same slot index* in consecutive bands, and the emitter advances each
+band's write pointer independently through `(ram_0040),Y`, so one object can
+occupy different slot indices in different bands. The run detection would miss
+every real multi-band sprite.
+
+So what is **proven** is narrower than the entry above claims:
+
+* near bands end at `+20`, far bands at `+24` -- measured directly, and the
+  scan must use a per-band end or it reads a phantom object in every near band;
+* the **copy** is what corrupts, not the scan or the mapping -- disabling only
+  the writes restored the camera gap;
+* the destination index is not out of range -- bounding it changed nothing.
+
+The *why* behind the copy is still open. Before building on the page theory it
+needs a measurement that identifies an object across bands by something other
+than slot index -- its graphics low byte and width, say, or by instrumenting
+ram_0044/ram_0045 at rom:E751 directly.
