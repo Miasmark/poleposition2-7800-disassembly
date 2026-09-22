@@ -4325,3 +4325,35 @@ Two fixes, and the next attempt probably wants both:
 This also reframes the earlier `road_stage_src` hang: that was read as *possibly*
 cycles, and this makes the cycle explanation much more likely, since the same
 DLI path is demonstrably running with almost no margin.
+
+## Objects reach player 2's view, and still stall the game
+
+Two fixes since the last attempt, both of which worked:
+
+* **The Z-to-row search became a lookup.** `sub_E3CD` walks up to 78 rows per
+  object. The table is 416 bytes -- indexed by Z directly below 256 and by
+  `(Z-256)>>3` above, since distances are a unit or two apart at the bumper and
+  fifty apart at the horizon, so one stride cannot serve both. It lives in the
+  reclaimed injection at `$EED0`/`$EFD0` rather than the code blob.
+* **The pass moved from `MirrorStage` to the `RoadTail` path.** MirrorStage has
+  about two scanlines of slack; RoadTail carries the walk, which alone costs
+  thousands of cycles. Putting the pass in MirrorStage is why the previous
+  attempt drew nothing at all -- it never had time to run.
+
+Objects now appear in player 2's view. The game still stalls. Isolated with
+`PP2_NO_OBJECTS` on the same build: **objects off gives the usual 101 distinct
+clock values, objects on gives 3.** So the fault is in the pass itself, not the
+lookup, the relocation, or the reclaimed space.
+
+### The clue to follow next
+
+**All twelve destination slots are occupied on 100% of frames.** Player 1 draws
+only four to nine objects at a time, so most source bands should find nothing
+and most destinations should stay parked. Either the empty test is not matching,
+or the mapping returns a destination where it should reject.
+
+The first thing to check is the start offset: a far band's first object slot is
+`+04`, a near band's is `+08`, because the near bands have their second road
+object at `+04`. If that start is ever taken from the wrong entry, a near band's
+road1 reads as an object and *every* band finds a hit -- which would produce
+exactly the 12 of 12 observed.
