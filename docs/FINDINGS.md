@@ -4244,3 +4244,38 @@ byte-identical. Two savings are identified and are sufficient together:
    Fetching the four object bytes and player 1's road x into scratch in the
    page-specific part, then sharing the map, arithmetic and write, is worth
    about 80.
+
+## The DLI path has about two scanlines of slack, and loops are not free there
+
+`road_stage_src` was converted to three loops to free space for the object pass.
+It saves 87 bytes, the code is correct, **and it hangs the machine.**
+
+The conversion checks out every way it can be checked short of running: the
+generated assembly was printed and read instruction by instruction; the band
+addresses and page split were dumped and are right ($2300 for bands 0-5, $2400
+for 6-12, every offset within $00..$DF); and measured against the formula the
+road headers must satisfy, the loop version matched **better** than the build it
+replaces -- 140 mismatches against 3744, the residue in both being within-frame
+drift between when staging runs and when the sample is taken.
+
+But from f1500 the clock sits at 261, speed 160, segment 4, position 461 and
+never moves again, while the display keeps drawing. That is the 6502 stuck
+inside the DLI chain, not a desynced recording.
+
+**Headroom, measured.** `PP2_BURN` adds WSYNCs to MirrorStage. One or two extra
+scanlines still reach state `$10` at f6000 exactly as the shipped build does;
+four changes behaviour. So there are roughly two scanlines of slack, and three
+loops at about 15 cycles a band over 13 bands is about 1.8 -- right on the edge.
+
+**Not proven.** The burn test degrades gracefully where this freezes hard, so
+the cause may be something else entirely. Bisecting one loop at a time is the
+next step, and worth doing before trusting the cycle explanation.
+
+### What this changes about the space hunt
+
+`MirrorStage` runs inside a beam-synchronised interrupt, so **trading code size
+for cycles is not free there**, the way it appeared to be when `p2_stage_src`
+was converted. That conversion added loop overhead too and survived -- which now
+looks like it spent most of the remaining slack rather than being free. Further
+savings should come from data, or from code outside the DLI, not from turning
+more unrolled DLI code into loops.
