@@ -4279,3 +4279,49 @@ was converted. That conversion added loop overhead too and survived -- which now
 looks like it spent most of the remaining slack rather than being free. Further
 savings should come from data, or from code outside the DLI, not from turning
 more unrolled DLI code into loops.
+
+## 931 bytes of the base ROM are dead, and provably so
+
+The bypassed injection is reclaimable. `RoadTail` is entered at rom:ED9D and
+leaves with `JMP $F143`, so the whole of `DLI_InjectRowCurveX` and its thirty
+unrolled per-row writes -- **$EDA0..$F142, 931 bytes** -- is unreachable.
+
+Two independent checks. Every label inside the range is referenced only from
+within it, nothing external. And filling all 931 bytes with `$FF` left the state
+log **byte-identical over 7000 frames of both recordings**. That is proof rather
+than inference, which matters, because a scan for *other* dead code found ten
+subroutines with no recorded xref that are almost certainly reached through the
+game's state dispatch -- "no xref" only means the disassembler could not trace
+it. Those were left alone.
+
+The four templates now live there, handing their 270 bytes in the `$F3FF` run
+back to the code blob, and verified neutral: state logs byte-identical to the
+previous build on both recordings. Their expect lists are the real stock bytes
+rather than `$FF`, so a ROM whose injection differs still fails loudly.
+
+    code:      $F400..$FD60, 543 bytes spare before $FF7F
+    templates: 270 of the reclaimed 931, 661 spare there
+
+## Objects: the constraint was never space, it was cycles
+
+With the space problem solved the object pass fits -- and still fails. The game
+stalls and **zero objects are drawn**.
+
+`sub_E3CD` is a **linear search of up to 78 iterations**, run once per object,
+inside a DLI with about two scanlines of slack -- roughly 250 cycles. Scanning
+thirteen bands for their first non-empty slot costs about a thousand more on its
+own. The pass is an order of magnitude over budget, and no amount of reclaimed
+ROM changes that.
+
+Two fixes, and the next attempt probably wants both:
+
+* **Replace the search with a lookup.** Z runs 0..1300, so a table indexed
+  directly below 256 and by `(Z-256)>>3` above is 387 bytes -- which the
+  reclaimed region has room for -- and turns hundreds of cycles per object into
+  about ten.
+* **Split the pass across frames**, as the walk already is, a few bands each,
+  cutting the per-frame cost four or five times.
+
+This also reframes the earlier `road_stage_src` hang: that was read as *possibly*
+cycles, and this makes the cycle explanation much more likely, since the same
+DLI path is demonstrably running with almost no margin.

@@ -391,7 +391,7 @@ def p2_dl_bytes():
     """Total size of player 2's lists, for the copy loop and the layout check."""
     lay = p2_band_layout()
     return lay[12]["addr"] + lay[12]["obj"] + 6 - P2_DL_BASE
-P2_TEMPLATE = 0xFEC0
+P2_TEMPLATE = 0xEE10
 
 # A constant added to player 2's road x. Zero makes the two views identical
 # again, which is the regression check; anything else drives the viewports
@@ -545,7 +545,7 @@ GRID_MIN_MIRROR = 0x10       # below this, player 1's slot is too near the
 # player 2's readouts. Seeded at boot from the row it replaces, so it renders
 # something recognisable before the content is rewritten.
 P2_HUD_DL = 0x2770           # player 2's HUD row: one 5-byte header + end
-P2_HUD_TEMPLATE = 0xFF70            # 12 bytes; moved off $FC00 to leave
+P2_HUD_TEMPLATE = 0xEEC0            # 12 bytes; moved off $FC00 to leave
                                     # P2_TEMPLATE room to grow
 SWCHA = 0x0280               # player 2's stick: bit 3 right, 2 left, 1 down, 0 up
 P2_HALF = 0x2756             # which half of the walk this frame runs
@@ -558,8 +558,8 @@ TRACK_LEN = 0x00C1
 BAND_SAMPLE = int(os.environ.get("PP2_SAMPLE", "3"))
 PLACEHOLDER_W = int(os.environ.get("PP2_PW", "0x1F"), 16)
 PLACEHOLDER_X = int(os.environ.get("PP2_PX", "0x80"), 16)
-DLL_TEMPLATE = 0xFE58          # boot image of the zone list, clear of the code blob
-MINI_TEMPLATE = 0xFF7C         # boot image of the mini display lists
+DLL_TEMPLATE = 0xEDA0          # boot image of the zone list, clear of the code blob
+MINI_TEMPLATE = 0xEED0         # boot image of the mini display lists
 
 # Road band slot +00, the road surface itself: (address low, address high).
 # Confirmed static across frames -- the injection rewrites only this slot's
@@ -668,6 +668,15 @@ HUD_ROWS = [0x06, P2_HUD_DL >> 8, P2_HUD_DL & 0xFF,
 # `expect=` on the write already proves the space is genuinely free on the
 # ROM being patched -- the property a float's auto-placement exists to give
 # when several options might collide over the same room.
+# The bypassed injection is dead ROM, and there is a lot of it. RoadTail is
+# entered at rom:ED9D and leaves with JMP $F143, so everything between --
+# DLI_InjectRowCurveX and its thirty unrolled per-row writes -- is unreachable.
+# Every label inside the range is referenced only from within it, and filling
+# all 931 bytes with $FF left the state log BYTE-IDENTICAL over 7000 frames of
+# both recordings. The templates live there now, which hands their space in the
+# $F3FF run back to the code blob.
+RECLAIMED_LO, RECLAIMED_HI = 0xEDA0, 0xF142
+
 HUD_REASSERT_ADDR = 0xF400
 SOUNDSTOP = 0xDED6
 
@@ -1109,6 +1118,21 @@ def wrap_guard():
     existed, so the blob does not grow at all. The price is 12 cycles a band,
     about one scanline across all ten."""
     return ["    JSR WrapSlot0"]
+
+
+def _stock_bytes(addr, n):
+    """The bytes currently at addr in the source ROM.
+
+    The templates are written over reclaimed code rather than over blank $FF,
+    so their expect lists have to be the real thing. That keeps the check
+    meaningful: a ROM whose injection differs still fails loudly.
+    """
+    import io as _io
+    rom = bytearray(_io.open(load_source()[0], "rb").read())
+    rom = rom[len(rom) - ROM_SIZE:]
+    assert RECLAIMED_LO <= addr and addr + n - 1 <= RECLAIMED_HI, \
+        "$%04X..$%04X is outside the reclaimed injection" % (addr, addr + n - 1)
+    return list(rom[addr - BASE:addr - BASE + n])
 
 
 def _blob_len():
@@ -2295,6 +2319,16 @@ def fix_mirror_split(p):
                 ("P2_TEMPLATE", P2_TEMPLATE, p2_dl_bytes()),
                 ("P2_HUD_TEMPLATE", P2_HUD_TEMPLATE, 12),
                 ("MINI_TEMPLATE", MINI_TEMPLATE, FINE_ZONES * MINI_DL_SIZE)]
+    # the blob must still fit the $FF run it lives in; the templates must stay
+    # inside the reclaimed injection
+    if HUD_REASSERT_ADDR + _blob_len() - 1 > 0xFF7F:
+        raise SystemExit("code blob $%04X..$%04X overruns the free run at $FF7F"
+                         % (HUD_REASSERT_ADDR, HUD_REASSERT_ADDR + _blob_len() - 1))
+    for _nm, _a, _n in _regions[1:]:
+        if _n and not (RECLAIMED_LO <= _a and _a + _n - 1 <= RECLAIMED_HI):
+            raise SystemExit("%s $%04X..$%04X is outside the reclaimed injection "
+                             "$%04X..$%04X" % (_nm, _a, _a + _n - 1,
+                                               RECLAIMED_LO, RECLAIMED_HI))
     _regions = sorted((a, n, nm) for nm, a, n in _regions if n)
     for (a1, n1, nm1), (a2, _, nm2) in zip(_regions, _regions[1:]):
         if a1 + n1 > a2:
@@ -2310,17 +2344,19 @@ def fix_mirror_split(p):
             "P2_LIMIT %d runs off the lateral ramp, which has %d entries"
             % (P2_LIMIT, LATERAL_RAMP_LEN))
 
-    p.put(DLL_TEMPLATE, dll_template(), expect=[0xFF] * (DLL_ZONES * 3))
-    p.put(P2_TEMPLATE, p2_dl_template(), expect=[0xFF] * p2_dl_bytes())
+    p.put(DLL_TEMPLATE, dll_template(),
+          expect=_stock_bytes(DLL_TEMPLATE, DLL_ZONES * 3))
+    p.put(P2_TEMPLATE, p2_dl_template(),
+          expect=_stock_bytes(P2_TEMPLATE, p2_dl_bytes()))
     # Seed of player 2's HUD row: the same two character objects the row it
     # replaces uses, so it draws legibly from the first frame. Rewriting the
     # characters it points at is what makes it player 2's, and is not done yet.
     p.put(P2_HUD_TEMPLATE,
           [0x8A, 0x60, 0x1F, 0x4D, 0x0C, 0x9D, 0x60, 0x1F, 0x55, 0x68, 0x00, 0x00],
-          expect=[0xFF] * 12)
+          expect=_stock_bytes(P2_HUD_TEMPLATE, 12))
     if FINE_ZONES:
         p.put(MINI_TEMPLATE, mini_dl_template(),
-              expect=[0xFF] * (FINE_ZONES * MINI_DL_SIZE))
+              expect=_stock_bytes(MINI_TEMPLATE, FINE_ZONES * MINI_DL_SIZE))
 
     # -- aim the light and banner at the new divider -------------------------
     # Both routines end with `STA ram_2224,X`, hardcoded at zone 12 -- which
