@@ -5011,3 +5011,96 @@ Not yet ported: player 1's cornering skid (`SkidCheck`, rom:C269), its crash,
 and its sign collisions. Existing two-player recordings desync on this build
 -- their player-2 inputs were made for the old steering -- so it needs driving
 live.
+
+## Each player's car drawn as the game draws a rival
+
+Checkpoint 58. The other player's car used to be one six-line slice at a scale
+of our own -- a black blob or a lone wheel, placed without the road's curve
+between the cars. It is now drawn by the game's own rival-car rules.
+
+### How the game draws a rival car
+
+* `sub_E286` (called from the race tick at rom:D716, straight after player 1's
+  walk) builds a **drawable list**: entry 0 is the player's car (`sub_E364`),
+  then one entry per visible world object (`sub_E3E0` row, `sub_E475` height,
+  `sub_E461` slot class, `sub_E54B`/`sub_E676` x, `sub_E4F1` viewing-angle
+  sprite, `sub_E5C7` palette/width, `sub_E60F` hide rules). The count is `$DD`;
+  the per-entry arrays are `$1A94` nearest row, `$1AA9` farthest row, `$1AD3`
+  sprite low byte, `$1ABE` sprite page, `$1BEA` palette/width, `$1AE8` x,
+  `$1A7F` slot class.
+* After vblank `sub_E6D7` parks six slots in every band and the emitter
+  (rom:E713-E7C9) writes each entry into **every band it spans**, one header a
+  band, the sprite page starting at `page - $9DC3[band] + row` and stepping 6 a
+  band. Cars are slot class 4, which takes the slots at +4..+20: five a band.
+* **x** = hi(|c| x (row+4)) with c's sign, + `RowCurveOffset[row]` + `$4F`,
+  carry kept between the two adds. c is a lateral coefficient, `$E80F`/`$A8A1`,
+  linear at about 9.6 per lane index about lane `$16`; `$23`/`$24` are the
+  roadside positions signs use. The multiplier is row + 4 -- `INC $4B` before
+  the loop -- which the first model had as row + 3.
+* **Sprite**: size class `dat_BA7E[row]` (0-9); height `dat_ACCA`, width
+  `dat_ABCA`; for sizes 0-5 one of **five viewing angles**, chosen from
+  (x + lane + $1F)/8 - $0E plus the road's slope at the row, through the
+  pointer tables at `$A295`/`$A29F`.
+
+`tools/rival-car-model.py` reproduces all of that from state captured by
+`tools/probe-object-list.lua`: rows, x, sprite, palette/width and slot class
+match on **144 of 146** rival cars in run-03 (the two misses are the checker
+mis-indexing the list past a sign, not the maths).
+
+### Calibration: lateral units against the coefficient
+
+Solving, at each of 600 list builds, for the c that would put an object exactly
+under player 1's car (drawn at x 64): **c = 3.38 x PlayerX - 46** at the
+nearest rows, residual under 2 px. The slope is the camera's (the lateral ramp
+is ~3.59 a unit); the -46 is the fixed offset between the two sprites' anchors.
+So a car at lateral w (player 1's terms) has coefficient 3.38w - 46, kept as a
+128-byte table of round(3.38n/2).
+
+### What the ROM now does
+
+* **Player 1's view**: `RivalCars` replaces the race tick's call to `sub_E286`,
+  makes it, then appends player 2's car: distance -GAP, lateral -P2_LATERAL,
+  class 4. The game's own emitter draws it.
+* **Player 2's view**: player 1's car is projected the same way, with player
+  2's road in place of `RowCurveOffset` -- the walk's `P2_BANDX[b]` less its
+  per-band base, plus player 2's camera shift at that band -- staged in
+  `P2E_*`, and emitted by `P2ObjCommit` at vblank band by band, as the game's
+  emitter does.
+* The row search is the game's own `sub_E3CD`, so the 416 bytes of Z-to-row
+  tables are gone. The old passes, their multiply and their tables are gone.
+  `OcCoef`, `OcRow` and `OcSprite` are assembled on their own in the reclaimed
+  injection; `RivalCars` and `OcMul` stay in the blob.
+
+`tools/rival-entries-check.py` recomputes both staged cars from state captured
+by `tools/probe-rival-entries.lua`: **165/165** entries for player 2's car in
+player 1's view, **167, 116 and 19 of 19** for player 1's car in player 2's
+view over three recordings, all matching the model.
+
+ROM: blob spare 14 -> 56 bytes; the reclaimed injection holds 141 bytes of
+tables and 233 of code where the 416-byte tables were, 42 spare.
+
+### The mangling that the first build caused
+
+The first build (RC1) shredded player 2's whole view. Bisection showed the
+emit code's *presence*, not its execution, correlated with it -- which pointed
+at layout, and was wrong: `MirrorStage` took the same time in both builds. The
+answer was in the data: the first header of every band had its graphics page
+zeroed. `P2ObjCommit` can run before anything has been staged -- the reset
+switch's path (rom:D7A9) runs the object rebuild without passing the list hook,
+and so, in run-01, did the start of qualifying -- with `P2E_TOP` still 0 from
+the RAM clear rather than the `$FF` that means nothing. Row 0 put the emit in
+band 0, its index wrapped to `$FF`, and the loop zeroed player 2's lists; the
+per-frame stage rewrites only some of each header's bytes, so the damage stayed.
+Fixed twice over: `P2E_TOP` is set to `$FF` in `MirrorInit`, and the emit
+refuses any row >= `$4E` or a start in band 0.
+
+`tools/probe-p2-list-integrity.lua` checks every racing frame for a zeroed road
+header in player 2's lists: RC1 failed on 4,122-4,284 frames per recording,
+the fix and checkpoint 57 on none.
+
+### Slot capacity
+
+Adding a car to the game's list could, in a crowded band, make it the sixth
+class-4 object, which the emitter would write past the band's slots. In run-03's
+races the game never put more than one rival in a band, so the extra car makes
+two of five; the append is also refused outright once five cars are listed.
