@@ -513,6 +513,8 @@ CL_X = 0x27BC
 CL_R = 0x27BD                #   the row, and player 2's lateral in player 1's
 CL_PX = 0x27BE               #   terms (-P2_LATERAL), for rom:C8D0's borrow chain
 OCR_T = 0x27BF               # OcCrash: the other player's crash count
+P2_CRSLOT = 0x27C0           # the slot player 2 crashed into, as CrashSlot; $FF none
+CR_SAVEX = 0x27C1            # ColZHi's slot
 COLLIDE_PUSH = 4             # each car's sideways shove a tick, in contact
 # the game's object slots and track object data (rom:CF47, rom:C4CB)
 OBJ_TYPE, OBJ_Z_LO, OBJ_Z_HI, OBJ_LATERAL = 0x19B4, 0x19C4, 0x19D4, 0x1A00
@@ -1265,7 +1267,7 @@ def _check_p2_ram():
         ("P2_WORLD", P2_ACTIVE, 4),
         ("CAR_FRAME", CAR_FRAME, 16),
         ("CAR_WORLD", CR_PART, 16),
-        ("P2_HAZARD", P2_CRASH, 11),
+        ("P2_HAZARD", P2_CRASH, 13),
         ("P2_ST", P2_ST_RATE, 2),
         ("P2_TRACK", P2_TRACK_SEG, 3),
         ("P2_SPEED", P2_SPEED, 1),
@@ -2353,7 +2355,21 @@ def car_world_src():
         "    RTS",
         "CrCar:",
         "    LDA $19B4,X", "    AND #$07",
-        "    BNE CrRet",                       # cars only
+        "    BEQ CrCarGo",
+        "    CMP #$03",                        # player 2's wreck: with player 2
+        "    BNE CrRet",
+        "    CPX $%04X" % P2_CRSLOT,
+        "    BNE CrRet",
+        "    CPX $00D3",
+        "    BEQ CrRet",
+        "    LDA $%04X" % P2_CRASH,
+        "    BEQ CrRet",
+        "    LDA #$01", "    STA $%04X,X" % CAR_FRAME,
+        "    CLC",
+        "    LDA $19C4,X", "    ADC $%04X" % GAP_LO, "    STA $19C4,X",
+        "    LDA $19D4,X", "    ADC $%04X" % GAP_HI, "    STA $19D4,X",
+        "    RTS",
+        "CrCarGo:",
         "    CPX $00D3",
         "    BEQ CrRet",                       # the car player 1 hit: its own
         "    LDA $19C4,X", "    STA $%04X" % CR_TL,
@@ -2526,6 +2542,7 @@ def car_world_src():
         "    LDA $00A2", "    STA $%04X" % P2_OA2,
         "    LDA #$00", "    STA $%04X" % P2_ACTIVE,
         "    STA $%04X" % P2_CRASH, "    STA $%04X" % P2_ARM,
+        "    LDA #$FF", "    STA $%04X" % P2_CRSLOT,
         "    RTS",
     ]
 
@@ -2554,6 +2571,13 @@ def p2_hazard_src():
         "    BEQ P2ClGo",
         "    RTS",                             # nothing new while crashing
         "P2ClGo:",
+        # a crash just ended: give its car back (P2Wreck). Here rather than as
+        # the count runs out in the drive, because the gap is this tick's here
+        # -- placed from last tick's, it landed up to a tick's advance short.
+        "    LDA $%04X" % P2_CRSLOT,
+        "    BMI P2ClNoWk",
+        "    JSR P2Wreck",
+        "P2ClNoWk:",
         # --- the sign: armed while deep on the verge on the next sign's side
         "    LDA #$00", "    SEC", "    SBC $%04X" % P2_LATERAL,   # x, player 1's terms
         "    BMI P2ClLeft",
@@ -2586,7 +2610,14 @@ def p2_hazard_src():
         "    LDA $19B4,X", "    AND #$07",
         "    BEQ P2ClKind",
         "    CMP #$02",
+        "    BEQ P2ClKind",
+        "    CMP #$03",                        # a wreck: while it is showing
         "    BNE P2ClNext",
+        "    JSR CrTimerOf",
+        "    CPX #$14",
+        "    BCC P2ClNext",
+        "    LDY $%04X" % CL_I,
+        "    LDX $19A4,Y",
         "P2ClKind:",
         "    JSR P2ClOne",
         "    LDA $%04X" % P2_CRASH,
@@ -2679,7 +2710,7 @@ def p2_hazard_src():
         "    LDA $19B4,X", "    AND #$07",
         "    CMP #$02",
         "    BEQ P2Puddle",
-        "    JMP P2CrashStart",
+        "    JMP P2CrashCar",
         "P2ClOut:",
         "    RTS",
 
@@ -2704,8 +2735,23 @@ def p2_hazard_src():
         "    STA $%04X" % P2_SPEED,
         "    RTS",
 
+        # a car: rom:C93E records it (CrashSlot) and rom:C9F2 turns it into the
+        # crash kind. One player 1 is already crashing into stays player 1's.
+        "P2CrashCar:",
+        "    JSR P2CrashStart",
+        "    LDX $%04X" % CL_X,
+        "    CPX $00D3",
+        "    BEQ P2CcDone",
+        "    STX $%04X" % P2_CRSLOT,
+        "    LDA $19B4,X", "    AND #$07",
+        "    BNE P2CcDone",
+        "    LDA #$43", "    STA $19B4,X",
+        "P2CcDone:",
+        "    RTS",
+
         # rom:C93E: 32 ticks, sounds 7 and 8, low gear
         "P2CrashStart:",
+        "    LDA #$FF", "    STA $%04X" % P2_CRSLOT,
         "    LDA #$20", "    STA $%04X" % P2_CRASH,
         "    LDA #$00",
         "    STA $%04X" % P2_B2, "    STA $%04X" % P2_ARM, "    STA $%04X" % P2_GEAR,
@@ -2716,6 +2762,21 @@ def p2_hazard_src():
         # from player 2's drive, in place of gas and brake while crashing:
         # rom:C2C0 (Speed -25, or 0 once under 50) and rom:C5E8 (the count)
         "P2CrashTick:",
+        # the car it hit slows with it, 25 a tick (rom:C9F2 for player 1's)
+        "    LDX $%04X" % P2_CRSLOT,
+        "    BMI P2CtCar",
+        "    CPX $00D3",
+        "    BEQ P2CtCar",                     # player 1's crash slows it already
+        "    LDA $19B4,X", "    AND #$07",
+        "    CMP #$03",
+        "    BNE P2CtCar",
+        "    LDA $1A10,X",
+        "    SEC", "    SBC #$19",
+        "    BPL P2CtCarS",
+        "    LDA #$00",
+        "P2CtCarS:",
+        "    STA $1A10,X",
+        "P2CtCar:",
         "    LDA $%04X" % P2_SPEED,
         "    LSR A",
         "    CMP #$19",
@@ -2731,6 +2792,95 @@ def p2_hazard_src():
         "    BNE P2CtDone",
         "    LDA #$00", "    STA $%04X" % P2_SPEED,
         "P2CtDone:",
+        "    RTS",
+
+        # rom:D037 for player 2: the car it hit comes back as a fresh one --
+        # a new look (rom:CF3B), its own target speed, 119 behind player 2,
+        # on the side of the road away from player 2 -- unless player 1 has
+        # crashed into it since, in which case player 1's end does this.
+        "P2Wreck:",
+        "    LDX $%04X" % P2_CRSLOT,
+        "    BMI P2WkOut",
+        "    CPX $00D3",
+        "    BEQ P2WkDone",
+        "    LDA $19B4,X", "    AND #$07",
+        "    CMP #$03",
+        "    BNE P2WkDone",
+        "    JSR $CF3B",
+        "    STA $19B4,X",
+        "    SEC",
+        "    LDA #$89", "    SBC $%04X" % GAP_LO, "    STA $19C4,X",
+        "    LDA #$FF", "    SBC $%04X" % GAP_HI, "    STA $19D4,X",
+        "    LDA $1CCF,X", "    STA $1A10,X",
+        "    LDA #$00", "    STA $1A20,X",
+        "    LDA $%04X" % P2_LATERAL,          # player 2 left of centre (positive):
+        "    BEQ P2WkRight",                   #   the car goes right, lane 1 --
+        "    BMI P2WkRight",                   #   as rom:D07F places player 1's
+        "    LDA #$22",
+        "    BNE P2WkLat",
+        "P2WkRight:",
+        "    LDA #$01",
+        "P2WkLat:",
+        "    STA $1A00,X",
+        "P2WkDone:",
+        "    LDA #$FF", "    STA $%04X" % P2_CRSLOT,
+        "P2WkOut:",
+        "    RTS",
+
+        # --- whose crash count a car in the crash kind follows. In: X a slot.
+        # Out: X the count (player 1's for its CrashSlot, player 2's for
+        # P2_CRSLOT, else player 1's as the game has it). A and Y kept.
+        "CrTimerOf:",
+        "    PHA",
+        "    CPX $00D3",
+        "    BNE CrTo2",
+        "    LDA $00D4",
+        "    BNE CrToUse",
+        "CrTo2:",
+        "    CPX $%04X" % P2_CRSLOT,
+        "    BNE CrTo1",
+        "    LDA $%04X" % P2_CRASH,
+        "    BNE CrToUse",
+        "CrTo1:",
+        "    LDA $00D4",
+        "CrToUse:",
+        "    TAX",
+        "    PLA",
+        "    RTS",
+        # rom:E4B7 / E59D: `LDX CrashTimer / LDA A7A1,X` for slot $44
+        "CrFrameA:",
+        "    LDX $0044",
+        "    JSR CrTimerOf",
+        "    LDA $A7A1,X",
+        "    RTS",
+        # rom:E5E8: `LDX CrashTimer / LDY A7A1,X`
+        "CrFrameY:",
+        "    LDX $0044",
+        "    JSR CrTimerOf",
+        "    LDY $A7A1,X",
+        "    RTS",
+        # rom:E617: `LDX CrashTimer / CPX #$14`, A (the x) kept
+        "CrTimerX:",
+        "    LDX $0044",
+        "    JSR CrTimerOf",
+        "    CPX #$14",
+        "    RTS",
+        # rom:C87E: `LDA ObjZHi,X` -- but a wreck that is hidden is passed
+        # over (back into the loop at rom:C8EE), so player 1 cannot hit what
+        # it cannot see
+        "ColZHi:",
+        "    LDA $19B4,X", "    AND #$07",
+        "    CMP #$03",
+        "    BNE ColZNorm",
+        "    STX $%04X" % CR_SAVEX,
+        "    JSR CrTimerOf",
+        "    CPX #$14",
+        "    LDX $%04X" % CR_SAVEX,
+        "    BCS ColZNorm",
+        "    PLA", "    PLA",
+        "    JMP $C8EE",
+        "ColZNorm:",
+        "    LDA $19D4,X",
         "    RTS",
 
         # --- the other player's car while that player crashes, in this view:
@@ -3069,9 +3219,11 @@ def rival_car_src(part="main"):
         "    LDA $19B4,Y", "    AND #$07",
         "    CMP #$01", "    BEQ P2ObNext",    # signs: player 2 has its own
         "    CMP #$03", "    BNE P2ObKind",
-        "    LDA $00D4",                       # player 1's crash: the car it hit,
-        "    CMP #$14",                        #   hidden below 20 as rom:E60F does
+        "    TYA", "    TAX",                 # a wreck: hidden below 20 of its own
+        "    JSR CrTimerOf",                   #   crash's count, as rom:E60F does
+        "    CPX #$14",
         "    BCC P2ObNext",
+        "    LDY $0044",
         "P2ObKind:",
         "    LDA $19C4,Y", "    STA $%04X" % P2L_ZL,
         "    CLC", "    ADC $%04X" % GAP_LO, "    STA $19C4,Y",
@@ -4048,6 +4200,21 @@ def fix_mirror_split(p):
     if "FastZRow" in _ext()[1]:
         fz = _ext()[1]["FastZRow"]
         p.put(0xE3CD, [0x4C, fz & 0xFF, fz >> 8], expect=[0xA2, 0x4D, 0xA5])
+    # The crash kind (a car a player hit) is drawn from CrashTimer at four
+    # places -- rom:E4B7 height, rom:E59D sprite, rom:E5E8 palette, rom:E617
+    # the hide below 20. Each read becomes a call that gives the count of the
+    # crash that car belongs to (CrTimerOf): player 2's for the car player 2
+    # hit. rom:C87E, ObjectCollision's first look at a slot's distance, lets
+    # player 1 pass through a wreck that is hidden, as its own is.
+    _xs = _ext()[1]
+    for _at, _fn, _old in ((0xE4B7, "CrFrameA", [0xA6, 0xD4, 0xBD, 0xA1, 0xA7]),
+                           (0xE59D, "CrFrameA", [0xA6, 0xD4, 0xBD, 0xA1, 0xA7]),
+                           (0xE5E8, "CrFrameY", [0xA6, 0xD4, 0xBC, 0xA1, 0xA7])):
+        p.put(_at, [0x20, _xs[_fn] & 0xFF, _xs[_fn] >> 8, 0xEA, 0xEA], expect=_old)
+    p.put(0xE617, [0x20, _xs["CrTimerX"] & 0xFF, _xs["CrTimerX"] >> 8, 0xEA],
+          expect=[0xA6, 0xD4, 0xE0, 0x14])
+    p.put(0xC87E, [0x20, _xs["ColZHi"] & 0xFF, _xs["ColZHi"] >> 8],
+          expect=[0xBD, 0xD4, 0x19])
     # rom:D70D -- the race tick's `JSR sub_C9AD`, the object tick, becomes
     # CarTick: the same tick with the recycle pass run by CarRetire, each car
     # in the frame of the player who still needs it (see car_world_src).

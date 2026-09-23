@@ -5708,3 +5708,57 @@ list integrity (0 zeroed headers, three recordings), the rival-car model
 Still open: **a car player 2 hits carries on driving.** For player 1 the car it
 hits becomes the crash kind and is moved behind at the end (rom:C9F2, rom:D037),
 but that machinery is keyed to player 1's one `CrashSlot` and `CrashTimer`.
+
+## The car player 2 hits behaves as the car player 1 hits
+
+Checkpoint 64. After checkpoint 62 a car player 2 crashed into drove on as if
+nothing had happened.
+
+**Player 1's sequence, for reference.** CrashStart (rom:C93E) records the car
+in `CrashSlot`; the next object tick (rom:C9F2) makes it the crash kind (type
+`$43`) and takes 25 off its speed every tick of the crash; it is drawn from
+`CrashTimer` (rom:E4B7 height, rom:E59D sprite, rom:E5E8 palette) and hidden
+below 20 (rom:E617); when the crash ends rom:D037 makes it a fresh car
+(rom:CF3B look), 119 behind the player at its own target speed (`$1CCF`), in
+lane 1 or `$22`, whichever is away from the player.
+
+**Player 2's, now the same.** `P2CrashCar` records the car in `P2_CRSLOT`
+and makes it the crash kind at once; `P2CrashTick` slows it 25 a tick;
+`P2Wreck` gives it back -- fresh look, 119 behind player 2, own speed, lane
+away from player 2 -- on the tick the crash ends. Wrinkles:
+
+- **The drawing reads one crash count.** The four `CrashTimer` reads above now
+  go through `CrTimerOf`, which gives the count of the crash that car belongs
+  to: player 1's for `CrashSlot`, player 2's for `P2_CRSLOT`. Both views use
+  the same routines, so player 2's wreck animates by player 2's crash in both.
+- **Invisible wrecks.** Player 1 never tests its own wreck (no tests while
+  crashing), but it can reach player 2's. rom:C87E now skips a wreck whose
+  crash has it hidden, so neither player hits what it cannot see; player 2
+  tests wrecks under the same rule.
+- **One car, two crashes.** A car player 1 is already crashing into stays
+  player 1's; if player 1 hits player 2's wreck, player 1's crash end resets it
+  and player 2's leaves it alone.
+- **Player 2's wreck lives in player 2's frame** for the recycle pass while the
+  crash lasts (CarRetire), or the stock rule would park it beside player 1.
+
+Checked tick by tick (`tools/probe-wreck.lua`), one crash each:
+
+    player 1, slot 9: type 43 at once, speed 42 -> 0, parks at -112, then
+                      type 80, z -119, speed 67, lane 34 (player 1 left)
+    player 2, slot 8: type 43 at once, speed 48 -> 0, parks at -112, then
+                      type 80, z -119, speed 67, lane 1 (player 2 right)
+
+and on all nine crash ends of that run, both players' cars came back at exactly
+-119 from the player that hit them. Screenshots: player 2 crashing 240 and 31
+ahead of player 1 shows as explosions in player 1's view; player 1 then drove
+into player 2's wreck and crashed on it, as it would on any wreck. Unchanged:
+contact arithmetic (0 of 23,969,792; 65/65 live), integrity, rival-car model,
+signs, health.
+
+*Wrong turn:* the first version gave the car back inside the drive, as the
+count ran out -- before this tick's gap update, so it landed up to a tick's
+advance (about 100) short of -119. It now happens at the top of `P2Collide`,
+after the gap is updated.
+
+**Saved for last** (cleanup, per the standing rule): the visual glitches in
+player 2's view before a race starts.
