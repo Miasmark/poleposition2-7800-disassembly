@@ -5104,3 +5104,91 @@ Adding a car to the game's list could, in a crowded band, make it the sixth
 class-4 object, which the emitter would write past the band's slots. In run-03's
 races the game never put more than one rival in a band, so the extra car makes
 two of five; the append is also refused outright once five cars are listed.
+
+## The grid is the stress case -- and a crash the original game can have
+
+Checkpoint 59. Prompted by the observation that track 1's grid in run-03 starts
+with rows of two cars ahead.
+
+### Correction: rival cars per band
+
+The previous entry said the game never put more than one rival in a band. That
+came from captures that stopped around f5100, before run-03's second race, and
+only counted state `$03`. **The grid is drawn during state `$11`**, the rolling
+start, and counting that too, retail run-03 puts **four rival cars in one band
+at f10300** -- track 1's grid, player 1 having qualified 6th.
+
+### A band's object slots
+
+`sub_E6D7` parks six slots per band (+0..+20); `sub_E320` two more at +24/+28
+in bands 0-7. The emitter hands them out by slot class:
+
+| offset | used by |
+|---|---|
+| +0 | class 0, fixed (kind-2 objects) |
+| +4, +8, +12, +16, ... | cars, class 4, from a per-band counter `$1997` (starts at 4) |
+| +16 (bands 7-12) / +20 (0-6) onward | class `$10`, signs, from `$198A` |
+| **+20** | **player 1's own car**, class `$14`, fixed, in bands 7-11 |
+| +24, +28 | crash pieces, classes `$18`/`$1C` |
+
+So a near band holds **four** cars before the fifth lands on player 1's car. The
+grid fills that exactly. There is no spare slot to reserve.
+
+### What "reserving a slot" became
+
+The emitter walks the list from the **last** entry down (rom:E729: `LDX $DD /
+DEX`), so the entry appended last is the first to take a car slot in every band
+it spans. Player 2's car is appended last -- it already has first claim, which
+is the reservation. What was missing was a limit: `CarSlot` replaces the car
+allocation at rom:E79C and leaves a car out of any band where its slot would be
++20 or beyond, stepping the sprite page as the write would have so the car's
+next band still lines up. No car can now be written over player 1's; in an
+overfull band the rival emitted last loses that band's slice. Retail never
+reached +20 with a car in any recording, so this changes nothing there.
+
+The guard added at checkpoint 58 -- refuse player 2's car once five cars were
+listed -- is gone. It would have hidden the car on exactly this grid.
+
+### Stress test
+
+`tools/probe-grid-stress.lua` starts player 1 at grid position 6 or 8 (by
+setting `$A6`, which the race start at rom:D0B9 builds the grid from) and holds
+player 2 ahead of it among the rivals, sweeping the distance and lane. Checked
+after every emitter pass:
+
+    grid 6th: 243 passes, player 2's car listed on 243, player 1's slot intact
+    grid 8th: 224 passes, player 2's car listed on 224, player 1's slot intact
+
+The fullest band held four cars with player 2's included, so the cap was not
+needed there. To prove its skip path, a test build with the cap at one car a
+band (`PP2_CARCAP=0x08`) dropped 523 rival slices: rivals lose slices cleanly,
+player 2's car -- emitted first -- stays whole, player 1's slot is untouched.
+The default build is byte-identical with or without the hook.
+
+(The integrity check compares only palette/width and x in player 1's slot: the
+game's own wheel flicker, rom:E7D3-E7E7, rewrites band 10's sprite bytes every
+frame.)
+
+### A crash in the original game, exposed by timing
+
+Run on the rival-car build, run-03 reset to the title at f9321, mid-qualifying
+on track 1: game state, track, speed and clock all `$F0`. The write came from
+rom:E935, inside `sub_E8AC` (stripe staging, called from vblank at rom:F15A),
+whose last loop runs X from `$E6` down until it equals `$E7`, writing `$F0` to
+`$4E,X` when X >= `$30`. `$E6/$E7` are a row range for the nearest sign-type
+object, set by `sub_CC23` in the main loop in two halves -- `STA $E7` at rom:CC5E,
+`STY $E6` at rom:CC60. The interrupt's return address on the stack was
+**`$CC60`**: vblank had landed between the two stores, the loop got the new `$E7`
+with the old `$E6`, started on the wrong side of its end, wrapped through zero,
+and sprayed `$F0` across zero page.
+
+The window is three cycles a tick, so retail can in principle hit it too; our
+added main-loop work moved run-03 onto it. `E6E7Safe` now stores `$E6 = $FF`
+first ("no range", which rom:E925 skips), then `$E7`, then `$E6`, so every
+intermediate state is safe. run-03 now reaches both races on this build.
+
+    health: identical to checkpoint 57/58 on five recordings
+    run-03: both races reached, no reset
+    player 2's lists: no zeroed road header on four recordings incl. run-03
+    rival entries vs model: 167/167 both views
+    walk: exact

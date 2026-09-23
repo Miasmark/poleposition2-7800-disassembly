@@ -901,6 +901,7 @@ def hud_reassert_src(addr):
     ) + p2_stage_src() + p2_car_src() + [
         "    RTS",
     ] + p2_stage_tables() + p2_slot_tables() + rival_car_src() + [
+
         "WrapSlot0:",
         "    CMP #$A0",
         "    BCC WrapKeep",
@@ -2197,7 +2198,7 @@ def rival_car_src(part="main"):
         "    LDA #$00", "    SEC", "    SBC $%04X" % P2_LATERAL,
         "    JSR OcCoef",
         "    JSR OcRow",
-        "    BCS RcP1Done",
+        "    BCC RcRowOk", "    JMP RcP1Done", "RcRowOk:",   # too far to branch
         "    LDA $%04X" % OC_ROW, "    CLC", "    ADC #$04",
         "    STA $%04X" % OC_M,
         "    JSR OcMul",
@@ -2210,28 +2211,14 @@ def rival_car_src(part="main"):
         "    LDA $%04X,X" % ROW_CURVE_OFFSET, "    STA $%04X" % OC_S1,
         "    LDA $%04X,X" % (ROW_CURVE_OFFSET - 1), "    STA $%04X" % OC_S0,
         "    JSR OcSprite",
-        # append, if the list has room (its arrays hold 21) -- and only while
-        # fewer than five cars are listed. The emitter gives cars (slot class
-        # 4) the slots at +4..+20 of each band, five in all, and a sixth
-        # sharing a band would be written past them. The game never came close
-        # in run-03's races (one car to a band at most), but this makes the
-        # extra car unable to be the one that overflows.
+        # Append. The emitter walks the list from the LAST entry down
+        # (rom:E729), so the car appended here is the first to take a car
+        # slot in every band it spans: it has priority over every rival, which
+        # is the "reserved slot" -- no band can fill up before it is placed.
+        # What stops a crowded band overflowing is the cap in CarSlot.
         "    LDX $00DD",
-        "    CPX #$14",
+        "    CPX #$14",                        # the list's arrays hold 21
         "    BCS RcP1Done",
-        "    LDY #$00",
-        "RcCount:",
-        "    DEX",
-        "    BMI RcCounted",
-        "    LDA $1A7F,X",
-        "    CMP #$04",
-        "    BNE RcCount",
-        "    INY",
-        "    BNE RcCount",
-        "RcCounted:",
-        "    CPY #$05",
-        "    BCS RcP1Done",
-        "    LDX $00DD",
         "    LDA $%04X" % OC_ROW, "    STA $1A94,X",
         "    LDA $%04X" % OC_BOT, "    STA $1AA9,X",
         "    LDA $%04X" % OC_LO,  "    STA $1AD3,X",
@@ -2404,6 +2391,46 @@ def rival_car_src(part="main"):
 
     ]
     helpers += [
+        # rom:E79C, the emitter's car slot: `LDA $1997,Y / ...` hands each car
+        # the next of +4, +8, +12, +16 in the band -- then +20, which in bands
+        # 7-11 is player 1's own car (its entry is slot class $14, a fixed
+        # slot). Four rivals share one band on run-03's track-1 grid, so a
+        # fifth car there would be written over player 1's car. Capped: a car
+        # that would land at +20 or beyond is left out of THAT band only, the
+        # page still stepped so its next band lines up. The retail game never
+        # reached +20 with a car in any recording, so this changes nothing
+        # there; with player 2's car taking the first slot, the rival emitted
+        # last in a full band loses that band's slice rather than anyone's car
+        # being overwritten.
+        "CarSlot:",
+        "    LDA $1997,Y",
+        "    CMP #$%02X" % int(os.environ.get("PP2_CARCAP", "0x14"), 0),   # test hook
+        "    BCS CarFull",
+        "    STA $0049",
+        "    CLC", "    ADC #$04",
+        "    STA $1997,Y",
+        "    LDY $0049",
+        "    JMP $E7A9",
+        "CarFull:",
+        "    LDA $0046", "    CLC", "    ADC #$06", "    STA $0046",   # rom:E7B9
+        "    JMP $E7C4",
+        # rom:CC5E-CC61 store a row range for sub_E8AC in two halves, $E7
+        # then $E6, from the main loop; sub_E8AC reads them in vblank and loops
+        # X from $E6 down until it equals $E7. An interrupt landing between the
+        # two stores -- three cycles a tick -- hands it the new $E7 with the old
+        # $E6, the loop starts on the wrong side of its end, wraps through zero
+        # and writes $F0 across zero page from $7E up: game state, track, speed
+        # and clock all $F0, and the machine falls back to the title. A latent
+        # race in the original game; our extra main-loop work shifted run-03
+        # onto it at f9321. $E6 = $FF is "no range" (rom:E925 skips it), so
+        # clearing it first makes every intermediate state safe.
+        "E6E7Safe:",
+        "    PHA",
+        "    LDA #$FF", "    STA $00E6",
+        "    PLA",
+        "    STA $00E7",
+        "    STY $00E6",
+        "    RTS",
         # --- OC_X/L/S0/S1/SIZE -> OC_LO/HI/PW, as rom:E4F1 and rom:E5C7 -------
         "OcSprite:",
         "    LDA $%04X" % OC_X,
@@ -2956,6 +2983,17 @@ def fix_mirror_split(p):
     # begun. P2ObjCommit writes both views' other-car entries, then jumps on.
     p.put(0xE70D, [0x20, p2_commit_addr & 0xFF, p2_commit_addr >> 8],
           expect=[0x20, 0xD7, 0xE6])
+    # rom:CC5E -- `STA $E7 / STY $E6`, the torn pair (see E6E7Safe), becomes a
+    # jump to a version that clears $E6 first. $CC23 was reached by a JMP, so
+    # E6E7Safe's RTS returns where the original RTS at $CC62 would have.
+    safe_addr = _rival_helpers()[1]["E6E7Safe"]
+    slot_addr = _rival_helpers()[1]["CarSlot"]
+    # rom:E79C -- the emitter's car-slot allocation, 11 bytes falling into the
+    # header write at rom:E7A9, becomes a jump to CarSlot (the cap; see there).
+    p.put(0xE79C, [0x4C, slot_addr & 0xFF, slot_addr >> 8],
+          expect=[0xB9, 0x97, 0x19])
+    p.put(0xCC5E, [0x4C, safe_addr & 0xFF, safe_addr >> 8],
+          expect=[0x85, 0xE7, 0x84])
     # rom:D716 -- the race tick's `JSR sub_E286`, which builds player 1's
     # drawable list. RivalCars makes that call, then adds player 2's car to it
     # and stages player 1's car for player 2's view.
