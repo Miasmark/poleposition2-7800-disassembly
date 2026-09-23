@@ -436,6 +436,20 @@ P2_STAGE_TMP = 0x2715        # the stripe byte, held across the near-band write
 P2_DRIFT_IDX = 0x2716        # curve index, SegCurve + 5, kept for the sign test
 P2_DRIFT_RATE = 0x2717       # this frame's signed drift rate
 P2_DRIFT_ACC = 0x2718        # the rate accumulated once per speed threshold
+P2_OC_BAND = 0x2719          # which band the other car lands in
+P2_OC_DST = 0x271A           # its slot offset in player 2's lists
+P2_OC_D = 0x271B             # lateral difference between the two cars
+P2_OC_ML = 0x271C            # the scaled offset, 16 bit
+P2_OC_MH = 0x271D
+P2_OC_CNT = 0x271E           # multiply loop counter
+ZROW_SCRATCH = 0x0048        # the 16-bit Z the row lookup reads
+ZROW_NEAR = 256              # Z below this is indexed directly
+ZROW_FAR_STEP = 8            # above it, in steps of this
+ZROW_FAR_N = 160             # entries, out past the horizon
+P2_ZROW_NEAR = 0xEED0        # the lookup lives in the reclaimed injection
+P2_ZROW_FAR = 0xEFD0
+PERSP_Z_LO, PERSP_Z_HI = 0xEB56, 0xEAB9
+ROW_TO_BAND = 0xBB7E
 SEG_CURVE_TBL = 0x1900       # SegCurve, indexed by segment
 SPEED_STEPS = 0xB4F8         # dat_B4F8: eight speed thresholds, high to low
 DRIFT_PTR_LO, DRIFT_PTR_HI = 0xAA24, 0xAB24   # per-curve pointers to a row of 8
@@ -861,7 +875,7 @@ def hud_reassert_src(addr):
         [] if os.getenv("PP2_KEEP_INJECTION") else road_stage_src()
     ) + p2_stage_src() + p2_car_src() + [
         "    RTS",
-    ] + p2_stage_tables() + p2_drift_table() + [
+    ] + p2_stage_tables() + p2_drift_table() + p2_othercar_tables() + p2_slot_tables() + p2_zrow_src() + [
         "WrapSlot0:",
         "    CMP #$A0",
         "    BCC WrapKeep",
@@ -1900,7 +1914,14 @@ def p2_collide_src():
         "P2NoHit:",
         "    LDA #$00", "    STA $%04X" % P2_HIT,
         "P2HitEnd:",
-    ]
+        "    LDX #$0B",
+        "P2OcClear:",
+        "    LDY P2ObjOfs,X",
+        "    LDA #$A1",
+        "    STA $%04X,Y" % (P2_DL_BASE + 3),
+        "    DEX",
+        "    BPL P2OcClear",
+    ] + p2_othercar_src()
 
 
 def p2_race_init_src():
@@ -1974,6 +1995,188 @@ def p2_follow_src():
         "    LDA $00CF", "    STA $%04X" % P2_TRACK_SEG,
         "    LDA $00D5", "    STA $%04X" % P2_TRACK_LO,
         "    LDA $00D6", "    STA $%04X" % P2_TRACK_HI,
+    ]
+
+
+def z_to_row(rom, z):
+    """What sub_E3CD would return for this Z -- precomputed, because it is a
+    search of up to 78 rows and the DLI has no time for one."""
+    at = lambda a: rom[a - BASE]
+    for x in range(0x4D, -1, -1):
+        if z < at(PERSP_Z_HI + x) * 256 + at(PERSP_Z_LO + x):
+            return x
+    return 0xFF
+
+
+def p2_zrow_table():
+    """Z -> row as two tables. Distances are a unit or two apart at the bumper
+    and fifty at the horizon, so one stride cannot serve both: below 256 the
+    index is Z itself, above it a step of 8 is still finer than the rows."""
+    import io as _io
+    rom = bytearray(_io.open(load_source()[0], "rb").read())
+    rom = rom[len(rom) - ROM_SIZE:]
+    near = [z_to_row(rom, z) for z in range(ZROW_NEAR)]
+    far = [z_to_row(rom, ZROW_NEAR + i * ZROW_FAR_STEP) for i in range(ZROW_FAR_N)]
+    return near, far
+
+
+def p2_othercar_tables():
+    """How a car looks in each band, and how far a lateral offset carries there.
+
+    Measured from player 1's own lists over a run: a car draws in palette 6, and
+    the page it uses is per band -- $A3 $9D $97 $91 $8B across bands 7 to 11 for
+    the near, eight-byte sprite, and $91/$8B with a two-byte one further out.
+    The lean offset ($00 $08 $10 $18 $20) is added to the page's low byte.
+
+    The scale is the camera's own ramp reduced to one byte a band: a lateral
+    offset d appears (d * M) >> 7 from the road at that band, with M following
+    the (3 + 6*band) the camera accumulates.
+    """
+    hi = [0x91, 0x91, 0x91, 0x91, 0x91, 0x91, 0x8B, 0xA3, 0x9D, 0x97, 0x91, 0x8B, 0x8B]
+    wid = [0xDE] * 7 + [0xD8] * 6
+    m = [min(255, int(round((3 + 6 * b) * 1.775))) for b in range(13)]
+    return [
+        "P2OcHi:",  "    .byte " + ",".join("$%02X" % v for v in hi),
+        "P2OcWid:", "    .byte " + ",".join("$%02X" % v for v in wid),
+        "P2OcM:",   "    .byte " + ",".join("$%02X" % v for v in m),
+    ]
+
+
+def p2_othercar_src():
+    """Put player 1's car into player 2's view.
+
+    This needs no projection guesswork, which is why it comes before the general
+    objects: the distance IS the camera gap, exactly, and the lateral is a
+    variable already held. Nothing is copied from player 1's display list, so
+    none of the band-relative page trouble applies.
+
+    Rejected, by the same three tests the object pass uses: a gap past the far
+    table, a negative gap -- player 1 behind, where player 2 cannot see it -- and
+    a row mapping to band 0, which player 2 has no list for.
+    """
+    if os.getenv("PP2_NO_OTHERCAR"):
+        return []
+    S = ZROW_SCRATCH
+    return [
+        # --- how far ahead is player 1? -------------------------------------
+        "    LDA $%04X" % S,       "    PHA",
+        "    LDA $%04X" % (S + 1), "    PHA",
+        "    LDA $%04X" % GAP_LO, "    STA $%04X" % S,
+        "    LDA $%04X" % GAP_HI, "    STA $%04X" % (S + 1),
+        # P2OcDone is far past what a branch reaches, so each reject takes a
+        # short branch over a jump rather than branching all the way
+        "    BPL P2OcAhead",
+        "    JMP P2OcDone",                       # behind player 2
+        "P2OcAhead:",
+        "    JSR P2ZRow",
+        "    CPX #$FF",
+        "    BNE P2OcRow",
+        "    JMP P2OcDone",                       # past the far plane
+        "P2OcRow:",
+        "    LDA $%04X,X" % ROW_TO_BAND,
+        "    BNE P2OcGo",
+        "    JMP P2OcDone",                       # band 0 is not player 2's
+        "P2OcGo:",
+        "    STA $%04X" % P2_OC_BAND,
+        "    TAX",
+        "    LDA P2ObjOfs-1,X",
+        "    STA $%04X" % P2_OC_DST,
+        # --- lateral difference, and its scale at that band ------------------
+        "    SEC",
+        "    LDA $%04X" % PLAYER_X, "    SBC $%04X" % P2_LATERAL,
+        "    STA $%04X" % P2_OC_D,
+        "    BPL P2OcAbs",
+        "    EOR #$FF", "    CLC", "    ADC #$01",
+        "P2OcAbs:",
+        "    LDX $%04X" % P2_OC_BAND,
+        "    LDY P2OcM,X",
+        # (|d| * M) >> 7, shift and add
+        "    STA $%04X" % P2_OC_CNT,
+        "    LDA #$00", "    STA $%04X" % P2_OC_ML, "    STA $%04X" % P2_OC_MH,
+        "P2OcMul:",
+        "    TYA", "    LSR A", "    TAY",
+        "    BCC P2OcNoAdd",
+        "    CLC",
+        "    LDA $%04X" % P2_OC_ML, "    ADC $%04X" % P2_OC_CNT,
+        "    STA $%04X" % P2_OC_ML,
+        "    LDA $%04X" % P2_OC_MH, "    ADC #$00",
+        "    STA $%04X" % P2_OC_MH,
+        "P2OcNoAdd:",
+        "    ASL $%04X" % P2_OC_CNT,
+        "    TYA",
+        "    BNE P2OcMul",
+        # >> 7 is << 1 of the high byte plus the top bit of the low
+        "    LDA $%04X" % P2_OC_ML,
+        "    ASL A",
+        "    LDA $%04X" % P2_OC_MH,
+        "    ROL A",
+        "    LDX $%04X" % P2_OC_D,
+        "    BPL P2OcPos",
+        "    EOR #$FF", "    CLC", "    ADC #$01",
+        "P2OcPos:",
+        # --- x = player 2's road there, plus that offset ---------------------
+        "    LDX $%04X" % P2_OC_BAND,
+        "    LDY P2RoadOfs-1,X",
+        "    CLC", "    ADC $%04X,Y" % P2_DL_BASE,
+        "    LDY $%04X" % P2_OC_DST,
+        "    STA $%04X,Y" % (P2_DL_BASE + 3),
+        # --- the sprite: this band's page, plus player 1's lean --------------
+        "    LDX $%04X" % P2_OC_BAND,
+        "    LDA P2OcWid,X",
+        "    STA $%04X,Y" % (P2_DL_BASE + 1),
+        "    LDA P2OcHi,X",
+        "    STA $%04X,Y" % (P2_DL_BASE + 2),
+        "    LDA $%04X" % (P1_CAR_SLOT[3] + 2),
+        "    CMP #$8B",
+        "    BNE P2OcUpright",
+        "    LDA $%04X" % P1_CAR_SLOT[3],
+        "    CMP #$21",
+        "    BCC P2OcLean",
+        "P2OcUpright:",
+        "    LDA #$10",
+        "P2OcLean:",
+        "    STA $%04X,Y" % P2_DL_BASE,
+        "P2OcDone:",
+        "    PLA", "    STA $%04X" % (S + 1),
+        "    PLA", "    STA $%04X" % S,
+    ]
+
+
+def p2_zrow_src():
+    """16-bit Z in the scratch pair -> row in X, or $FF to reject."""
+    S = ZROW_SCRATCH
+    return [
+        "P2ZRow:",
+        "    LDA $%04X" % (S + 1),
+        "    BNE P2ZFar",
+        "    LDX $%04X" % S,
+        "    LDA $%04X,X" % P2_ZROW_NEAR,
+        "    TAX", "    RTS",
+        "P2ZFar:",
+        "    CMP #$06",
+        "    BCS P2ZReject",
+        "    SEC", "    SBC #$01",
+        "    ASL A", "    ASL A", "    ASL A", "    ASL A", "    ASL A",
+        "    STA $%04X" % P2_OC_CNT,
+        "    LDA $%04X" % S,
+        "    LSR A", "    LSR A", "    LSR A",
+        "    CLC", "    ADC $%04X" % P2_OC_CNT,
+        "    TAX",
+        "    LDA $%04X,X" % P2_ZROW_FAR,
+        "    TAX", "    RTS",
+        "P2ZReject:",
+        "    LDX #$FF", "    RTS",
+    ]
+
+
+def p2_slot_tables():
+    """Where each band's object slot and road x sit in player 2's lists."""
+    lay = p2_band_layout()
+    dobj = [(lay[b]["addr"] - P2_DL_BASE) + lay[b]["obj"] for b in range(1, 13)]
+    droad = [(lay[b]["addr"] - P2_DL_BASE) + 3 for b in range(1, 13)]
+    return [
+        "P2ObjOfs:",  "    .byte " + ",".join("$%02X" % v for v in dobj),
+        "P2RoadOfs:", "    .byte " + ",".join("$%02X" % v for v in droad),
     ]
 
 
@@ -2318,7 +2521,9 @@ def fix_mirror_split(p):
                 ("DLL_TEMPLATE", DLL_TEMPLATE, DLL_ZONES * 3),
                 ("P2_TEMPLATE", P2_TEMPLATE, p2_dl_bytes()),
                 ("P2_HUD_TEMPLATE", P2_HUD_TEMPLATE, 12),
-                ("MINI_TEMPLATE", MINI_TEMPLATE, FINE_ZONES * MINI_DL_SIZE)]
+                ("MINI_TEMPLATE", MINI_TEMPLATE, FINE_ZONES * MINI_DL_SIZE),
+                ("P2_ZROW_NEAR", P2_ZROW_NEAR, ZROW_NEAR),
+                ("P2_ZROW_FAR", P2_ZROW_FAR, ZROW_FAR_N)]
     # the blob must still fit the $FF run it lives in; the templates must stay
     # inside the reclaimed injection
     if HUD_REASSERT_ADDR + _blob_len() - 1 > 0xFF7F:
@@ -2348,6 +2553,9 @@ def fix_mirror_split(p):
           expect=_stock_bytes(DLL_TEMPLATE, DLL_ZONES * 3))
     p.put(P2_TEMPLATE, p2_dl_template(),
           expect=_stock_bytes(P2_TEMPLATE, p2_dl_bytes()))
+    _zn, _zf = p2_zrow_table()
+    p.put(P2_ZROW_NEAR, _zn, expect=_stock_bytes(P2_ZROW_NEAR, len(_zn)))
+    p.put(P2_ZROW_FAR, _zf, expect=_stock_bytes(P2_ZROW_FAR, len(_zf)))
     # Seed of player 2's HUD row: the same two character objects the row it
     # replaces uses, so it draws legibly from the first frame. Rewriting the
     # characters it points at is what makes it player 2's, and is not done yet.

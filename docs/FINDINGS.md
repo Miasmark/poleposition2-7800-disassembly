@@ -4437,3 +4437,36 @@ The *why* behind the copy is still open. Before building on the page theory it
 needs a measurement that identifies an object across bands by something other
 than slot index -- its graphics low byte and width, say, or by instrumenting
 ram_0044/ram_0045 at rom:E751 directly.
+
+## The other player's car, and why it worked where objects did not
+
+Player 1's car now draws in player 2's view, and **run-01 and run-02 grade
+exactly as baseline** -- no stall, no corruption, where every general-object
+attempt broke something.
+
+The reason is that **nothing is copied**. The distance *is* the camera gap,
+exactly, and the lateral is a variable already held, so there are no
+pre-rasterised slices to reproject and none of the band-relative page trouble
+applies. That is what made it the right thing to build first.
+
+* distance -> row -> band via the Z-to-row lookup (416 bytes in the reclaimed
+  injection, since `sub_E3CD` is a search of up to 78 rows);
+* the sprite from a **measured** per-band table -- sampling palette-6 objects
+  across a run gave `$A3 $9D $97 $91 $8B` for bands 7-11 at eight bytes wide and
+  `$91`/`$8B` at two bytes further out, all sharing the lean offsets, which is
+  one car sliced across five bands plus a distant sprite;
+* x is player 2's road at that band plus the lateral difference scaled by the
+  camera's own ramp, reduced to a byte a band as `(3 + 6*band) * 1.775`;
+* lean taken from player 1's own, guarded on its driving sprite.
+
+Verified: at gap 91 it draws in band 8 -- Z is 102 there -- at x 33, page
+`$9D10`, ahead and to the left of player 2's car. At gap 30 it moves to band 10,
+Z 32. At a saturated gap, and at negative gaps, nothing is drawn.
+
+### What this suggests for the general objects
+
+The difference is not the projection, which was already solved. It is the
+**source**: world state reprojected cleanly, where a display list entry carries
+a band-relative page that does not survive being moved. That is the argument for
+reading the 16-slot object arrays rather than player 1's lists -- an object's
+position and type are properties of the object, its page is not.
