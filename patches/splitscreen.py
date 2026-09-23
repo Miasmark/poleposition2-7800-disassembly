@@ -1991,9 +1991,18 @@ def p2_collide_src():
         "    CMP #$%02X" % COLLIDE_Z,
         "    BCS P2NoHit",
         "P2HitX:",
-        # signed lateral difference, kept for the push direction
+        # The two laterals have OPPOSITE signs. Measured by each view's road x
+        # against its own lateral: player 1's road x falls as PlayerX rises
+        # (positive is right of centre), player 2's rises with P2_LATERAL, one
+        # to one (positive is LEFT). So player 2's position on the shared road,
+        # in player 1's terms, is -P2_LATERAL, and every comparison of the two
+        # has to use that. Differencing them directly put cars on opposite
+        # sides of the road at the centre of each other's view.
+        # So the separation is P2_LATERAL + PlayerX, and its sign still says
+        # which way to push: negative means player 2 is on player 1's right,
+        # which in player 2's terms is a smaller P2_LATERAL.
         "    LDA $%04X" % P2_LATERAL,
-        "    SEC", "    SBC $%04X" % PLAYER_X,
+        "    CLC", "    ADC $%04X" % PLAYER_X,
         "    STA $%04X" % GAP_TLO,
         "    BPL P2HitAbs",
         "    EOR #$FF", "    CLC", "    ADC #$01",
@@ -2235,7 +2244,15 @@ def p1_othercar_src():
         "    STA $%04X" % P1_OC_BAND,
         # --- lateral difference, scaled at that band -------------------------
         "    SEC",
-        "    LDA $%04X" % P2_LATERAL, "    SBC $%04X" % PLAYER_X,
+        # The two laterals have OPPOSITE signs. Measured by each view's road x
+        # against its own lateral: player 1's road x falls as PlayerX rises
+        # (positive is right of centre), player 2's rises with P2_LATERAL, one
+        # to one (positive is LEFT). So player 2's position on the shared road,
+        # in player 1's terms, is -P2_LATERAL, and every comparison of the two
+        # has to use that. Differencing them directly put cars on opposite
+        # sides of the road at the centre of each other's view.
+        "    LDA #$00", "    SBC $%04X" % P2_LATERAL,   # -P2, player 1's terms
+        "    SEC", "    SBC $%04X" % PLAYER_X,
         # Saturate the difference. Two signed laterals can be 208 apart --
         # one car in the left grass, the other in the right -- and that does
         # not fit a signed byte, so SBC wraps it and the SIGN FLIPS: a true
@@ -2327,7 +2344,17 @@ def p2_othercar_src():
         "    STA $%04X" % P2_OC_DST,
         # --- lateral difference, and its scale at that band ------------------
         "    SEC",
-        "    LDA $%04X" % PLAYER_X, "    SBC $%04X" % P2_LATERAL,
+        # The two laterals have OPPOSITE signs. Measured by each view's road x
+        # against its own lateral: player 1's road x falls as PlayerX rises
+        # (positive is right of centre), player 2's rises with P2_LATERAL, one
+        # to one (positive is LEFT). So player 2's position on the shared road,
+        # in player 1's terms, is -P2_LATERAL, and every comparison of the two
+        # has to use that. Differencing them directly put cars on opposite
+        # sides of the road at the centre of each other's view.
+        "    LDA #$00", "    SBC $%04X" % P2_LATERAL,   # -P2, player 1's terms
+        "    STA $%04X" % P2_OC_D,
+        "    LDA $%04X" % PLAYER_X,
+        "    SEC", "    SBC $%04X" % P2_OC_D,
         # Saturate the difference. Two signed laterals can be 208 apart --
         # one car in the left grass, the other in the right -- and that does
         # not fit a signed byte, so SBC wraps it and the SIGN FLIPS: a true
@@ -2577,7 +2604,12 @@ def p2_drift_src():
         "    BPL P2DriftAdd",
         "    ORA #$C0",                            # sign-extend the two shifts
         "P2DriftAdd:",
-        "    CLC", "    ADC $%04X" % P2_LATERAL,
+        # Subtracted, not added: the rate is in player 1's terms, and
+        # P2_LATERAL runs the other way (positive is left). Added, it pushed
+        # player 2 INTO curves while player 1 was pushed out of them.
+        "    STA $%04X" % P2_DRIFT_ACC,
+        "    LDA $%04X" % P2_LATERAL,
+        "    SEC", "    SBC $%04X" % P2_DRIFT_ACC,
         # hold it inside the camera's range, as the steering does
         "    BMI P2DrNeg",
         "    CMP #$%02X" % (P2_LIMIT + 1),

@@ -4920,3 +4920,38 @@ Still in the interrupt: the drive, drift, gap and collision. They move next,
 onto player 1's tick and player 1's rules -- player 2 currently applies the
 accel-table step, braking and drag every frame where player 1 applies its
 step once per cycle, which is a real difference in how the two cars respond.
+
+## Correction: the two laterals run in opposite directions
+
+Measured with `tools/probe-lateral-sign.lua`, each view's road x against its
+own lateral, over `test-pp2-2p-0922-2037`:
+
+    player 1   PlayerX  -80..-65 -> road x  60     player 2   P2_LATERAL -48..-33 -> road x -48
+               PlayerX   48.. 63 -> road x -26                P2_LATERAL  96..111 -> road x  97
+
+Player 1's road moves left as `PlayerX` rises, so positive is right of centre
+(as found at checkpoint 54). **Player 2's road moves right as `P2_LATERAL`
+rises, so for player 2 positive is LEFT.** Player 2's steering, lean and camera
+agree with each other, which is why it drives correctly in its own view; the
+trouble was every place the two were combined.
+
+* **Collision** tested `|P2_LATERAL - PlayerX|`, firing when the cars were at
+  mirror-image positions and missing real overlaps away from the centre line.
+  It now tests `|P2_LATERAL + PlayerX|`; the sum's sign still picks the push.
+* **The other car**, in both views, was placed from `P1 - P2` where the real
+  separation is `P1 + P2`, so cars on opposite sides collapsed toward the
+  middle of each other's view. Both passes now difference against `-P2`,
+  still by subtraction so the overflow saturation holds.
+* **Player 2's curve drift** added player 1's rate in player 1's sign, which
+  pushed player 2 into curves; it is now subtracted.
+
+**The earlier checks of the other car were circular.** Checkpoints 53-55
+reported `wrongside=0`, but the probe computed the expected side with the same
+`P1 - P2` the code used, so it could only ever agree. This time the check is
+the screen: `tools/probe-sign-shots.lua` picks frames where the cars are close
+on opposite sides of the road and frames of collision, and screenshots them.
+Every one reads right -- player 2's car left of player 1's when it should be,
+player 1's car at the left edge of player 2's view when it is left of it, and
+a collision with the two cars visibly side by side.
+
+Health unchanged: run-01 and run-02 at baseline, both two-player runs HEALTHY.
