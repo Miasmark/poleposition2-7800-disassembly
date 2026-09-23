@@ -4805,3 +4805,40 @@ demo logic:
 
 A four-track recording that qualifies and reaches the race on each track would
 shrink the list to what is genuinely the demo's.
+
+### Confirmed with a four-track recording: ~120 bytes, and nothing else
+
+`run-03.inp` (retail ROM, 413 s) qualifies on all four tracks and races on
+tracks 0 and 1. Re-running the comparison on retail -- the demo on all four
+tracks against `run-01`, `run-02` and `run-03`, with real play on the
+two-player build added to "used elsewhere" -- takes the demo-only set from
+2,108 bytes to **235**, and every remaining piece is identified:
+
+| range | bytes | what | cut? |
+|---|---|---|---|
+| `$D276-$D298` | 35 | demo launch | yes |
+| `$D2D3-$D2F9` (two pieces) | 31 | demo handler | yes, whole `$D2D3-$D301` |
+| `$C3E8-$C3FC`, `$C41C-$C41F`, `$C445` | 26 | autopilot decision, demo clock store | yes, as `$C3E1-$C3FC` and `$C43F-$C446` |
+| `$D0E0-$D0E6`, `$D10E` | 8 | grid-slot parity in the shared race start | no -- real play with an even grid slot |
+| `$E5B8-$E5BF`, `$C31C`, `$E1CB` | 10 | object offset path, speed clamp, one sound-table byte | no -- shared |
+| pages `$87-$95`, `$A2`, offsets `$59-$5F` | 125 | the **water splash** beside the car on a puddle (caught being drawn at f5375, track 2) | no -- real play hits puddles |
+
+So the earlier estimate stands: **~120 bytes of original ROM in four pieces
+(36, 47, 28, 8), plus 6 in the code blob.** The coverage gap was the whole of
+the difference.
+
+### Qualifying cut-offs are shared by every track -- as the manual says
+
+On tracks 2 and 3 of `run-03` the line appeared not to register. It did: the
+game entered state `$0B` (`QualifyingPosition`, rom:D3F7) and six frames later
+returned to `$02`. The handler compares the lap timer `$BE:$BD:$BC` (BCD)
+against eight thresholds at `$DBA0`/`$DBA8` -- 58.50 for pole, then 60, 62,
+64, 66, 68, 70 and 73.00 for eighth -- **indexed by position only, not by
+track**. A lap that beats none of them does not count, and qualifying runs on
+until its clock expires. `run-03`'s laps: 57.45 (track 0, pole), 68.00
+(track 1, 6th), 79.79 and 82.62 (tracks 2 and 3, over the cut-off). This is
+the manual's rule -- 120 seconds to drive, 73 to qualify -- not a bug.
+
+The game's timer runs about 1.6x real time: track 2's 79.79 took ~49 real
+seconds (2,946 frames), track 0's 57.45 about 36. So 73.00 is roughly 45 real
+seconds a lap, which is what makes the longer tracks hard.
