@@ -5672,3 +5672,39 @@ it does not compare like for like.
   crash leaves the shared car alone, so it drives on ahead.
 - The splash and crash sounds share the TIA's two voices with player 1's, by
   the game's own priorities.
+
+## Each player's crash, seen from the other car
+
+Checkpoint 63. After checkpoint 62 each player saw only their own crash; the
+other car went on looking normal while it spun and stopped.
+
+**How the game draws a crashed rival** (the car player 1 hit): kind 3 through
+the same per-object routines -- the row snapped to its band's base row
+(rom:E443), height `B3FA`, sprite `C0F4`/`C0FA`, palette `ADB6`, all indexed by
+`A7A1[CrashTimer]` (rom:E4B7, E59D, E5E8) -- and hidden once the count is under
+20 (rom:E60F, x = `$A1`). `A7A1[t]` is `A797[t + 10]`: the same six spin frames
+the player's own car uses, over the same part of the crash.
+
+**What was built.** `OcCrash`, called in RivalCars on each other-car entry
+(player 2's car in player 1's view with `P2_CRASH`, player 1's in player 2's with
+`CrashTimer`), gives it that look: spin frames while the count is 20 or more,
+then left out of the list until the crash ends, as the game does. The frames
+are full size -- the game only ever draws them right in front of the player --
+so a car further off (its own sprite under 16 rows tall) keeps its ordinary
+sprite for the whole crash rather than a full-size explosion at the horizon.
+
+Player 2's view also now draws **the car player 1 crashed into** (kind 3),
+through the same routines with player 1's count, hidden under 20 as rom:E60F
+does. It was skipped before.
+
+Checked by screenshot (`tools/probe-collide-shots.lua`, screenshots at set
+delays after every crash): player 1 crashing 245 ahead of player 2 appears in
+player 2's view as the spin frames growing and shrinking, then nothing, then
+player 1's car again; player 2 crashing 644 ahead of player 1 is too far for
+the frames and stays an ordinary small car in player 1's view. Unchanged:
+list integrity (0 zeroed headers, three recordings), the rival-car model
+(103/103, 335/335; 174/174, 130/130, 117/117), health.
+
+Still open: **a car player 2 hits carries on driving.** For player 1 the car it
+hits becomes the crash kind and is moved behind at the end (rom:C9F2, rom:D037),
+but that machinery is keyed to player 1's one `CrashSlot` and `CrashTimer`.

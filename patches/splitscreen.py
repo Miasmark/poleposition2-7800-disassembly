@@ -512,6 +512,7 @@ CL_I = 0x27BB                #   the list index and the slot
 CL_X = 0x27BC
 CL_R = 0x27BD                #   the row, and player 2's lateral in player 1's
 CL_PX = 0x27BE               #   terms (-P2_LATERAL), for rom:C8D0's borrow chain
+OCR_T = 0x27BF               # OcCrash: the other player's crash count
 COLLIDE_PUSH = 4             # each car's sideways shove a tick, in contact
 # the game's object slots and track object data (rom:CF47, rom:C4CB)
 OBJ_TYPE, OBJ_Z_LO, OBJ_Z_HI, OBJ_LATERAL = 0x19B4, 0x19C4, 0x19D4, 0x1A00
@@ -1264,7 +1265,7 @@ def _check_p2_ram():
         ("P2_WORLD", P2_ACTIVE, 4),
         ("CAR_FRAME", CAR_FRAME, 16),
         ("CAR_WORLD", CR_PART, 16),
-        ("P2_HAZARD", P2_CRASH, 10),
+        ("P2_HAZARD", P2_CRASH, 11),
         ("P2_ST", P2_ST_RATE, 2),
         ("P2_TRACK", P2_TRACK_SEG, 3),
         ("P2_SPEED", P2_SPEED, 1),
@@ -2732,6 +2733,43 @@ def p2_hazard_src():
         "P2CtDone:",
         "    RTS",
 
+        # --- the other player's car while that player crashes, in this view:
+        # the game's crashed-rival look (rom:E443 row, rom:E4B7 height,
+        # rom:E59D sprite, rom:E5C7 palette -- A7A1[count] into the same six
+        # spin frames the player's own car uses), then hidden below 20 as
+        # rom:E60F hides a crashed rival. Those frames are full size, drawn by
+        # the game only right in front of the player, so a car further off
+        # (its own sprite under 16 rows) keeps its ordinary sprite instead.
+        # In: A the count, OC_* the entry. Out: carry set to leave it out.
+        "OcCrash:",
+        "    BEQ OcCrNo",
+        "    STA $%04X" % OCR_T,
+        "    LDA $%04X" % OC_ROW,
+        "    SEC", "    SBC $%04X" % OC_BOT,
+        "    CMP #$10",
+        "    BCC OcCrNo",                      # too far off for these frames
+        "    LDX $%04X" % OCR_T,
+        "    CPX #$14",
+        "    BCC OcCrHide",
+        "    LDY $A7A1,X",                     # the frame
+        "    LDX $%04X" % OC_ROW,
+        "    LDA $BB7E,X", "    TAX",
+        "    LDA $9DC3,X", "    STA $%04X" % OC_ROW,   # its band's row, rom:E443
+        "    SEC", "    SBC $B3FA,Y",
+        "    BCS OcCrBot",
+        "    LDA #$00",
+        "OcCrBot:",
+        "    STA $%04X" % OC_BOT,
+        "    LDA $C0FA,Y", "    STA $%04X" % OC_LO,
+        "    LDA $C0F4,Y", "    STA $%04X" % OC_HI,
+        "    LDA $ADB6,Y", "    STA $%04X" % OC_PW,
+        "OcCrNo:",
+        "    CLC",
+        "    RTS",
+        "OcCrHide:",
+        "    SEC",
+        "    RTS",
+
         # --- player 2's crash as player 2 sees it: rom:E364's crash frames for
         # the car (while the count is 20 or more) and rom:E2CA's two pieces of
         # debris, as entries in player 2's list. P2Car parks its own headers.
@@ -2949,6 +2987,11 @@ def rival_car_src(part="main"):
         "    LDA $%04X,X" % ROW_CURVE_OFFSET, "    STA $%04X" % OC_S1,
         "    LDA $%04X,X" % (ROW_CURVE_OFFSET - 1), "    STA $%04X" % OC_S0,
         "    JSR OcSprite",
+        "    LDA $%04X" % P2_CRASH,
+        "    JSR OcCrash",
+        "    BCC RcP1Show",
+        "    JMP RcP1Done",                    # the part of a crash it is hidden
+        "RcP1Show:",
         # Append. The emitter walks the list from the LAST entry down
         # (rom:E729), so the car appended here is the first to take a car
         # slot in every band it spans: it has priority over every rival, which
@@ -2989,6 +3032,11 @@ def rival_car_src(part="main"):
         # player 2 has no per-row road, so the angle's road term is level
         "    LDA #$00", "    STA $%04X" % OC_S0, "    STA $%04X" % OC_S1,
         "    JSR OcSprite",
+        "    LDA $00D4",                       # CrashTimer
+        "    JSR OcCrash",
+        "    BCC RcP2Show",
+        "    JMP RcP2Objs",
+        "RcP2Show:",
         "    LDX $%04X" % P2L_END,
         "    LDA $%04X" % OC_ROW, "    STA $1A94,X",
         "    LDA $%04X" % OC_BOT, "    STA $1AA9,X",
@@ -3020,7 +3068,11 @@ def rival_car_src(part="main"):
         "    LDY $19A4,X", "    STY $0044",
         "    LDA $19B4,Y", "    AND #$07",
         "    CMP #$01", "    BEQ P2ObNext",    # signs: player 2 has its own
-        "    CMP #$03", "    BEQ P2ObNext",    # player 1's crash
+        "    CMP #$03", "    BNE P2ObKind",
+        "    LDA $00D4",                       # player 1's crash: the car it hit,
+        "    CMP #$14",                        #   hidden below 20 as rom:E60F does
+        "    BCC P2ObNext",
+        "P2ObKind:",
         "    LDA $19C4,Y", "    STA $%04X" % P2L_ZL,
         "    CLC", "    ADC $%04X" % GAP_LO, "    STA $19C4,Y",
         "    LDA $19D4,Y", "    STA $%04X" % P2L_ZH,
@@ -3127,9 +3179,6 @@ def rival_car_src(part="main"):
         "    JSR $E3E0",
         "    LDA $0048",
         "    BMI P2O1Out",                     # not in player 2's view
-        "    LDA $004A",
-        "    CMP #$03",                        # crash-state kind: player 1's
-        "    BEQ P2O1Out",
         "    JSR $E475",
         "    LDY $0044",                       # E475 leaves Y on the entry
         "    LDX $1A00,Y",                     # the object's lane coefficient
