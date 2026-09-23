@@ -2105,15 +2105,13 @@ def p1_slot_tables():
     """
     bases = [0x2300, 0x2326, 0x234C, 0x2372, 0x2398, 0x23BE,
              0x2400, 0x2426, 0x244C, 0x246E, 0x2490, 0x24B2, 0x24D4]
-    slot, road = [], []
+    slot = []
     for k, b in enumerate(bases):
         page = 0x2300 if k < 6 else 0x2400
         first = 0x04 if k < 8 else 0x08
         slot.append((b - page) + first)
-        road.append((b - page) + 3)
     return [
         "P1OcSlot:", "    .byte " + ",".join("$%02X" % v for v in slot),
-        "P1OcRoad:", "    .byte " + ",".join("$%02X" % v for v in road),
     ]
 
 
@@ -2178,6 +2176,19 @@ def p1_othercar_src():
         # --- lateral difference, scaled at that band -------------------------
         "    SEC",
         "    LDA $%04X" % P2_LATERAL, "    SBC $%04X" % PLAYER_X,
+        # Saturate the difference. Two signed laterals can be 208 apart --
+        # one car in the left grass, the other in the right -- and that does
+        # not fit a signed byte, so SBC wraps it and the SIGN FLIPS: a true
+        # -136 comes back as +120 and the car draws on the far side of the
+        # road from where it is. Measured on run-02 at f5180, six frames of it.
+        # On overflow the carry says which way the true value went (set means
+        # it went negative), so pin it to -127 or +127 and let the offset
+        # clamp below take it to the edge of the view.
+        "    BVC P1OcFits2",
+        "    LDA #$81",
+        "    BCS P1OcFits2",
+        "    LDA #$7F",
+        "P1OcFits2:",
         "    STA $%04X" % P2_OC_D,
         "    BPL P1OcAbs",
         "    EOR #$FF", "    CLC", "    ADC #$01",
@@ -2205,16 +2216,34 @@ def p1_othercar_src():
         "    ASL A",
         "    LDA $%04X" % P2_OC_MH,
         "    ROL A",
+        # Clamp before the sign goes on. The car is drawn from x 64 and an
+        # 8-bit HPOS cannot say "off the right edge": 64 + 121 is 185, which
+        # MARIA renders as NEGATIVE and draws at the LEFT. A pair of cars far
+        # enough apart therefore drew on the left whichever side they were
+        # really on -- a separate cause from the sign, and the reason a sign
+        # fix alone still left six frames of run-02 on the wrong side.
+        # 90 keeps x within -26..154: the low end lands in $A0..$FF and
+        # renders as the negative it is, the high end stays on screen. Clamped
+        # rather than parked, so a distant car pins to the edge of the view
+        # instead of vanishing out of it.
+        "    CMP #$5B",
+        "    BCC P1OcFits",
+        "    LDA #$5A",
+        "P1OcFits:",
         "    LDX $%04X" % P2_OC_D,
-        # A POSITIVE lateral is a car to the LEFT, while screen x
-        # grows to the right, so the offset has to be applied
-        # against the difference, not with it. Applied with it,
-        # two cars on opposite sides of the road both drew to
-        # the left, one of them off the edge entirely.
-        "    BMI P1OcPos",
+        # The sign, measured rather than assumed this time. Player 1's own
+        # car sits at x 64 in every frame of a run; it is the ROAD that moves,
+        # and the road goes LEFT as the lateral goes POSITIVE (lat 0 -> road
+        # x 12, lat +45 -> road x 234, lat -72 -> road x 64). A road to the
+        # left of a fixed car means the car is to the RIGHT, so a positive
+        # lateral is a car to the RIGHT and the offset runs WITH the
+        # difference. The earlier "positive is left" reading was wrong, and
+        # inverted the other car in both views.
+        "    BPL P1OcPos",
         "    EOR #$FF", "    CLC", "    ADC #$01",
         "P1OcPos:",
-        "    STA $%04X" % P2_OC_D,                # the scaled offset
+        # A carries the offset straight into the write below; it was stored
+        # here and read back twice, which cost nine bytes for nothing.
         # --- write the four header bytes, on whichever page this band is on --
         "    LDX $%04X" % P1_OC_BAND,
         "    CPX #$06",
@@ -2224,8 +2253,7 @@ def p1_othercar_src():
         if tag == "B":
             lines += ["P1OcWriteB:"]
         lines += [
-            "    LDX $%04X" % P1_OC_BAND,
-            "    LDA $%04X" % P2_OC_D,
+            "    LDX $%04X" % P1_OC_BAND,        # leaves A alone
             "    CLC", "    ADC #$%02X" % P2_CAR_X,   # player 1's car is at $40 too
             "    LDY P1OcSlot,X",
             "    STA $%04X,Y" % (page + 3),
@@ -2290,6 +2318,19 @@ def p2_othercar_src():
         # --- lateral difference, and its scale at that band ------------------
         "    SEC",
         "    LDA $%04X" % PLAYER_X, "    SBC $%04X" % P2_LATERAL,
+        # Saturate the difference. Two signed laterals can be 208 apart --
+        # one car in the left grass, the other in the right -- and that does
+        # not fit a signed byte, so SBC wraps it and the SIGN FLIPS: a true
+        # -136 comes back as +120 and the car draws on the far side of the
+        # road from where it is. Measured on run-02 at f5180, six frames of it.
+        # On overflow the carry says which way the true value went (set means
+        # it went negative), so pin it to -127 or +127 and let the offset
+        # clamp below take it to the edge of the view.
+        "    BVC P2OcFits2",
+        "    LDA #$81",
+        "    BCS P2OcFits2",
+        "    LDA #$7F",
+        "P2OcFits2:",
         "    STA $%04X" % P2_OC_D,
         "    BPL P2OcAbs",
         "    EOR #$FF", "    CLC", "    ADC #$01",
@@ -2319,13 +2360,30 @@ def p2_othercar_src():
         "    ASL A",
         "    LDA $%04X" % P2_OC_MH,
         "    ROL A",
+        # Clamp before the sign goes on. The car is drawn from x 64 and an
+        # 8-bit HPOS cannot say "off the right edge": 64 + 121 is 185, which
+        # MARIA renders as NEGATIVE and draws at the LEFT. A pair of cars far
+        # enough apart therefore drew on the left whichever side they were
+        # really on -- a separate cause from the sign, and the reason a sign
+        # fix alone still left six frames of run-02 on the wrong side.
+        # 90 keeps x within -26..154: the low end lands in $A0..$FF and
+        # renders as the negative it is, the high end stays on screen. Clamped
+        # rather than parked, so a distant car pins to the edge of the view
+        # instead of vanishing out of it.
+        "    CMP #$5B",
+        "    BCC P2OcFits",
+        "    LDA #$5A",
+        "P2OcFits:",
         "    LDX $%04X" % P2_OC_D,
-        # A POSITIVE lateral is a car to the LEFT, while screen x
-        # grows to the right, so the offset has to be applied
-        # against the difference, not with it. Applied with it,
-        # two cars on opposite sides of the road both drew to
-        # the left, one of them off the edge entirely.
-        "    BMI P2OcPos",
+        # The sign, measured rather than assumed this time. Player 1's own
+        # car sits at x 64 in every frame of a run; it is the ROAD that moves,
+        # and the road goes LEFT as the lateral goes POSITIVE (lat 0 -> road
+        # x 12, lat +45 -> road x 234, lat -72 -> road x 64). A road to the
+        # left of a fixed car means the car is to the RIGHT, so a positive
+        # lateral is a car to the RIGHT and the offset runs WITH the
+        # difference. The earlier "positive is left" reading was wrong, and
+        # inverted the other car in both views.
+        "    BPL P2OcPos",
         "    EOR #$FF", "    CLC", "    ADC #$01",
         "P2OcPos:",
         # --- x = player 2's road there, plus that offset ---------------------
@@ -2409,10 +2467,8 @@ def p2_slot_tables():
     """Where each band's object slot and road x sit in player 2's lists."""
     lay = p2_band_layout()
     dobj = [(lay[b]["addr"] - P2_DL_BASE) + lay[b]["obj"] for b in range(1, 13)]
-    droad = [(lay[b]["addr"] - P2_DL_BASE) + 3 for b in range(1, 13)]
     return [
         "P2ObjOfs:",  "    .byte " + ",".join("$%02X" % v for v in dobj),
-        "P2RoadOfs:", "    .byte " + ",".join("$%02X" % v for v in droad),
     ]
 
 

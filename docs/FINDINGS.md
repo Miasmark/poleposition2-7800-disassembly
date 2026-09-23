@@ -4555,3 +4555,72 @@ After all three, from the recording with the players on opposite sides:
 
 All four recordings grade clean: run-01 and run-02 at baseline, both two-player
 recordings HEALTHY at 101 clock values.
+
+## Correction: a positive lateral is a car to the RIGHT
+
+The note above saying a positive lateral puts the car to the LEFT is wrong, and
+it inverted the other car in both views. The measurement that settles it:
+player 1's own car sits at x 64 in every frame of a run -- it never moves. It is
+the ROAD that moves, and the road goes LEFT as the lateral goes POSITIVE.
+
+    lat   0 -> road x  12        lat +31 -> road x 246
+    lat -63 -> road x  58        lat +45 -> road x 234
+    lat -72 -> road x  64
+
+A road to the left of a car fixed at centre means the car is to the RIGHT. So a
+positive lateral is a car to the RIGHT, and a screen offset derived from a
+lateral difference runs WITH that difference, not against it.
+
+Worth stating why the earlier reading survived as long as it did: the origin and
+the multiply were both wrong at the same time, and between them they pinned the
+car to one side whatever the sign said. Fixing those two exposed the sign, and
+only then could it be measured.
+
+## Two more ways the other car landed on the wrong side
+
+Neither is the sign, and both outlive a sign fix.
+
+**An 8-bit HPOS cannot say "off the right edge."** The car is drawn from x 64,
+so an offset of 121 gives 185, which MARIA renders as NEGATIVE and draws at the
+LEFT. Both extremes come out on the left. The scaled offset is now clamped to
+90, keeping x within -26..154: the low end lands in $A0..$FF and reads as the
+negative it is, the high end stays on screen. Clamped rather than parked, so a
+distant car pins to the edge of the view instead of vanishing from it.
+
+**The difference itself overflowed.** Two signed laterals can be 208 apart --
+one car in the left grass, the other in the right -- and that does not fit a
+signed byte. `SBC` wrapped it and the sign flipped: a true -136 came back as
++120, and the car drew on the far side of the road from where it actually was.
+Six frames of run-02, from f5180. On signed overflow the carry says which way
+the true value went (set means it went negative), so the difference is pinned to
+-127 or +127 and the clamp takes it to the edge from there.
+
+This one matters more than its six frames suggest: it needs the two cars on
+opposite sides of the road, which is exactly what a real two-player game does
+and what a single-player recording almost never produces.
+
+Both fixes were paid for out of dead weight rather than new space: `P2RoadOfs`
+and `P1OcRoad`, 25 bytes of table holding each band's road-object offset, had
+had no reader since the car was anchored to x 64; and player 1's pass stored the
+finished offset and read it back twice when A already carried it, 9 bytes.
+
+    verified: wrongside=0 and offscreen=0 in both views on all four recordings.
+    run-02's player-1 view went from x 235, which wraps to the left, to x 154,
+    pinned to the right edge.
+    health: all four at 101 clock values, with run-01 at 1047@f1259 and run-02
+    at 394@f5958 -- both exactly baseline.
+
+## RoadTail has less slack than assumed: two JSRs break it
+
+The two other-car passes carry an identical copy of the lateral-to-screen
+multiply. Folding them into one `OcScale` subroutine is obviously right -- it
+frees about 40 bytes and removes the duplication that let the sign be wrong in
+two places at once. It also drops run-01 to 3 distinct clock values, with player
+1's speed pinned at 0 by the collision penalty.
+
+Disabling either pass restores it; inlining both restores it; so the two `JSR`s
+together, about 24 cycles, are enough to break it. That contradicts the earlier
+note that RoadTail "has far more" slack than MirrorStage's two scanlines -- at
+this point in the path it does not. Not merged; the generator is kept in the
+scratchpad as `with-ocscale.py`. Worth revisiting only alongside a real
+measurement of what the path actually costs.
