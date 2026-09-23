@@ -1,6 +1,11 @@
-"""Recompute player 2's walk from each recorded snapshot and compare."""
+"""Recompute player 2's walk from each recorded snapshot and compare.
+
+    python tools/walk-check.py <output of tools/probe-walk-check.lua>
+
+The probe needs W_DONE (P2GDone's address in the build) and W_OUT."""
 import sys
-sys.path.insert(0, r"C:/Users/thuco/Documents/Atari 7800/Pole Position II/patches")
+import os
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "patches"))
 import splitscreen as S
 T = S.p2_walk_tables()
 def walk(seg, lo, hi, tlen, mem):
