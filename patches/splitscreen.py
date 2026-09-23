@@ -441,7 +441,11 @@ P2_OC_DST = 0x271A           # its slot offset in player 2's lists
 P2_OC_D = 0x271B             # lateral difference between the two cars
 P2_OC_ML = 0x271C            # the scaled offset, 16 bit
 P2_OC_MH = 0x271D
-P2_OC_CNT = 0x271E           # multiply loop counter
+P2_OC_CNT = 0x271E           # multiplicand, low byte
+P2_OC_CNTH = 0x271F          # ...and high. It has to be 16 bit: it doubles
+                             # every step, and an 8-bit one overflowed on
+                             # the first shift, so every scaled offset was
+                             # wrong.
 # These were at $271F-$2721, and $2720 is P2_WALK -- the other car's state sat
 # directly on top of the walk's scratch and corrupted it every frame. Moved into
 # the gap between the walk and player 2's track state, avoiding $2730, which is
@@ -1173,7 +1177,7 @@ def _check_p2_ram():
         ("P2_STEP_HI", P2_STEP_HI, 1),
         ("P2_STAGE_TMP", P2_STAGE_TMP, 1),
         ("P2_DRIFT", P2_DRIFT_IDX, 3),
-        ("P2_OC", P2_OC_BAND, 6),
+        ("P2_OC", P2_OC_BAND, 7),
         ("P2_WALK", P2_WALK, 11),
         ("P1_OC", P1_OC_BAND, 3),
         ("P2_TRACK", P2_TRACK_SEG, 3),
@@ -2181,17 +2185,20 @@ def p1_othercar_src():
         "    LDX $%04X" % P1_OC_BAND,
         "    LDY P2OcM,X",
         "    STA $%04X" % P2_OC_CNT,
-        "    LDA #$00", "    STA $%04X" % P2_OC_ML, "    STA $%04X" % P2_OC_MH,
+        "    LDA #$00",
+        "    STA $%04X" % P2_OC_CNTH,
+        "    STA $%04X" % P2_OC_ML, "    STA $%04X" % P2_OC_MH,
         "P1OcMul:",
         "    TYA", "    LSR A", "    TAY",
         "    BCC P1OcNoAdd",
         "    CLC",
         "    LDA $%04X" % P2_OC_ML, "    ADC $%04X" % P2_OC_CNT,
         "    STA $%04X" % P2_OC_ML,
-        "    LDA $%04X" % P2_OC_MH, "    ADC #$00",
+        "    LDA $%04X" % P2_OC_MH, "    ADC $%04X" % P2_OC_CNTH,
         "    STA $%04X" % P2_OC_MH,
         "P1OcNoAdd:",
         "    ASL $%04X" % P2_OC_CNT,
+        "    ROL $%04X" % P2_OC_CNTH,
         "    TYA",
         "    BNE P1OcMul",
         "    LDA $%04X" % P2_OC_ML,
@@ -2199,7 +2206,12 @@ def p1_othercar_src():
         "    LDA $%04X" % P2_OC_MH,
         "    ROL A",
         "    LDX $%04X" % P2_OC_D,
-        "    BPL P1OcPos",
+        # A POSITIVE lateral is a car to the LEFT, while screen x
+        # grows to the right, so the offset has to be applied
+        # against the difference, not with it. Applied with it,
+        # two cars on opposite sides of the road both drew to
+        # the left, one of them off the edge entirely.
+        "    BMI P1OcPos",
         "    EOR #$FF", "    CLC", "    ADC #$01",
         "P1OcPos:",
         "    STA $%04X" % P2_OC_D,                # the scaled offset
@@ -2213,9 +2225,8 @@ def p1_othercar_src():
             lines += ["P1OcWriteB:"]
         lines += [
             "    LDX $%04X" % P1_OC_BAND,
-            "    LDY P1OcRoad,X",
-            "    LDA $%04X,Y" % page,             # player 1's road x there
-            "    CLC", "    ADC $%04X" % P2_OC_D,
+            "    LDA $%04X" % P2_OC_D,
+            "    CLC", "    ADC #$%02X" % P2_CAR_X,   # player 1's car is at $40 too
             "    LDY P1OcSlot,X",
             "    STA $%04X,Y" % (page + 3),
             "    LDA P2OcWid,X",
@@ -2287,17 +2298,20 @@ def p2_othercar_src():
         "    LDY P2OcM,X",
         # (|d| * M) >> 7, shift and add
         "    STA $%04X" % P2_OC_CNT,
-        "    LDA #$00", "    STA $%04X" % P2_OC_ML, "    STA $%04X" % P2_OC_MH,
+        "    LDA #$00",
+        "    STA $%04X" % P2_OC_CNTH,
+        "    STA $%04X" % P2_OC_ML, "    STA $%04X" % P2_OC_MH,
         "P2OcMul:",
         "    TYA", "    LSR A", "    TAY",
         "    BCC P2OcNoAdd",
         "    CLC",
         "    LDA $%04X" % P2_OC_ML, "    ADC $%04X" % P2_OC_CNT,
         "    STA $%04X" % P2_OC_ML,
-        "    LDA $%04X" % P2_OC_MH, "    ADC #$00",
+        "    LDA $%04X" % P2_OC_MH, "    ADC $%04X" % P2_OC_CNTH,
         "    STA $%04X" % P2_OC_MH,
         "P2OcNoAdd:",
         "    ASL $%04X" % P2_OC_CNT,
+        "    ROL $%04X" % P2_OC_CNTH,
         "    TYA",
         "    BNE P2OcMul",
         # >> 7 is << 1 of the high byte plus the top bit of the low
@@ -2306,13 +2320,20 @@ def p2_othercar_src():
         "    LDA $%04X" % P2_OC_MH,
         "    ROL A",
         "    LDX $%04X" % P2_OC_D,
-        "    BPL P2OcPos",
+        # A POSITIVE lateral is a car to the LEFT, while screen x
+        # grows to the right, so the offset has to be applied
+        # against the difference, not with it. Applied with it,
+        # two cars on opposite sides of the road both drew to
+        # the left, one of them off the edge entirely.
+        "    BMI P2OcPos",
         "    EOR #$FF", "    CLC", "    ADC #$01",
         "P2OcPos:",
         # --- x = player 2's road there, plus that offset ---------------------
-        "    LDX $%04X" % P2_OC_BAND,
-        "    LDY P2RoadOfs-1,X",
-        "    CLC", "    ADC $%04X,Y" % P2_DL_BASE,
+        # The road object's x is its LEFT EDGE, so adding the offset to it
+        # pinned the car to the left of the road whatever the lateral was.
+        # Player 2's own car is drawn at x $40, dead centre, so the other car
+        # belongs at $40 plus the scaled difference between them.
+        "    CLC", "    ADC #$%02X" % P2_CAR_X,
         "    LDY $%04X" % P2_OC_DST,
         "    STA $%04X,Y" % (P2_DL_BASE + 3),
         # --- the sprite, across every band the car spans ---------------------

@@ -4528,3 +4528,30 @@ What is odd about it, and worth starting from: in run-01 and run-02 player 2 is
 parked, so the gap is positive and player 1's pass should reject before drawing
 anything at all. Something in that pass costs or corrupts even on the path where
 it draws nothing.
+
+## "Always on the left" was three bugs in one calculation
+
+1. **The origin.** The offset was added to the road object's x, which is the
+   road's **left edge**, so the car sat at the edge whatever the lateral said.
+   Player 2's own car is drawn at x `$40`, dead centre, so the other car belongs
+   at `$40` plus the difference between them.
+2. **The multiply.** The shift-and-add used an **8-bit multiplicand**. It
+   doubles every step, so it overflowed on the first shift and every scaled
+   offset was wrong. Widened to 16 bits.
+3. **The sign.** A positive lateral is a car to the **left**, while screen x
+   grows to the right, so the offset must be applied *against* the difference.
+   Applied with it, two cars on opposite sides of the road both drew to the
+   left, one of them off the edge entirely -- at a difference of -64 the car
+   landed at x 254.
+
+Only the first was visible from the symptom; the other two were found by
+checking the arithmetic against measured values rather than by looking again.
+
+After all three, from the recording with the players on opposite sides:
+
+    difference -64, band 7  ->  x 130    right of centre, correct
+    difference -77, band 5  ->  x  99    further away, so nearer centre
+    x over 665 drawn frames: 98..137, all on screen
+
+All four recordings grade clean: run-01 and run-02 at baseline, both two-player
+recordings HEALTHY at 101 clock values.
