@@ -1,3 +1,9 @@
+-- probe-wreck.lua -- no recording; both players scripted (as
+-- probe-collide-scenario.lua: PHASES, NAVN, P2C, P2P), screenshots at set
+-- delays after every crash (AUTOSNAP) or at set frames (SNAPS), and every race
+-- tick each player's crashed car ("W" lines): slot, type, distance from the
+-- player that hit it, speed, lane, and that player's crash count -- through
+-- the crash and the tick after it ends. The driver's own notes follow.
 -- coltest.lua -- both players scripted: PHASES "len:s1:s2:x1:lat2:hold;..."
 -- (speeds poked every frame; laterals set every frame when hold=1, once at the
 -- phase start when 0). Logs every contact: player 1's CrashStart (rom:C93E)
