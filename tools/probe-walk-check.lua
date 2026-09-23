@@ -11,7 +11,7 @@ TAPS={}
 TAPS[1]=mem:install_read_tap(done,done,"wd",function(o_,d)
   if cpu.state["PC"].value==done and mem:read_u8(0x2756)==0 and n<400 then
     n=n+1
-    o:write(string.format("%d %s %s %02X %s",f,hex(0x2743,3),hex(0x2760,13),mem:read_u8(0x00C1),
+    o:write(string.format("%d %s %s %02X %s",f,hex(0x2750,3),hex(0x2760,13),mem:read_u8(0x00C1),
       hex(0x1800,512))..string.char(10))
   end
   return d end)

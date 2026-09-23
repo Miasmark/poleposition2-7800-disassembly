@@ -494,12 +494,10 @@ ROAD_EDGE = 0x3B             # |lateral| at or past this is off the racing line,
 P2_TRACK_SEG = 0x2750        # player 2 track state; $2730 is NOT free -- see findings
 P2_TRACK_LO = 0x2751
 P2_TRACK_HI = 0x2752
-# The walk runs in the main loop now, and the drive that moves these three
-# bytes still runs in a display interrupt, which can land between two of the
-# walk's reads. The walk works from a copy taken with a re-read check.
-P2_SNAP_SEG = 0x2743
-P2_SNAP_LO = 0x2744
-P2_SNAP_HI = 0x2745
+# Steering temporaries for the main-loop drive. Not P2_SCRATCH: MirrorStage
+# uses that from an interrupt, which can land in the middle of the drive.
+P2_ST_RATE = 0x2743          # steer input plus drift rate, player 1's terms
+P2_ST_ACC = 0x2744           # that rate accumulated per speed threshold
 P2_WALK = 0x2720             # walk scratch: dist, seg, v, p, curvature
 P2_SPEED = 0x2753            # player 2's own speed along the track
 P2_FRAC = 0x2755             # remainder of the /12 advance, always < 12
@@ -540,7 +538,7 @@ P2_PHASE_ACC = 0x270B        # its fractional accumulator
 P2_LEAN = 0x270C             # this frame's lean for player 2, $00..$20
 P2_CAR_OK = 0x270D           # (no longer used; the car reads nothing of player 1's)
 P2_GEAR = 0x270E             # $00 lo, $10 hi -- the same values player 1 uses
-P2_STEER_ACC = 0x270F        # steering authority accumulator, scaled by speed
+P2_STEER_ACC = 0x270F        # steering input, -7/0/+7 in player 1's terms ($DA's twin)
 
 # Player 2's controls now mirror player 1's exactly: the two buttons are gas and
 # brake, the stick shifts gear up and down, and left/right steer.
@@ -1186,7 +1184,7 @@ def _check_p2_ram():
         ("P2_OC", P2_OC_BAND, 7),
         ("P2_WALK", P2_WALK, 11),
         ("P1_OC", P1_OC_BAND, 3),
-        ("P2_SNAP", P2_SNAP_SEG, 3),
+        ("P2_ST", P2_ST_RATE, 2),
         ("P2_TRACK", P2_TRACK_SEG, 3),
         ("P2_SPEED", P2_SPEED, 1),
         ("P2_CAR_DELTA", P2_CAR_DELTA, 1),
@@ -1267,6 +1265,9 @@ def p2_walk_src():
         # walk integrating zero curvature, the steering doing nothing, and the
         # band output sitting at exactly the per-band base values.
         "P2Frame:",
+    ] + p2_phase_src() + [
+        "    RTS",
+        "P2Physics:",
     ] + p2_drive_src() + [
         "    RTS",
     ] + p2_tick_src() + [
@@ -1283,9 +1284,9 @@ def p2_walk_src():
         "    LDA $%04X" % P2_HALF,
         "    BNE P2GNoInit",
         "    CLC",
-        "    LDA #$47", "    ADC $%04X" % P2_SNAP_LO, "    STA $%04X" % W,
-        "    LDA #$00", "    ADC $%04X" % P2_SNAP_HI, "    STA $%04X" % (W + 1),
-        "    LDA $%04X" % P2_SNAP_SEG, "    STA $%04X" % (W + 2),
+        "    LDA #$47", "    ADC $%04X" % P2_TRACK_LO, "    STA $%04X" % W,
+        "    LDA #$00", "    ADC $%04X" % P2_TRACK_HI, "    STA $%04X" % (W + 1),
+        "    LDA $%04X" % P2_TRACK_SEG, "    STA $%04X" % (W + 2),
         "    LDA #$00",
         "    STA $%04X" % (W + 3), "    STA $%04X" % (W + 4),
         "    STA $%04X" % (W + 5), "    STA $%04X" % (W + 6),
@@ -1411,14 +1412,10 @@ def p2_tick_src():
     return [
         "P2Tick:",
         "    JSR $E93D",                       # player 1's own walk, as before
-        # A consistent copy of the track position: the drive can move it
-        # between any two reads, so read, then read again until it holds.
-        "P2Snap:",
-        "    LDA $%04X" % P2_TRACK_SEG, "    STA $%04X" % P2_SNAP_SEG,
-        "    LDA $%04X" % P2_TRACK_LO,  "    STA $%04X" % P2_SNAP_LO,
-        "    LDA $%04X" % P2_TRACK_HI,  "    STA $%04X" % P2_SNAP_HI,
-        "    LDA $%04X" % P2_TRACK_SEG, "    CMP $%04X" % P2_SNAP_SEG, "    BNE P2Snap",
-        "    LDA $%04X" % P2_TRACK_LO,  "    CMP $%04X" % P2_SNAP_LO,  "    BNE P2Snap",
+        # Player 2's drive runs here now too, straight after player 1's has run
+        # this cycle, so nothing moves player 2's track position behind the
+        # walk's back and the snapshot the walk used to need has gone.
+        "    JSR P2Physics",
         # All thirteen samples in one go. P2Geom still works in halves -- its
         # first call initialises and walks 0-6, the second carries on 7-12 --
         # so the pair is kept, and the half flag is reset so the pair can
@@ -1621,149 +1618,15 @@ def p2_camera_src():
     ]
 
 
-def p2_drive_src():
-    """Player 2's car: throttle, steering, and its own distance along the track.
+def p2_phase_src():
+    """The road-stripe scroll, every frame -- visual, as player 1's is.
 
-    Everything here is player 2's own state. Nothing is copied from player 1
-    any more, which is what makes this two cars rather than two views of one.
-    The stick is free -- the game never reads SWCHA's low nibble -- so up and
-    down are throttle and brake, left and right are steering.
-
-    Advancing the position mirrors what the engine does for player 1: add the
-    speed to the distance into the current segment, then carry into the next
-    segment for as long as the distance exceeds that segment's length. The
-    carry is a loop because at speed one frame can cross a short segment
-    entirely.
+    Mirrors sub_E8AC: AF drops by Speed/2 each frame and every time it goes
+    negative it gains 20 and the phase steps on, so the stripes scroll at about
+    Speed/40 steps a frame. Speed itself now changes once per six-frame tick,
+    exactly as player 1's does; the scroll reads it every frame.
     """
     return [
-        # Start a race by watching the game's own state byte rather than by
-        # hooking the race-start routine. A JSR inside StartDriveHud cost
-        # enough time to change how the race ran -- run-02's race ended some
-        # 4000 frames early -- which is the same cycle sensitivity that already
-        # forced the light and banner templates to be matched line for line.
-        # Out here in RoadTail there is headroom, and the trigger is free.
-        "    LDA $%04X" % GAME_STATE,
-        "    CMP $%04X" % P2_PREV_STATE,
-        "    BEQ P2InitSkip",
-        "    STA $%04X" % P2_PREV_STATE,
-        # The banner runs during $10 and $11, with the car already rolling --
-        # measured, player 1 reaches speed 77 in $10 before the qualifying lap
-        # state $02 even begins. Setting up at $02 therefore left both cars
-        # sitting in the centre through the whole banner and snapped them apart
-        # the moment driving started. Set up at the BANNER instead.
-        "    CMP #$10",
-        "    BEQ P2DoInit",
-        "    CMP #$11",
-        "    BEQ P2DoInit",
-        # $03 gets one more visit, because player 1's race grid slot does not
-        # exist yet during its banner: PlayerX reads 44 there, a leftover from
-        # the previous lap, and only becomes the real slot as $03 begins. So the
-        # race re-places player 2 alone then, without disturbing anything else.
-        "    CMP #$%02X" % (0x02 if os.getenv("PP2_PLACE_ON_QUAL") else 0x03),
-        "    BEQ P2DoPlace",
-        "    JMP P2InitSkip",
-        "P2DoInit:",
-        "    JSR P2RaceInit",
-        "    JMP P2InitSkip",
-        "P2DoPlace:",
-        "    JSR P2PlaceMirror",
-        "P2InitSkip:",
-        # --- is the race actually under way? --------------------------------
-        # rom:C2D4 gates player 1 the same way: outside state 1, if both halves
-        # of the race clock are zero the countdown is still running and speed is
-        # bled off rather than driven. Player 2 was free to drive off the line
-        # early because it had no such gate.
-        "    LDA $%04X" % GAME_STATE,
-        "    CMP #$01",
-        "    BEQ P2CanDrive",
-        "    LDA $%04X" % RACE_CLOCK_HI,
-        "    ORA $%04X" % RACE_CLOCK_LO,
-        "    BNE P2CanDrive",
-        "    LDA $%04X" % P2_SPEED,
-        "    SEC", "    SBC #$0F",
-        "    BCS P2CdStore", "    LDA #$00",
-        "P2CdStore:",
-        "    STA $%04X" % P2_SPEED,
-        "    JMP P2DriveDone",
-        "P2CanDrive:",
-        # --- gear: stick up shifts to hi, down to lo ------------------------
-        "    LDA $%04X" % SWCHA,
-        "    AND #$01",
-        "    BNE P2NotUp",
-        "    LDA #$10", "    STA $%04X" % P2_GEAR,
-        "P2NotUp:",
-        "    LDA $%04X" % SWCHA,
-        "    AND #$02",
-        "    BNE P2NotDown",
-        "    LDA #$00", "    STA $%04X" % P2_GEAR,
-        "P2NotDown:",
-        # --- throttle: the gas button, through player 1's own accel table ----
-        # dat_C3C1[(Speed>>4) + Gear] is a SIGNED step, which is what makes the
-        # gears behave: lo gear pulls hard low down and turns negative past its
-        # top speed, hi gear bogs off the line and holds speed up high.
-        "    LDA $%04X" % INPT3,
-        "    BPL P2NoGas",
-        "    LDA $%04X" % P2_SPEED,
-        "    LSR A", "    LSR A", "    LSR A", "    LSR A",
-        "    CLC", "    ADC $%04X" % P2_GEAR,
-        "    TAX",
-        "    LDA $%04X,X" % ACCEL_TABLE,
-        "    BMI P2GasNeg",
-        "    CLC", "    ADC $%04X" % P2_SPEED,
-        "    BCC P2GasStore",
-        "    LDA #$FF",
-        "P2GasStore:",
-        "    STA $%04X" % P2_SPEED,
-        "    JMP P2NoGas",
-        "P2GasNeg:",
-        "    CLC", "    ADC $%04X" % P2_SPEED,
-        "    BCS P2GasStore2",
-        "    LDA #$00",
-        "P2GasStore2:",
-        "    STA $%04X" % P2_SPEED,
-        "P2NoGas:",
-        # --- off the racing line: drag ---------------------------------------
-        # rom:C200 takes |PlayerX|, and at $3B or beyond calls SkidDrag, which
-        # subtracts the top two bits of Speed -- 0 to 3 a frame, so the faster
-        # you are the harder the rumble strip bites. Player 2 pays the same.
-        #
-        # The CLC here is cosmetic. It was added on the belief that the ROM's
-        # SkidDrag depended on whatever carry it was entered with, since it
-        # rotates three times without clearing first. It does not: after three
-        # rotations the entry carry sits in bit 2 and the AND #$03 discards it,
-        # leaving bits 1 and 0 holding the original bits 7 and 6. Checked over
-        # all 256 speeds against both entry carries -- identical every time. The
-        # ROM is already exactly Speed >> 6, and player 1 needs no correction.
-        "    LDA $%04X" % P2_LATERAL,
-        "    BPL P2OffAbs",
-        "    EOR #$FF", "    CLC", "    ADC #$01",
-        "P2OffAbs:",
-        "    CMP #$%02X" % ROAD_EDGE,
-        "    BCC P2OnRoad",
-        "    CLC",
-        "    LDA $%04X" % P2_SPEED,
-        "    ROL A", "    ROL A", "    ROL A",
-        "    AND #$03",
-        "    SEC", "    EOR #$FF",
-        "    ADC $%04X" % P2_SPEED,
-        "    BCS P2DragStore", "    LDA #$00",
-        "P2DragStore:",
-        "    STA $%04X" % P2_SPEED,
-        "P2OnRoad:",
-        # --- brake ----------------------------------------------------------
-        "    LDA $%04X" % INPT2,
-        "    BPL P2NoBrake",
-        "    LDA $%04X" % P2_SPEED,
-        "    SEC", "    SBC #$08",
-        "    BCS P2BrStore", "    LDA #$00",
-        "P2BrStore:",
-        "    STA $%04X" % P2_SPEED,
-        "P2NoBrake:",
-        # --- road-stripe phase, exactly as sub_E8AC advances player 1's -----
-        # AF drops by Speed/2 each frame and every time it goes negative it
-        # gains 20 and the phase steps on, so the stripes scroll at about
-        # Speed/40 steps a frame. Mirrored rather than reinvented so the two
-        # views scroll at the same rate for the same speed.
         "    LDX #$00",
         "    LDA $%04X" % P2_SPEED,
         "    LSR A",
@@ -1785,80 +1648,160 @@ def p2_drive_src():
         "    SBC #$1E",
         "P2PhOk:",
         "    STA $%04X" % P2_PHASE,
-        # --- steering ------------------------------------------------------
-        # A RISING lateral moves the car LEFT, not right. Measured both ways:
-        # holding player 2's stick right moved P2_LATERAL +1.000 a frame and
-        # player 2's road x +1.018 a frame, and a road moving right is a car
-        # moving left. Player 1 works the same way -- forcing PlayerX to +40
-        # and -40 on alternating frames put its road at x 54.6 and 43.6, so
-        # positive PlayerX is also a car to the left.
-        #
-        # The two therefore share a convention, which is what lets the collision
-        # box compare P2_LATERAL against PlayerX directly. So the fix for
-        # player 2's reversed steering belongs here and nowhere else: right
-        # steers toward the negative end, left toward the positive one.
-        # Steering authority scales with speed. The accumulator gains the
-        # speed byte each frame and a step is taken on each carry out, so it is
-        # about one unit a frame at full speed, half that at half speed, and
-        # nothing at all at a standstill -- the car cannot be swung sideways
-        # while stopped, which it could before.
-        "    LDA $%04X" % P2_STEER_ACC,
+    ]
+
+
+def p2_drive_src():
+    """Player 2's car, on player 1's tick and by player 1's rules.
+
+    Player 1's physics runs once per six-frame cycle in the main loop --
+    measured: its speed and track position change only on phase 2 of the $B8
+    counter, its lateral only on phase 3. Player 2's drive ran every frame in a
+    display interrupt with per-frame amounts tuned to match player 1's
+    averages, which matched top speeds but not responses: the accel-table step
+    six times as often, braking -8 a frame against player 1's -10 a tick, no
+    coast-down at all, and steering at a fixed rate of its own.
+
+    This runs from P2Tick, straight after player 1's walk, once per cycle, and
+    applies player 1's own per-tick rules (rom:C2BC SpeedUpdate, rom:C3B2
+    SkidDrag, rom:C4F7 SteerAndLimits, rom:C498 advance):
+
+        gas held      + dat_C3C1[(Speed>>4) + Gear], saturating at 0 and 255
+        gas released  - 5 (to 0 below 10)
+        brake         - 10 (to 0 below 20)
+        off the road  - Speed>>6, at |lateral| >= $3B
+        steering      ((stick +-7 + drift rate) * speed thresholds cleared) / 4
+        advance       Speed>>1 along the track, remainder dropped
+
+    Two deliberate departures. The start gate keeps player 2's own rule --
+    bleed 15, drive nothing -- rather than player 1's clock-zero path, which
+    below speed 30 sets speed to 0 and then subtracts 15 from it. And the
+    stick is player 2's, with P2_LATERAL's sign: positive is LEFT, the
+    opposite of PlayerX, so steering is worked in player 1's terms and
+    converted back.
+    """
+    return [
+        # Start a race by watching the game's own state byte rather than by
+        # hooking the race-start routine: a JSR inside StartDriveHud once cost
+        # enough time to end run-02's race some 4000 frames early. The watch
+        # runs on the tick now, which is when player 1's own physics runs, so
+        # it sees each state as player 1 does.
+        "    LDA $%04X" % GAME_STATE,
+        "    CMP $%04X" % P2_PREV_STATE,
+        "    BEQ P2InitSkip",
+        "    STA $%04X" % P2_PREV_STATE,
+        # The banner runs during $10 and $11 with the car already rolling, so
+        # set up at the banner, not at $02.
+        "    CMP #$10",
+        "    BEQ P2DoInit",
+        "    CMP #$11",
+        "    BEQ P2DoInit",
+        # $03 once more: player 1's race grid slot only exists once $03 begins.
+        "    CMP #$%02X" % (0x02 if os.getenv("PP2_PLACE_ON_QUAL") else 0x03),
+        "    BEQ P2DoPlace",
+        "    JMP P2InitSkip",
+        "P2DoInit:",
+        "    JSR P2RaceInit",
+        "    JMP P2InitSkip",
+        "P2DoPlace:",
+        "    JSR P2PlaceMirror",
+        "P2InitSkip:",
+        # --- is the race actually under way? --------------------------------
+        "    LDA $%04X" % GAME_STATE,
+        "    CMP #$01",
+        "    BEQ P2CanDrive",
+        "    LDA $%04X" % RACE_CLOCK_HI,
+        "    ORA $%04X" % RACE_CLOCK_LO,
+        "    BNE P2CanDrive",
+        "    LDA $%04X" % P2_SPEED,
+        "    SEC", "    SBC #$0F",
+        "    BCS P2CdStore", "    LDA #$00",
+        "P2CdStore:",
+        "    STA $%04X" % P2_SPEED,
+        "    LDA #$00", "    STA $%04X" % P2_QUOT,     # no advance this tick
+        "    JMP P2DriveDone",
+        "P2CanDrive:",
+        # --- gear: stick up shifts to hi, down to lo ------------------------
+        "    LDA $%04X" % SWCHA,
+        "    AND #$01",
+        "    BNE P2NotUp",
+        "    LDA #$10", "    STA $%04X" % P2_GEAR,
+        "P2NotUp:",
+        "    LDA $%04X" % SWCHA,
+        "    AND #$02",
+        "    BNE P2NotDown",
+        "    LDA #$00", "    STA $%04X" % P2_GEAR,
+        "P2NotDown:",
+        # --- off the racing line: SkidDrag, Speed -= Speed>>6 ----------------
+        "    LDA $%04X" % P2_LATERAL,
+        "    BPL P2OffAbs",
+        "    EOR #$FF", "    CLC", "    ADC #$01",
+        "P2OffAbs:",
+        "    CMP #$%02X" % ROAD_EDGE,
+        "    BCC P2OnRoad",
+        "    CLC",
+        "    LDA $%04X" % P2_SPEED,
+        "    ROL A", "    ROL A", "    ROL A",
+        "    AND #$03",
+        "    SEC", "    EOR #$FF",
+        "    ADC $%04X" % P2_SPEED,
+        "    BCS P2DragStore", "    LDA #$00",
+        "P2DragStore:",
+        "    STA $%04X" % P2_SPEED,
+        "P2OnRoad:",
+        # --- gas: the accel table step, or coast down 5 ----------------------
+        "    LDA $%04X" % INPT3,
+        "    BPL P2Coast",
+        "    LDA $%04X" % P2_SPEED,
+        "    LSR A", "    LSR A", "    LSR A", "    LSR A",
+        "    CLC", "    ADC $%04X" % P2_GEAR,
+        "    TAX",
+        "    LDA $%04X,X" % ACCEL_TABLE,
+        "    BMI P2GasNeg",
         "    CLC", "    ADC $%04X" % P2_SPEED,
-        "    STA $%04X" % P2_STEER_ACC,
-        "    BCC P2NoSteer",
-        "    LDA $%04X" % SWCHA,
-        "    AND #$%02X" % P2_RIGHT,
-        "    BNE P2NotRight",
-        "    LDA $%04X" % P2_LATERAL,
-        "    SEC",
-        "    SBC #$01",
-        "    CMP #$%02X" % ((0x100 - P2_LIMIT - 1) & 0xFF),
-        "    BNE P2StoreR",
-        "    LDA #$%02X" % ((0x100 - P2_LIMIT) & 0xFF),
-        "P2StoreR:",
-        "    STA $%04X" % P2_LATERAL,
-        "P2NotRight:",
-        "    LDA $%04X" % SWCHA,
-        "    AND #$%02X" % P2_LEFT,
-        "    BNE P2NotLeft",
-        "    LDA $%04X" % P2_LATERAL,
+        "    BCC P2GasStore",
+        "    LDA #$FF",
+        "    BNE P2GasStore",
+        "P2GasNeg:",
+        "    CLC", "    ADC $%04X" % P2_SPEED,
+        "    BCS P2GasStore",
+        "    LDA #$00",
+        "    BEQ P2GasStore",
+        # rom:C340: released, lose 5 -- or stop, once below 10
+        "P2Coast:",
+        "    LDA $%04X" % P2_SPEED,
+        "    LSR A", "    CMP #$05",
+        "    BCS P2CoastSub",
+        "    LDA #$00",
+        "    BEQ P2GasStore",
+        "P2CoastSub:",
+        "    LDA $%04X" % P2_SPEED,
+        "    SEC", "    SBC #$05",
+        "P2GasStore:",
+        "    STA $%04X" % P2_SPEED,
+        # --- brake: rom:C352, lose 10 -- or stop, once below 20 ---------------
+        "    LDA $%04X" % INPT2,
+        "    BPL P2NoBrake",
+        "    LDA $%04X" % P2_SPEED,
+        "    LSR A", "    CMP #$0A",
+        "    BCS P2BrSub",
+        "    LDA #$00",
+        "    BEQ P2BrStore",
+        "P2BrSub:",
+        "    LDA $%04X" % P2_SPEED,
+        "    SEC", "    SBC #$0A",
+        "P2BrStore:",
+        "    STA $%04X" % P2_SPEED,
+        "P2NoBrake:",
+        # --- advance: rom:C498, Speed>>1 along the track ---------------------
+        # Player 1 counts its distance down and drops the low bit; player 2
+        # counts up, so the sum is the same and the segment carry below is
+        # unchanged. P2_QUOT carries the step to the gap.
+        "    LDA $%04X" % P2_SPEED,
+        "    LSR A",
+        "    STA $%04X" % P2_QUOT,
         "    CLC",
-        "    ADC #$01",
-        "    CMP #$%02X" % (P2_LIMIT + 1),
-        "    BNE P2StoreL",
-        "    LDA #$%02X" % P2_LIMIT,
-        "P2StoreL:",
-        "    STA $%04X" % P2_LATERAL,
-        "P2NotLeft:",
-        "P2NoSteer:",
-    ] + p2_drift_src() + [
-        # --- advance along the track ---------------------------------------
-        # Player 1 advances by Speed/12 per frame, measured: Speed 16 -> 1.33
-        # units, 106 -> 8.83, 198 -> 16.50, 210 -> 17.50. Player 2 was adding
-        # its speed raw, which at its old $C0 cap was 192 units a frame against
-        # player 1's 21.25 at full tilt -- about nine times too fast.
-        #
-        # So divide by 12, carrying the remainder between frames rather than
-        # throwing it away, which would lose up to 11/12 of a unit each frame.
-        # Repeated subtraction is exact and small; the count is bounded because
-        # the remainder is always left below 12, so the worst case is 21 passes
-        # and a carry out of the add is handled by pre-subtracting 192.
-        "    LDA #$00", "    STA $%04X" % P2_QUOT,
-        "    LDA $%04X" % P2_FRAC, "    CLC", "    ADC $%04X" % P2_SPEED,
-        "    BCC P2DivLoop",
-        "    ADC #$3F",                       # carry set, so +$40 = value - 192
-        "    LDY #$10", "    STY $%04X" % P2_QUOT,
-        "P2DivLoop:",
-        "    CMP #$0C",
-        "    BCC P2DivDone",
-        "    SBC #$0C",                       # CMP left carry set
-        "    INC $%04X" % P2_QUOT,
-        "    BCS P2DivLoop",                  # SBC cannot borrow here
-        "P2DivDone:",
-        "    STA $%04X" % P2_FRAC,
-        "    CLC",
-        "    LDA $%04X" % P2_TRACK_LO, "    ADC $%04X" % P2_QUOT,
-        "    STA $%04X" % P2_TRACK_LO,
+        "    ADC $%04X" % P2_TRACK_LO, "    STA $%04X" % P2_TRACK_LO,
         "    LDA $%04X" % P2_TRACK_HI, "    ADC #$00",
         "    STA $%04X" % P2_TRACK_HI,
         "P2Carry:",
@@ -1878,6 +1821,85 @@ def p2_drive_src():
         "    STY $%04X" % P2_TRACK_SEG,
         "    JMP P2Carry",
         "P2Rolled:",
+    ] + p2_drift_src() + [
+        # --- steering: rom:C4F7 SteerAndLimits -------------------------------
+        # Nothing moves a parked car, as for player 1 (rom:C506).
+        "    LDA $%04X" % P2_SPEED,
+        "    BNE P2Steer",
+        "    JMP P2DriveDone",
+        "P2Steer:",
+        # The stick, as rom:C447 reads player 1's: toward -7 for left, +7 for
+        # right, one step of 7 a tick, and straight back to 0 with the stick
+        # centred. Left wins if both, as it does there.
+        "    LDA $%04X" % SWCHA,
+        "    AND #$%02X" % P2_LEFT,
+        "    BNE P2StNotL",
+        "    LDA $%04X" % P2_STEER_ACC,
+        "    CMP #$F9", "    BEQ P2StHave",
+        "    SEC", "    SBC #$07",
+        "    JMP P2StSet",
+        "P2StNotL:",
+        "    LDA $%04X" % SWCHA,
+        "    AND #$%02X" % P2_RIGHT,
+        "    BNE P2StNone",
+        "    LDA $%04X" % P2_STEER_ACC,
+        "    CMP #$07", "    BEQ P2StHave",
+        "    CLC", "    ADC #$07",
+        "    JMP P2StSet",
+        "P2StNone:",
+        "    LDA #$00",
+        "P2StSet:",
+        "    STA $%04X" % P2_STEER_ACC,
+        "P2StHave:",
+        # (stick + drift) accumulated once per speed threshold cleared, then
+        # divided by four with the sign carried -- rom:C508-C530 exactly
+        "    LDA $%04X" % P2_STEER_ACC,
+        "    CLC", "    ADC $%04X" % P2_DRIFT_RATE,
+        "    STA $%04X" % P2_ST_RATE,
+        "    LDA #$00", "    STA $%04X" % P2_ST_ACC,
+        "    LDY #$07",
+        "P2StLoop:",
+        "    LDA $%04X" % P2_SPEED,
+        "    CMP $%04X,Y" % SPEED_STEPS,
+        "    BCC P2StDone",
+        "    LDA $%04X" % P2_ST_ACC,
+        "    CLC", "    ADC $%04X" % P2_ST_RATE,
+        "    STA $%04X" % P2_ST_ACC,
+        "    DEY",
+        "    BPL P2StLoop",
+        "P2StDone:",
+        "    LSR $%04X" % P2_ST_ACC,
+        "    LSR $%04X" % P2_ST_ACC,
+        "    LDA $%04X" % P2_ST_ACC,
+        "    LDX $%04X" % P2_ST_RATE,
+        "    BPL P2StPos",
+        "    ORA #$C0",
+        "P2StPos:",
+        "    STA $%04X" % P2_ST_ACC,               # this tick's step
+        # Apply it in player 1's terms, where positive is right: that is
+        # -P2_LATERAL. Pin at +-104 as rom:C537 does, and on a signed overflow
+        # pin to the side the step was heading.
+        "    LDA #$00", "    SEC", "    SBC $%04X" % P2_LATERAL,
+        "    CLC", "    ADC $%04X" % P2_ST_ACC,
+        "    BVS P2StOver",
+        "    BMI P2StNeg",
+        "    CMP #$%02X" % (P2_LIMIT + 1),
+        "    BCC P2StStore",
+        "    LDA #$%02X" % P2_LIMIT,
+        "    BNE P2StStore",
+        "P2StNeg:",
+        "    CMP #$%02X" % ((0x100 - P2_LIMIT) & 0xFF),
+        "    BCS P2StStore",
+        "    LDA #$%02X" % ((0x100 - P2_LIMIT) & 0xFF),
+        "    BNE P2StStore",
+        "P2StOver:",
+        "    LDA #$%02X" % P2_LIMIT,
+        "    LDX $%04X" % P2_ST_ACC,
+        "    BPL P2StStore",
+        "    LDA #$%02X" % ((0x100 - P2_LIMIT) & 0xFF),
+        "P2StStore:",
+        "    EOR #$FF", "    CLC", "    ADC #$01",   # back to player 2's terms
+        "    STA $%04X" % P2_LATERAL,
         "P2DriveDone:",
     ] + p2_gap_src()
 
@@ -2010,15 +2032,19 @@ def p2_collide_src():
         "    CMP #$%02X" % COLLIDE_X,
         "    BCS P2NoHit",
         # --- touching: push player 2 clear, respecting the camera's limits ---
+        # Six units a tick: the push was one a frame when this ran every
+        # frame, and the drive now runs once per six-frame tick.
         "    LDA $%04X" % GAP_TLO,
         "    BMI P2PushLeft",
-        "    LDA $%04X" % P2_LATERAL, "    CLC", "    ADC #$01",
-        "    CMP #$%02X" % (P2_LIMIT + 1), "    BNE P2PushStore",
+        "    LDA $%04X" % P2_LATERAL, "    CLC", "    ADC #$06",
+        "    BMI P2PushStore",
+        "    CMP #$%02X" % (P2_LIMIT + 1), "    BCC P2PushStore",
         "    LDA #$%02X" % P2_LIMIT,
         "    JMP P2PushStore",
         "P2PushLeft:",
-        "    LDA $%04X" % P2_LATERAL, "    SEC", "    SBC #$01",
-        "    CMP #$%02X" % ((0x100 - P2_LIMIT - 1) & 0xFF), "    BNE P2PushStore",
+        "    LDA $%04X" % P2_LATERAL, "    SEC", "    SBC #$06",
+        "    BPL P2PushStore",
+        "    CMP #$%02X" % ((0x100 - P2_LIMIT) & 0xFF), "    BCS P2PushStore",
         "    LDA #$%02X" % ((0x100 - P2_LIMIT) & 0xFF),
         "P2PushStore:",
         "    STA $%04X" % P2_LATERAL,
@@ -2564,6 +2590,7 @@ def p2_drift_src():
     1's own LateralVel comes from.
     """
     return [
+        "    LDA #$00", "    STA $%04X" % P2_DRIFT_RATE,
         "    LDA $%04X" % P2_SPEED,
         "    BEQ P2NoDrift",                       # nothing pushes a parked car
         "    LDX $%04X" % P2_TRACK_SEG,
@@ -2583,45 +2610,9 @@ def p2_drift_src():
         "    EOR #$FF", "    CLC", "    ADC #$01",
         "P2DriftPos:",
         "    STA $%04X" % P2_DRIFT_RATE,
-        # accumulate once for each speed threshold passed, then divide by four
-        "    LDA #$00",
-        "    STA $%04X" % P2_DRIFT_ACC,
-        "    LDY #$07",
-        "P2DriftLoop:",
-        "    LDA $%04X" % P2_SPEED,
-        "    CMP $%04X,Y" % SPEED_STEPS,
-        "    BCC P2DriftDone",
-        "    LDA $%04X" % P2_DRIFT_ACC,
-        "    CLC", "    ADC $%04X" % P2_DRIFT_RATE,
-        "    STA $%04X" % P2_DRIFT_ACC,
-        "    DEY",
-        "    BPL P2DriftLoop",
-        "P2DriftDone:",
-        "    LSR $%04X" % P2_DRIFT_ACC,
-        "    LSR $%04X" % P2_DRIFT_ACC,
-        "    LDA $%04X" % P2_DRIFT_ACC,
-        "    LDX $%04X" % P2_DRIFT_RATE,
-        "    BPL P2DriftAdd",
-        "    ORA #$C0",                            # sign-extend the two shifts
-        "P2DriftAdd:",
-        # Subtracted, not added: the rate is in player 1's terms, and
-        # P2_LATERAL runs the other way (positive is left). Added, it pushed
-        # player 2 INTO curves while player 1 was pushed out of them.
-        "    STA $%04X" % P2_DRIFT_ACC,
-        "    LDA $%04X" % P2_LATERAL,
-        "    SEC", "    SBC $%04X" % P2_DRIFT_ACC,
-        # hold it inside the camera's range, as the steering does
-        "    BMI P2DrNeg",
-        "    CMP #$%02X" % (P2_LIMIT + 1),
-        "    BCC P2DrStore",
-        "    LDA #$%02X" % P2_LIMIT,
-        "    JMP P2DrStore",
-        "P2DrNeg:",
-        "    CMP #$%02X" % ((0x100 - P2_LIMIT) & 0xFF),
-        "    BCS P2DrStore",
-        "    LDA #$%02X" % ((0x100 - P2_LIMIT) & 0xFF),
-        "P2DrStore:",
-        "    STA $%04X" % P2_LATERAL,
+        # That is all: player 1 folds this rate into the steering multiply
+        # (rom:C508, D0 + DA), and so does player 2's drive now, which is what
+        # makes the push scale with the same speed thresholds as the stick.
         "P2NoDrift:",
     ]
 

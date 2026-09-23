@@ -4955,3 +4955,59 @@ player 1's car at the left edge of player 2's view when it is left of it, and
 a collision with the two cars visibly side by side.
 
 Health unchanged: run-01 and run-02 at baseline, both two-player runs HEALTHY.
+
+## Player 2's drive runs on player 1's tick, by player 1's rules
+
+Checkpoint 57, stage B. Player 1's per-tick physics, read from the ROM:
+
+| | per tick | where |
+|---|---|---|
+| gas held | + `dat_C3C1[(Speed>>4)+Gear]`, saturating at 0 and 255 | rom:C2F6 |
+| gas released | -5, to 0 below 10 | rom:C340 |
+| brake | -10, to 0 below 20 | rom:C352 |
+| off the road | -Speed>>6 at \|x\| >= `$3B` | rom:C20D, `SkidDrag` |
+| steering | ((stick +-7 + drift rate) x speed thresholds cleared) / 4 | rom:C4F7 |
+| advance | Speed>>1, low bit dropped | rom:C498 |
+
+`$DA` is the stick term, -7/0/+7, stepping 7 a tick toward the held side and
+straight back to 0 when centred; its only writers are the stick routine and two
+race-start clears. Earlier notes here called it `RoadCurve` and `LatVel`; it is
+neither. The eight speed thresholds at `dat_B4F8` are 128 112 96 80 60 40 15 1.
+
+The earlier "every way the car loses speed" table gave these amounts per frame.
+They are per tick -- once per six frames -- which is also why the old per-frame
+player 2 could match player 1's top speed and advance and still handle
+differently: it applied the accel step six times as often, braked about five
+times as hard, never coasted down, and steered at a fixed 1 unit a frame
+against player 1's 14 a tick at full speed.
+
+Player 2's drive now runs from `P2Tick`, straight after player 1's walk, and
+applies these rules to its own state. Two departures, both deliberate: the
+start gate keeps player 2's bleed-and-hold rather than player 1's clock-zero
+path (which below speed 30 zeroes speed and then subtracts 15, giving 241);
+and the collision push is 6 a tick where it was 1 a frame. `P2Frame` in
+`RoadTail` keeps only the stripe scroll, which is per-frame for player 1 too.
+
+### Verified by driving both cars identically
+
+`tools/probe-drive-script.lua` drives both players from a script -- no
+recording, both given the same inputs -- and `tools/physics-rules-compare.py`
+compares the two cars' per-tick rules key by key: speed change keyed by
+(speed, gear, pedal), lateral change keyed by (speed, stick), only on cycles
+where the inputs held, both cars were on tarmac on a straight, and the race
+clock ran. Collision off for the comparison, so neither car shoves the other.
+
+    checkpoint 56 (per-frame player 2)   1 of 30 speed keys agree
+    checkpoint 57                        23 of 23 speed keys, 23 of 23 steering keys
+
+The unfiltered first pass also showed the drift now matches: both cars carried
+to -72 on the same curve, where the old player 2 went to +136.
+
+Also: walk 1,197/1,197 exact; health at baseline; player 2's work inside
+`RoadTail` 1.0 scanline a frame (63.7 before stage A); interrupt-side spare in
+the worst 10% of frames 4,632 cycles (774 before).
+
+Not yet ported: player 1's cornering skid (`SkidCheck`, rom:C269), its crash,
+and its sign collisions. Existing two-player recordings desync on this build
+-- their player-2 inputs were made for the old steering -- so it needs driving
+live.
