@@ -10,6 +10,10 @@ depends on x, which is player 2's own. Then the other way round: each of
 player 1's entries player 2 lacks has to be one player 2 cannot have.
 
     python tools/p2-objects-gap0-check.py LOG [LOG...]
+
+Since checkpoint 61 player 2's signs are its own (computed from its own object
+segment), so they match player 1's here only while the real gap is small; the
+check stands for cars. tools/world-check.py checks the signs.
 """
 import collections
 import os

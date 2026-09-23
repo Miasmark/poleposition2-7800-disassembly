@@ -482,6 +482,35 @@ FZ_HI = 0x278F
 P2L_KIND = 0x2790            # an object's kind ($4A), kept across P2X: OcMul
                              #   uses $4A/$4B as its product. The retail game
                              #   never writes $2700-$27FF after boot (run-03).
+P2_ACTIVE = 0x2791           # nonzero once player 2 has moved this session
+P2_OA0 = 0x2792              # player 2's object segment: distance to its end
+P2_OA2 = 0x2794              #   (2 bytes, as $A0/$A1) and its index (as $A2)
+CAR_FRAME = 0x2795           # per slot, this recycle pass: 1 = player 2's frame
+CR_PART = 0x27A5             # player 2 takes part in the traffic this pass
+CR_I = 0x27A6                # CarRetire's list index
+CR_TL = 0x27A7               # a distance under test
+CR_TH = 0x27A8
+CR_N1 = 0x27A9               # needed by player 1 / player 2
+CR_N2 = 0x27AA
+CR_C1 = 0x27AB               # cars needed by player 1 / player 2
+CR_C2 = 0x27AC
+CP_H = 0x27AD                # the stock placement's high byte
+CP_Y = 0x27AE
+CP_ZL = 0x27AF               # the placement, player 1's frame
+CP_ZH = 0x27B0
+P2S_K = 0x27B1               # player 2's signs: countdown,
+P2S_ZL = 0x27B2              #   distance,
+P2S_ZH = 0x27B3
+P2S_SEG = 0x27B4             #   and object segment
+# the game's object slots and track object data (rom:CF47, rom:C4CB)
+OBJ_TYPE, OBJ_Z_LO, OBJ_Z_HI, OBJ_LATERAL = 0x19B4, 0x19C4, 0x19D4, 0x1A00
+OBJ_SEG_DESC, OBJ_SEG_LEN_LO, OBJ_SEG_LEN_HI = 0x18B4, 0x18D7, 0x195A
+OBJ_TRACK_LEN = 0x00C2
+CAR_REACH = 0x2400           # a car further ahead than this is nobody's yet;
+                             #   beyond the farthest stock placement (6912)
+                             #   plus the push past a horizon
+CAR_HORIZON = 1600           # just past the horizon (1300): where a car that
+                             #   would pop into a view is put instead
 OC_TABLES = 0xEED0           # in the reclaimed injection, where the old
 OC_COEF = OC_TABLES          #   Z-to-row tables were: 128 bytes of coefficient
 OC_BASE = OC_TABLES + 128    #   and 13 of player 2's per-band walk base
@@ -925,7 +954,7 @@ def hud_reassert_src(addr):
         [] if os.getenv("PP2_KEEP_INJECTION") else road_stage_src()
     ) + p2_stage_src() + p2_car_src() + [
         "    RTS",
-    ] + p2_stage_tables() + p2_slot_tables() + ["P2Emit = $%04X" % _ext()[1]["P2Emit"], "P2BuildLists = $%04X" % _rival_helpers()[1]["P2BuildLists"]] + [
+    ] + p2_stage_tables() + p2_slot_tables() + ["P2Emit = $%04X" % _ext()[1]["P2Emit"], "P2ObjSeg = $%04X" % _ext()[1]["P2ObjSeg"], "P2ObjInit = $%04X" % _ext()[1]["P2ObjInit"], "P2BuildLists = $%04X" % _rival_helpers()[1]["P2BuildLists"]] + [
 
         "WrapSlot0:",
         "    CMP #$A0",
@@ -1221,6 +1250,9 @@ def _check_p2_ram():
         ("OC3", OC_LO, 10),
         ("P2SLOTS", P2_SLOTCNT, 20),
         ("P2L_KIND", P2L_KIND, 1),
+        ("P2_WORLD", P2_ACTIVE, 4),
+        ("CAR_FRAME", CAR_FRAME, 16),
+        ("CAR_WORLD", CR_PART, 16),
         ("P2_ST", P2_ST_RATE, 2),
         ("P2_TRACK", P2_TRACK_SEG, 3),
         ("P2_SPEED", P2_SPEED, 1),
@@ -1836,6 +1868,7 @@ def p2_drive_src():
         "    ADC $%04X" % P2_TRACK_LO, "    STA $%04X" % P2_TRACK_LO,
         "    LDA $%04X" % P2_TRACK_HI, "    ADC #$00",
         "    STA $%04X" % P2_TRACK_HI,
+        "    JSR P2ObjSeg",                    # and its object segment
         "P2Carry:",
         "    LDY $%04X" % P2_TRACK_SEG,
         "    SEC",
@@ -2157,7 +2190,7 @@ def p2_race_init_src():
         "    STY $%04X" % GAP_PSEG,
         "    LDA $%04X" % P1_POS_LO, "    STA $%04X" % GAP_PLO,
         "    LDA $%04X" % P1_POS_HI, "    STA $%04X" % GAP_PHI,
-        "    RTS",
+        "    JMP P2ObjInit",                   # and its object segment
     ]
 
 
@@ -2173,6 +2206,277 @@ def p2_follow_src():
         "    LDA $00CF", "    STA $%04X" % P2_TRACK_SEG,
         "    LDA $00D5", "    STA $%04X" % P2_TRACK_LO,
         "    LDA $00D6", "    STA $%04X" % P2_TRACK_HI,
+    ]
+
+
+def car_world_src():
+    """One field of traffic for two players, and player 2's own signs' counter.
+
+    The game keeps every object's distance from player 1 and, in its recycle
+    pass (rom:CAA0), retires a car once it is 120 behind player 1 and re-places
+    it far ahead of player 1 (rom:CB1B). With two players that is wrong both
+    ways: a car player 1 has passed vanishes in front of player 2, and a car
+    re-placed ahead of player 1 can land inside player 2's view.
+
+    CarRetire wraps that pass. A car is *needed* by a player while it is no
+    more than 120 behind them and no more than CAR_REACH ahead. For the pass,
+    each car's distance is taken in the frame of the player who needs it --
+    both: whichever has further to go to reach it, so it lasts until the
+    trailing player has passed it; neither: the frame it is furthest behind
+    in, and if that is more than 120 behind it is retired now. The game's own
+    code then does the retiring and re-placing, and the distances go back to
+    player 1's frame after. CpFix puts a re-placed car ahead of whichever
+    player has fewer cars coming (the leader on a tie), pushed past the other
+    player's horizon if it would otherwise appear inside their view.
+
+    Until player 2 has moved (P2_ACTIVE), or while the gap is pinned at its
+    +-$4000 limit, every car stays in player 1's frame: the stock game.
+    """
+    R = CAR_REACH
+    return [
+        # rom:C9AD, the object tick, as the race tick calls it (rom:D70D) --
+        # the same calls with the recycle pass wrapped. Only the race tick:
+        # the setup and attract paths keep the stock routine untouched, since
+        # even a few cycles there moved a state change by a frame.
+        "CarTick:",
+        "    JSR $C498", "    JSR $C9D1", "    JSR $C9F0", "    JSR $CBBF",
+        "    JSR CarRetire",
+        "    JSR $CB50", "    JSR $CC77", "    JSR $CB50", "    JSR $CE58",
+        "    JSR $CB50", "    JSR $CDD6",
+        "    JMP $CC23",
+        "CarRetire:",
+        "    LDA #$00",
+        "    STA $%04X" % CR_PART,
+        "    LDA $%04X" % P2_ACTIVE,
+        "    BEQ CrStock",
+        "    LDA $%04X" % GAP_HI,
+        "    CMP #$40", "    BEQ CrStock",
+        "    CMP #$C0", "    BNE CrGo",
+        "CrStock:",
+        "    JMP $CAA0",                       # player 1's frame throughout
+        "CrGo:",
+        "    INC $%04X" % CR_PART,
+        "    LDA #$00",
+        "    STA $%04X" % CR_C1, "    STA $%04X" % CR_C2,
+        "    LDY $00AE",
+        "    BMI CrPass",
+        "CrLoop:",
+        "    LDX $19A4,Y",
+        "    LDA #$00", "    STA $%04X,X" % CAR_FRAME,
+        "    STY $%04X" % CR_I,
+        "    JSR CrCar",
+        "    LDY $%04X" % CR_I,
+        "CrNext:",
+        "    DEY",
+        "    BPL CrLoop",
+        "CrPass:",
+        "    JSR $CAA0",
+        # a car retired here (bit 7) and not deleted was re-placed ahead of
+        # player 1 by the stock rule: choose whose it is instead (CpFix)
+        "    LDY $00AE",
+        "    BMI CrDone",
+        "CrFx:",
+        "    LDX $19A4,Y",
+        "    LDA $%04X,X" % CAR_FRAME,
+        "    BPL CrFxN",
+        "    AND #$01", "    STA $%04X,X" % CAR_FRAME,
+        "    LDA $19B4,X",
+        "    CMP #$FF",
+        "    BEQ CrFxN",
+        "    LDA $19D4,X",
+        "    JSR CpFix",
+        "CrFxN:",
+        "    DEY",
+        "    BPL CrFx",
+        # back to player 1's frame
+        "    LDY $00AE",
+        "    BMI CrDone",
+        "CrUn:",
+        "    LDX $19A4,Y",
+        "    LDA $%04X,X" % CAR_FRAME,
+        "    BEQ CrUnN",
+        "    SEC",
+        "    LDA $19C4,X", "    SBC $%04X" % GAP_LO, "    STA $19C4,X",
+        "    LDA $19D4,X", "    SBC $%04X" % GAP_HI, "    STA $19D4,X",
+        "CrUnN:",
+        "    DEY",
+        "    BPL CrUn",
+        "CrDone:",
+        "    RTS",
+
+        # one slot X: count who needs it, choose its frame, retire it if it is
+        # past its last user
+        "CrRet:",
+        "    RTS",
+        "CrCar:",
+        "    LDA $19B4,X", "    AND #$07",
+        "    BNE CrRet",                       # cars only
+        "    CPX $00D3",
+        "    BEQ CrRet",                       # the car player 1 hit: its own
+        "    LDA $19C4,X", "    STA $%04X" % CR_TL,
+        "    LDA $19D4,X", "    STA $%04X" % CR_TH,
+        "    JSR CrNeed",
+        "    LDA #$00", "    ROL A", "    STA $%04X" % CR_N1,
+        "    CLC",
+        "    LDA $19C4,X", "    ADC $%04X" % GAP_LO, "    STA $%04X" % CR_TL,
+        "    LDA $19D4,X", "    ADC $%04X" % GAP_HI, "    STA $%04X" % CR_TH,
+        "    JSR CrNeed",
+        "    LDA #$00", "    ROL A", "    STA $%04X" % CR_N2,
+        "    CLC", "    ADC $%04X" % CR_C2, "    STA $%04X" % CR_C2,
+        "    LDA $%04X" % CR_N1,
+        "    CLC", "    ADC $%04X" % CR_C1, "    STA $%04X" % CR_C1,
+        "    LDA $%04X" % CR_N1,
+        "    AND $%04X" % CR_N2,
+        "    BEQ CrOne",
+        # needed by both: the frame with the larger distance, player 2's when
+        # the gap is positive (player 1 ahead)
+        "    LDA $%04X" % GAP_HI,
+        "    BMI CrKeep",
+        "    ORA $%04X" % GAP_LO,
+        "    BEQ CrKeep",
+        "    JMP CrF2",
+        "CrOne:",
+        "    LDA $%04X" % CR_N1, "    BNE CrKeep",
+        "    LDA $%04X" % CR_N2, "    BNE CrF2",
+        # needed by neither: the frame it is furthest behind in
+        "    LDA $%04X" % GAP_HI,
+        "    BMI CrMin2",
+        "    CLC",
+        "    LDA $19C4,X", "    ADC #$78",
+        "    LDA $19D4,X", "    ADC #$00",
+        "    BPL CrKeep",                      # ahead of both, far: keep
+        "    JMP CrForce",
+        "CrMin2:",
+        "    CLC",
+        "    LDA $%04X" % CR_TL, "    ADC #$78",
+        "    LDA $%04X" % CR_TH, "    ADC #$00",
+        "    BPL CrF2",
+        "    LDA #$01", "    STA $%04X,X" % CAR_FRAME,
+        "CrForce:",                            # past its last user: retire it
+        "    LDA $%04X,X" % CAR_FRAME, "    ORA #$80", "    STA $%04X,X" % CAR_FRAME,
+        "    LDA #$80", "    STA $19C4,X",
+        "    LDA #$FF", "    STA $19D4,X",
+        "    JMP CrKeep",
+        "CrF2:",
+        "    LDA #$01", "    STA $%04X,X" % CAR_FRAME,
+        "    LDA $%04X" % CR_TL, "    STA $19C4,X",
+        "    LDA $%04X" % CR_TH, "    STA $19D4,X",
+        "CrKeep:",
+        "    RTS",
+
+        # carry set when CR_TL/TH is within -120..CAR_REACH
+        "CrNeed:",
+        "    CLC",
+        "    LDA $%04X" % CR_TL, "    ADC #$78",
+        "    LDA $%04X" % CR_TH, "    ADC #$00",
+        "    BMI CrNo",
+        "    SEC",
+        "    LDA #$%02X" % (R & 0xFF), "    SBC $%04X" % CR_TL,
+        "    LDA #$%02X" % (R >> 8), "    SBC $%04X" % CR_TH,
+        "    BMI CrNo",
+        "    SEC",
+        "    RTS",
+        "CrNo:",
+        "    CLC",
+        "    RTS",
+
+        # A car the pass re-placed. In: A the high byte of the stock placement
+        # (the low byte is 0) -- how far ahead of a player it goes; X the slot.
+        "CpFix:",
+        "    STA $%04X" % CP_H,
+        "    STY $%04X" % CP_Y,
+        "    LDA $%04X" % CR_C2,
+        "    CMP $%04X" % CR_C1,
+        "    BCC CpFor2",
+        "    BNE CpFor1",
+        "    LDA $%04X" % GAP_HI,
+        "    BMI CpFor2",
+        "CpFor1:",
+        # ahead of player 1: Z1 = placement; player 2 sees it at Z1 + gap
+        "    INC $%04X" % CR_C1,
+        "    LDA #$00", "    STA $%04X" % CP_ZL,
+        "    LDA $%04X" % CP_H, "    STA $%04X" % CP_ZH,
+        "    CLC",
+        "    LDA $%04X" % CP_ZL, "    ADC $%04X" % GAP_LO, "    STA $%04X" % CR_TL,
+        "    LDA $%04X" % CP_ZH, "    ADC $%04X" % GAP_HI, "    STA $%04X" % CR_TH,
+        "    JSR CpInView",
+        "    BCC CpConv",
+        # would pop in for player 2: CAR_HORIZON ahead of player 2 instead
+        "    SEC",
+        "    LDA #$%02X" % (CAR_HORIZON & 0xFF), "    SBC $%04X" % GAP_LO, "    STA $%04X" % CP_ZL,
+        "    LDA #$%02X" % (CAR_HORIZON >> 8), "    SBC $%04X" % GAP_HI, "    STA $%04X" % CP_ZH,
+        "    JMP CpConv",
+        "CpFor2:",
+        # ahead of player 2: Z1 = placement - gap, which player 1 sees as is
+        "    INC $%04X" % CR_C2,
+        "    SEC",
+        "    LDA #$00", "    SBC $%04X" % GAP_LO, "    STA $%04X" % CP_ZL,
+        "    LDA $%04X" % CP_H, "    SBC $%04X" % GAP_HI, "    STA $%04X" % CP_ZH,
+        "    LDA $%04X" % CP_ZL, "    STA $%04X" % CR_TL,
+        "    LDA $%04X" % CP_ZH, "    STA $%04X" % CR_TH,
+        "    JSR CpInView",
+        "    BCC CpConv",
+        "    LDA #$%02X" % (CAR_HORIZON & 0xFF), "    STA $%04X" % CP_ZL,
+        "    LDA #$%02X" % (CAR_HORIZON >> 8), "    STA $%04X" % CP_ZH,
+        "CpConv:",
+        # CP_Z is player 1's frame; the pass has this slot in CAR_FRAME's
+        "    LDA $%04X,X" % CAR_FRAME,
+        "    BEQ CpStore",
+        "    CLC",
+        "    LDA $%04X" % CP_ZL, "    ADC $%04X" % GAP_LO, "    STA $%04X" % CP_ZL,
+        "    LDA $%04X" % CP_ZH, "    ADC $%04X" % GAP_HI, "    STA $%04X" % CP_ZH,
+        "CpStore:",
+        "    LDA $%04X" % CP_ZL, "    STA $19C4,X",
+        "    LDA $%04X" % CP_ZH, "    STA $19D4,X",
+        "    LDY $%04X" % CP_Y,
+        "    RTS",
+
+        # carry set when CR_TL/TH is inside a view: -300..CAR_HORIZON
+        "CpInView:",
+        "    CLC",
+        "    LDA $%04X" % CR_TL, "    ADC #$2C",
+        "    LDA $%04X" % CR_TH, "    ADC #$01",
+        "    BMI CpOut",
+        "    SEC",
+        "    LDA #$%02X" % (CAR_HORIZON & 0xFF), "    SBC $%04X" % CR_TL,
+        "    LDA #$%02X" % (CAR_HORIZON >> 8), "    SBC $%04X" % CR_TH,
+        "    BMI CpOut",
+        "    SEC",
+        "    RTS",
+        "CpOut:",
+        "    CLC",
+        "    RTS",
+
+        # --- player 2's object segment: rom:C4CB for player 1, on player 2's
+        # advance. Called from the drive with P2_QUOT set.
+        "P2ObjSeg:",
+        "    LDA $%04X" % P2_QUOT,
+        "    BEQ P2OsDone",
+        "    STA $%04X" % P2_ACTIVE,
+        "    SEC",
+        "    LDA $%04X" % P2_OA0, "    SBC $%04X" % P2_QUOT, "    STA $%04X" % P2_OA0,
+        "    LDA $%04X" % (P2_OA0 + 1), "    SBC #$00", "    STA $%04X" % (P2_OA0 + 1),
+        "    BPL P2OsDone",
+        "    LDX $%04X" % P2_OA2,
+        "    INX",
+        "    CPX $%04X" % OBJ_TRACK_LEN,
+        "    BCC P2OsNw",
+        "    LDX #$00",
+        "P2OsNw:",
+        "    STX $%04X" % P2_OA2,
+        "    CLC",
+        "    LDA $%04X" % P2_OA0, "    ADC $%04X,X" % OBJ_SEG_LEN_LO, "    STA $%04X" % P2_OA0,
+        "    LDA $%04X" % (P2_OA0 + 1), "    ADC $%04X,X" % OBJ_SEG_LEN_HI, "    STA $%04X" % (P2_OA0 + 1),
+        "P2OsDone:",
+        "    RTS",
+
+        # --- from P2RaceInit: player 2 starts where player 1 is
+        "P2ObjInit:",
+        "    LDA $00A0", "    STA $%04X" % P2_OA0,
+        "    LDA $00A1", "    STA $%04X" % (P2_OA0 + 1),
+        "    LDA $00A2", "    STA $%04X" % P2_OA2,
+        "    LDA #$00", "    STA $%04X" % P2_ACTIVE,
+        "    RTS",
     ]
 
 
@@ -2249,7 +2553,8 @@ def _ext():
     blob can refer to it without a cycle."""
     if not _EXT:
         lines = ([".org $%04X" % EXT_ADDR] + fast_zrow_src() + rival_car_src()
-                 + ["P2Emit:"] + p2_emit_src() + ["    RTS"] + p2_slot_tables())
+                 + ["P2Emit:"] + p2_emit_src() + ["    RTS"] + p2_slot_tables()
+                 + car_world_src())
         _EXT.append(_assemble(lines))
     return _EXT[0]
 
@@ -2372,32 +2677,135 @@ def rival_car_src(part="main"):
         "RcP2Objs:",
     ] + ([] if os.getenv("PP2_NO_P2OBJECTS") else [
         # --- the world's objects, as player 2 sees them -----------------------
-        # The game's own per-object routines (rom:E3E0 row, E475 height, E55B
-        # sprite by kind, E5C7 palette/width), with the object's distance moved
-        # by the camera gap for the call and put back after -- so rows, sizes,
-        # sprites and palettes are exactly the game's. Only x is recomputed,
-        # against player 2's road and camera (P2X), from the object's own lane
-        # coefficient. The window is player 1's, so with player 2 well ahead,
-        # objects past player 1's horizon are not there yet.
-        "    LDX $00B0",
-        "    JMP P2ObTest",
+        # Cars and the marker from the game's live slots (all of them, not
+        # player 1's visible window: player 2 can see what player 1 cannot),
+        # with the object's distance moved by the camera gap for the call and
+        # put back after. Signs are player 2's own, computed from track data
+        # (P2Signs). Each goes through P2Obj1 -- the game's own per-object
+        # routines, x from P2X. Nearest first, so a full list drops the
+        # farthest.
+        "    LDX $00AE",
+        "    BMI P2ObSigns",
+        "    CPX #$10",
+        "    BCS P2ObSigns",
         "P2ObLoop:",
+        "    LDA $%04X" % P2L_END,
+        "    CMP #$14",                        # room for a two-entry sign
+        "    BCS P2ObSigns",
         "    STX $%04X" % P2L_I,
-        "    LDA $19A4,X", "    STA $0044", "    TAY",
+        "    LDY $19A4,X", "    STY $0044",
+        "    LDA $19B4,Y", "    AND #$07",
+        "    CMP #$01", "    BEQ P2ObNext",    # signs: player 2 has its own
+        "    CMP #$03", "    BEQ P2ObNext",    # player 1's crash
         "    LDA $19C4,Y", "    STA $%04X" % P2L_ZL,
         "    CLC", "    ADC $%04X" % GAP_LO, "    STA $19C4,Y",
         "    LDA $19D4,Y", "    STA $%04X" % P2L_ZH,
         "    ADC $%04X" % GAP_HI, "    STA $19D4,Y",
-        "    LDA $%04X" % P2L_END, "    STA $0045",
-        "    JSR $E3E0",
+        "    LDA $19B4,Y", "    AND #$07",
+        "    CMP #$02", "    BNE P2ObGo",
+        "    JSR P2Marker",
+        "P2ObGo:",
+        "    JSR P2Near",
+        "    BCS P2ObBack",                    # nowhere near player 2's view
+        "    JSR P2Obj1",
+        "P2ObBack:",
         "    LDY $0044",
         "    LDA $%04X" % P2L_ZL, "    STA $19C4,Y",
         "    LDA $%04X" % P2L_ZH, "    STA $19D4,Y",
+        "P2ObNext:",
+        "    LDX $%04X" % P2L_I,
+        "    DEX",
+        "    BPL P2ObLoop",
+        # --- player 2's signs: the next three from its own object segment ----
+        # A sign stands at every object-segment boundary; the nearest is
+        # P2_OA0 ahead, each further one ObjSegLen[seg] beyond the last, and
+        # its look and side come from SegObjDesc[seg] as rom:CF47 builds them.
+        # Drawn through slot 15, which the game never uses ($AE peaks at 9).
+        "P2ObSigns:",
+        "    LDA $%04X" % P2_OA0, "    STA $%04X" % P2S_ZL,
+        "    LDA $%04X" % (P2_OA0 + 1), "    STA $%04X" % P2S_ZH,
+        "    LDA $%04X" % P2_OA2, "    STA $%04X" % P2S_SEG,
+        "    LDA #$03", "    STA $%04X" % P2S_K,
+        "P2SgLoop:",
+        "    LDA $%04X" % P2L_END,
+        "    CMP #$14",
+        "    BCS P2ObDone",
+        "    LDX $%04X" % P2S_SEG,
+        "    LDA $%04X,X" % OBJ_SEG_DESC,
+        "    AND #$70", "    ASL A", "    ORA #$01",
+        "    STA $%04X" % (OBJ_TYPE + 15),
+        "    LDA $%04X,X" % OBJ_SEG_DESC,
+        "    AND #$01",
+        "    BEQ P2SgL",
+        "    LDA #$24",
+        "    BNE P2SgLat",
+        "P2SgL:",
+        "    LDA #$23",
+        "P2SgLat:",
+        "    STA $%04X" % (OBJ_LATERAL + 15),
+        "    LDA $%04X" % P2S_ZL, "    STA $%04X" % (OBJ_Z_LO + 15),
+        "    LDA $%04X" % P2S_ZH, "    STA $%04X" % (OBJ_Z_HI + 15),
+        "    LDA #$0F", "    STA $0044",
+        "    TAY",
+        "    JSR P2Near",
+        "    BCS P2ObDone",                    # past the horizon: so are the rest
+        "    JSR P2Obj1",
+        "    DEC $%04X" % P2S_K,
+        "    BEQ P2ObDone",
+        "    LDX $%04X" % P2S_SEG,
+        "    INX",
+        "    CPX $%04X" % OBJ_TRACK_LEN,
+        "    BCC P2SgNw",
+        "    LDX #$00",
+        "P2SgNw:",
+        "    STX $%04X" % P2S_SEG,
+        "    CLC",
+        "    LDA $%04X" % P2S_ZL, "    ADC $%04X,X" % OBJ_SEG_LEN_LO,
+        "    STA $%04X" % P2S_ZL,
+        "    LDA $%04X" % P2S_ZH, "    ADC $%04X,X" % OBJ_SEG_LEN_HI,
+        "    STA $%04X" % P2S_ZH,
+        "    JMP P2SgLoop",
+        "P2ObDone:",
+    ]) + [
+        "    RTS",
+
+        # carry clear if slot Y's distance is within -128..1300, the most that
+        # rom:E3E0 can put on screen (1300 is row 0, the horizon; below zero a
+        # tall object's top can still show). Most objects are not, and the
+        # full pipeline costs several scanlines each to find that out.
+        "P2Near:",
+        "    LDA $19D4,Y",
+        "    BMI P2NrNeg",
+        "    CMP #$05",
+        "    BCC P2NrIn",                      # under $0500
+        "    BNE P2NrOut",
+        "    LDA $19C4,Y",
+        "    CMP #$15",                        # up to $0514 = 1300
+        "    RTS",
+        "P2NrNeg:",
+        "    CMP #$FF",
+        "    BNE P2NrOut",
+        "    LDA $19C4,Y",
+        "    CMP #$80",
+        "    BCC P2NrOut",
+        "P2NrIn:",
+        "    CLC",
+        "    RTS",
+        "P2NrOut:",
+        "    SEC",
+        "    RTS",
+
+        # --- one object into player 2's list. In: $44 the slot, its distance
+        # already player 2's. The game's own routines (rom:E3E0 row, E475
+        # height, E55B sprite by kind, E5C7 palette/width); only x is ours.
+        "P2Obj1:",
+        "    LDA $%04X" % P2L_END, "    STA $0045",
+        "    JSR $E3E0",
         "    LDA $0048",
-        "    BMI P2ObNext",                    # not in player 2's view
+        "    BMI P2O1Out",                     # not in player 2's view
         "    LDA $004A",
         "    CMP #$03",                        # crash-state kind: player 1's
-        "    BEQ P2ObNext",
+        "    BEQ P2O1Out",
         "    JSR $E475",
         "    LDY $0044",                       # E475 leaves Y on the entry
         "    LDX $1A00,Y",                     # the object's lane coefficient
@@ -2409,7 +2817,7 @@ def rival_car_src(part="main"):
         # palette. Checked with the gap forced to 0 (docs/FINDINGS.md).
         "    LDA $004A", "    STA $%04X" % P2L_KIND,
         "    JSR P2X",
-        "    BCS P2ObNext",
+        "    BCS P2O1Out",
         "    STA $004D",
         "    LDA $%04X" % P2L_KIND, "    STA $004A",
         "    JSR $E55B",
@@ -2419,26 +2827,45 @@ def rival_car_src(part="main"):
         "    LDA $004D",
         "    LDX $004A",
         "    CPX #$01",
-        "    BNE P2ObOne",
+        "    BNE P2O1One",
         "    STA $1AE9,Y",
         "    INC $%04X" % P2L_END,
         "    LDX $0049", "    CLC", "    ADC $BFF6,X",
-        "P2ObOne:",
+        "P2O1One:",
         "    STA $1AE8,Y",
         "    INC $%04X" % P2L_END,
-        "P2ObNext:",
-        "    LDX $%04X" % P2L_I,
-        "    DEX",
-        "P2ObTest:",                           # the loop's exit, at its foot
-        "    BMI P2ObDone",
-        "    CPX $00B1",
-        "    BMI P2ObDone",
-        "    LDA $%04X" % P2L_END,
-        "    CMP #$14",                        # room for a two-entry sign
-        "    BCS P2ObDone",
-        "    JMP P2ObLoop",
-        "P2ObDone:",
-    ]) + [
+        "P2O1Out:",
+        "    RTS",
+
+        # --- the marker's distance for player 2 (slot $44, already moved by
+        # the gap). Player 1 re-places it L ahead once it is 120 behind
+        # (rom:CAED), so it recurs every L + 121 or so. Player 2 sees the
+        # instance nearest ahead of it: fold into -120..L.
+        "P2Marker:",
+        "    LDX $00C4",                       # TrackIndex
+        "    SEC",
+        "    LDA $AFC6,X", "    SBC $19C4,Y",
+        "    LDA $AFC2,X", "    SBC $19D4,Y",
+        "    BPL P2MkLow",
+        "    SEC",                             # beyond L: the previous one
+        "    LDA $19C4,Y", "    SBC $AFC6,X", "    STA $19C4,Y",
+        "    LDA $19D4,Y", "    SBC $AFC2,X", "    STA $19D4,Y",
+        "    SEC",
+        "    LDA $19C4,Y", "    SBC #$79", "    STA $19C4,Y",
+        "    LDA $19D4,Y", "    SBC #$00", "    STA $19D4,Y",
+        "    RTS",
+        "P2MkLow:",
+        "    CLC",
+        "    LDA $19C4,Y", "    ADC #$78",
+        "    LDA $19D4,Y", "    ADC #$00",
+        "    BPL P2MkOk",
+        "    CLC",                             # passed: the next one
+        "    LDA $19C4,Y", "    ADC $AFC6,X", "    STA $19C4,Y",
+        "    LDA $19D4,Y", "    ADC $AFC2,X", "    STA $19D4,Y",
+        "    CLC",
+        "    LDA $19C4,Y", "    ADC #$79", "    STA $19C4,Y",
+        "    LDA $19D4,Y", "    ADC #$00", "    STA $19D4,Y",
+        "P2MkOk:",
         "    RTS",
 
         # --- in: OC_CL/CH coefficient, OC_ROW row. out: carry set for band 0,
@@ -3246,6 +3673,12 @@ def fix_mirror_split(p):
     if "FastZRow" in _ext()[1]:
         fz = _ext()[1]["FastZRow"]
         p.put(0xE3CD, [0x4C, fz & 0xFF, fz >> 8], expect=[0xA2, 0x4D, 0xA5])
+    # rom:D70D -- the race tick's `JSR sub_C9AD`, the object tick, becomes
+    # CarTick: the same tick with the recycle pass run by CarRetire, each car
+    # in the frame of the player who still needs it (see car_world_src).
+    if not os.getenv("PP2_STOCK_TRAFFIC"):
+        ct = _ext()[1]["CarTick"]
+        p.put(0xD70D, [0x20, ct & 0xFF, ct >> 8], expect=[0x20, 0xAD, 0xC9])
     _xc = list(_ext()[0])
     if EXT_ADDR + len(_xc) - 1 > EXT_END:
         raise SystemExit("the $4000 code area overruns $%04X" % EXT_END)

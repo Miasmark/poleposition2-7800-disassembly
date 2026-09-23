@@ -5367,3 +5367,168 @@ passed it.
   1's lateral; player 2 shows every sign in view.
 - The pre-race visual issues on player 2's view (reported earlier) are still
   deferred to cleanup.
+
+## Player 2's own world: its own signs, one field of traffic for both
+
+Checkpoint 61. Until now player 2 saw the world through player 1's object
+window, so objects appeared late in player 2's view when player 2 led, and
+vanished before player 2 reached them when it trailed. Asked to have "the
+leading player control what comes into view, or make it independent
+completely except for overlap". It is now both:
+- **Signs and the marker are independent.** Player 2 computes its own from the
+  track data.
+- **Cars are one shared field.** A car is kept while either player still needs
+  it and re-placed ahead of whichever player needs cars, so where the views
+  overlap they show the same cars.
+
+### Correction: the object table is not full
+
+An earlier entry here ("The object window CANNOT be widened: the 16 slots are
+already full") was wrong. Only `$AE`+1 slots are live; the entries past `$AE`
+are stale copies, and that count included them. Measured live on run-03:
+
+    qualifying track 0   2 cars + 3 signs            ($AE = 4)
+    qualifying track 1   4 cars + 3 signs
+    tracks 2, 3          5 cars + 3 signs, + player 1's crashed car at times
+    race                 + the marker (class 2)
+    largest $AE while racing, all four tracks, retail: 9
+
+Car counts are capped per track by `dat_ABD4`: 4, 6, 7, 7.
+
+### How the game feeds the window
+
+- **Signs are track data.** One sign stands at every object-segment boundary.
+  `$A0/$A1` is the distance to the next boundary and `$A2` the segment index,
+  both stepped by player 1's advance at rom:C4CB, the same Speed/2 that moves
+  the road walk and every object. So the three signs are `$A0` ahead, then
+  `+ObjSegLen[$A2+1]`, then `+ObjSegLen[$A2+2]`, each looking as rom:CF47
+  builds it from `SegObjDesc` (type `((d & $70) << 1) | 1`, lane `$23`/`$24` by
+  bit 0). Checked against the live slots: 3,801 of 3,804 samples on run-03 and
+  0923-0236. The three misses are single transition samples: the tick where
+  `$A2` has stepped but the slot is not yet recycled, and a lap reset.
+- **Cars are a simulation.** Each has its own speed (`$1A10`, steered toward
+  `$1CCF`), and the lane-change and overtaking AI (rom:CC77) works only on
+  distances between cars. Only the recycle pass (rom:CAA0) refers to player 1:
+  - a car more than 120 behind player 1 is retired;
+  - it is re-placed `(2*$ED + 1 + dat_AFBE[track]) * 256` ahead (rom:CB1B), or
+    deleted if there are more cars than the cap.
+- **The marker** is re-placed `dat_AFC2/AFC6` ahead (15,000 / 15,000 /
+  10,000 / 6,000 by track) once it is 120 behind.
+
+### What was built (all in the `$4000` area)
+
+- **Player 2's object segment.** `P2_OA0`/`P2_OA2` are the counter as
+  rom:C4CB keeps it, stepped by player 2's advance in its drive (`P2ObjSeg`)
+  and copied from player 1's at P2RaceInit.
+- **Player 2's signs.** `P2Objects` computes the next three from that counter
+  and draws them through object slot 15. The game never uses slot 15: a
+  write watch over all of run-03 on retail saw no write to any of its arrays
+  after boot. The sign loop stops at the first sign past the horizon.
+- **The marker for player 2** is player 1's plus the gap, folded into
+  -120..L, so player 2 sees the instance nearest ahead of it.
+- **Cars:** `P2Objects` now walks **every live slot**, not player 1's visible
+  window, since player 2 can see what player 1 cannot. Each car's distance is
+  player 1's plus the gap.
+- **One field of traffic: `CarTick` / `CarRetire`.** rom:D70D, the race
+  tick's call of the object tick, now goes to `CarTick`: the same calls, with
+  the recycle pass wrapped. A car is *needed* by a player while it is between
+  120 behind and `CAR_REACH` (`$2400`) ahead of them. For the pass, each car is
+  put in the frame of the player who needs it:
+  - both need it: the frame in which it is further ahead, so it lasts until
+    the trailing player has passed it;
+  - one needs it: that player's frame;
+  - neither: if it is more than 120 behind one of them, it is retired now
+    (distance set to -128).
+
+  The game's own code then retires and re-places. Afterwards, `CpFix` gives
+  each re-placed car to whichever player has fewer cars coming (the leader on
+  a tie), at the stock distance ahead of that player. If that would put it
+  inside the other player's view (-300..1600), it goes to 1,600 ahead of the
+  other player instead. Distances then go back to player 1's frame.
+- **Stock when alone.** Until player 2 has moved (`P2_ACTIVE`), or while the
+  gap is pinned at +-`$4000`, `CarRetire` is a jump to rom:CAA0.
+  `PP2_STOCK_TRAFFIC=1` builds without the hook.
+
+### Results
+
+Signs, player 2's counter against player 1's plus the gap
+(`tools/world-check.py`):
+
+    0923-0205          717 of 717 race ticks exact
+    0923-0236          706 of 706
+    run-03             1,704 qualifying + 160 race ticks exact (until the gap pins)
+    traffic scenario   1,201 of 1,201
+
+Cars, on a controlled scenario (`tools/probe-traffic-scenario.lua`): track 3,
+speeds scripted so player 2 falls 3,000 behind, leads by 7,900, and falls back.
+
+| | stock traffic (W3-stock) | shared traffic (W4) |
+|---|---|---|
+| car re-placed inside player 2's view | 5 | 0 |
+| car vanished inside either view | 0 | 0 |
+| player 1 hit a car | 7 | 7 |
+| cars in view per tick, player 1 / player 2 | 1.32 / 0.38 | 0.89 / 0.66 |
+
+On an earlier, lighter run (track 1), stock traffic also retired cars inside
+player 2's view three times, at 553-1,113 ahead of player 2. W3 did not.
+
+Cost on that scenario, RivalCars in scanlines, and how often the main loop
+needed more than its 6 frames:
+
+| build | RivalCars median / p90 / max | 6-frame passes | 8 / 10 / 12 frames |
+|---|---|---|---|
+| OB5 (checkpoint 60) | 91.5 / 246.9 / 443.9 | 977 | 43 / 43 / 120 |
+| W3 (no filter) | 261.1 / 323.9 / 504.7 | 798 | 49 / 49 / 199 |
+| W4 (promoted) | 96.8 / 264.9 / 469.9 | 993 | 33 / 33 / 127 |
+
+Track 3's traffic already made the stock-object build miss passes; that is
+not new. W3 ran the full per-object pipeline about 8 times a call (every live
+slot and all three signs), most of it on objects behind player 2 or past its
+horizon. `P2Near`, a distance test before the pipeline (-128..1300, the most
+rom:E3E0 can put on screen), brought it to 1.5 calls.
+
+Also on W4:
+- player 2's list integrity: 0 zeroed road headers on three recordings;
+- rival-car model: 146/146, 344/344, 117/117 in player 2's view; 199/199,
+  140/140 in player 1's;
+- health: unchanged;
+- screenshots: player 2 leading sees cars and signs player 1 has not reached;
+  with the two close, both views show the same cars.
+
+### Wrong turns
+
+- **First hook site: the recycle call inside the object tick (rom:C9B9), plus
+  the re-placement store (rom:CB38).** With player 2 inactive the logic was
+  stock, yet run-01 shifted by a frame at the 00 -> 06 state change: that
+  path runs the object tick from the setup code, and even a do-nothing loop
+  there moved a main-loop pass over a frame edge. A fast path did not help.
+  Hooking only the race tick's call (rom:D70D) and fixing re-placements after
+  the pass instead of at rom:CB38 did: run-01 then matched the build without
+  the hook for 12,000 frames.
+- **One-player recordings are no longer frame-exact references.** Player 2's
+  view now has content even when player 2 is idle (its signs), which costs
+  time and moves passes. Against the build without the traffic hook:
+  - run-01: identical;
+  - run-03: 2 isolated sample frames differ;
+  - run-02: diverges at f8972, after a main-loop pass slips at f7855.
+
+  Player 2 was never active in any of them, so that is timing, not traffic
+  logic.
+- **The scenario's first runs** held the race clock at 0 to stop it running
+  out, and player 2's drive does not run with the clock at 0, so the gap only
+  grew. Held at a nonzero value instead. Poking TrackIndex did not choose the
+  track; pressing Select on the title (after it appears, around f300) does.
+
+### Limits, for later
+
+- **Player 2 has no collisions** with cars or signs; it drives through them.
+  The pieces exist: the gap, both laterals, and every object's distance.
+- **Player 1's crash** (a car that becomes class 3) is not shown in player 2's
+  view.
+- **Viewing angles:** a rival car in player 2's view still takes its angle
+  sprite from player 1's road slope (see checkpoint 60).
+- **Pinned gap:** with the gap pinned (the players more than 16,384 apart),
+  traffic reverts to player 1's alone. Player 2 still sees its own signs, but
+  no cars.
+- **`tools/p2-objects-gap0-check.py`** now stands for cars only; signs are
+  checked by `tools/world-check.py`.
