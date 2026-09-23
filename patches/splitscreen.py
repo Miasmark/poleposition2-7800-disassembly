@@ -442,12 +442,17 @@ P2_OC_D = 0x271B             # lateral difference between the two cars
 P2_OC_ML = 0x271C            # the scaled offset, 16 bit
 P2_OC_MH = 0x271D
 P2_OC_CNT = 0x271E           # multiply loop counter
+P1_OC_BAND = 0x271F          # band player 2's car is drawn in, in P1's view
+P1_OC_LAST = 0x2720          # the band it used last frame, $FF for none
+P1_OC_DST = 0x2721           # that band's slot offset within its page
 ZROW_SCRATCH = 0x0048        # the 16-bit Z the row lookup reads
 ZROW_NEAR = 256              # Z below this is indexed directly
 ZROW_FAR_STEP = 8            # above it, in steps of this
 ZROW_FAR_N = 160             # entries, out past the horizon
 P2_ZROW_NEAR = 0xEED0        # the lookup lives in the reclaimed injection
 P2_ZROW_FAR = 0xEFD0
+P2_DRIFT_TBL = 0xF070        # the 88-byte curve-drift table, also out of
+                             # the blob and into the reclaimed injection
 PERSP_Z_LO, PERSP_Z_HI = 0xEB56, 0xEAB9
 ROW_TO_BAND = 0xBB7E
 SEG_CURVE_TBL = 0x1900       # SegCurve, indexed by segment
@@ -875,7 +880,7 @@ def hud_reassert_src(addr):
         [] if os.getenv("PP2_KEEP_INJECTION") else road_stage_src()
     ) + p2_stage_src() + p2_car_src() + [
         "    RTS",
-    ] + p2_stage_tables() + p2_drift_table() + p2_othercar_tables() + p2_slot_tables() + p2_zrow_src() + [
+    ] + p2_stage_tables() + p2_othercar_tables() + p2_slot_tables() + p1_slot_tables() + p2_zrow_src() + [
         "WrapSlot0:",
         "    CMP #$A0",
         "    BCC WrapKeep",
@@ -1921,7 +1926,7 @@ def p2_collide_src():
         "    STA $%04X,Y" % (P2_DL_BASE + 3),
         "    DEX",
         "    BPL P2OcClear",
-    ] + p2_othercar_src()
+    ] + p2_othercar_src() + p1_othercar_src()
 
 
 def p2_race_init_src():
@@ -1967,6 +1972,8 @@ def p2_race_init_src():
         "    STA $%04X" % P2_SPEED, "    STA $%04X" % P2_FRAC,
         "    STA $%04X" % P2_PHASE, "    STA $%04X" % P2_PHASE_ACC,
         "    STA $%04X" % P2_GEAR, "    STA $%04X" % P2_STEER_ACC,
+        "    LDA #$FF", "    STA $%04X" % P1_OC_LAST,
+        "    LDA #$00",
         "    STA $%04X" % P2_HIT,
         "    STA $%04X" % GAP_LO,  "    STA $%04X" % GAP_HI,
         "    LDY $%04X" % P1_SEG, "    STY $%04X" % P2_TRACK_SEG,
@@ -2040,6 +2047,153 @@ def p2_othercar_tables():
         "P2OcWid:", "    .byte " + ",".join("$%02X" % v for v in wid),
         "P2OcM:",   "    .byte " + ",".join("$%02X" % v for v in m),
     ]
+
+
+def p1_slot_tables():
+    """Where player 2's car goes in each of player 1's bands.
+
+    The FIRST object slot of every band -- +04 on the far ones, +08 on the near,
+    which have their second road object at +04 -- was never once filled by the
+    game across 6800 frames, while +08/+0C onwards and +18 are used constantly.
+    So the first slot is free to borrow, and being first it draws behind the
+    game's own objects, which is the right order for a car further away.
+    """
+    bases = [0x2300, 0x2326, 0x234C, 0x2372, 0x2398, 0x23BE,
+             0x2400, 0x2426, 0x244C, 0x246E, 0x2490, 0x24B2, 0x24D4]
+    slot, road = [], []
+    for k, b in enumerate(bases):
+        page = 0x2300 if k < 6 else 0x2400
+        first = 0x04 if k < 8 else 0x08
+        slot.append((b - page) + first)
+        road.append((b - page) + 3)
+    return [
+        "P1OcSlot:", "    .byte " + ",".join("$%02X" % v for v in slot),
+        "P1OcRoad:", "    .byte " + ",".join("$%02X" % v for v in road),
+    ]
+
+
+def p1_othercar_src():
+    """Put player 2's car into player 1's view.
+
+    The mirror of the pass that puts player 1's car into player 2's, with the
+    gap negated: player 2 is visible to player 1 only when it is AHEAD, which is
+    a negative gap. Everything else is the same, including the per-band sprite
+    table, because it is the same car at the same distances.
+
+    Only one band is written per frame, so rather than parking all thirteen the
+    band used last frame is remembered and parked. Player 1's lists straddle two
+    pages, so the write is branched rather than indexed.
+    """
+    if os.getenv("PP2_NO_OTHERCAR"):
+        return []
+    S = ZROW_SCRATCH
+
+    def write_slot(tag, page, value_src):
+        """Emit the four header bytes into player 1's band, on one page."""
+        return [
+            "    LDX $%04X" % P1_OC_BAND,
+            "    LDY P1OcSlot,X",
+            "    LDA $%04X" % P1_OC_DST,
+        ]
+
+    lines = [
+        # park wherever it was last frame
+        "    LDX $%04X" % P1_OC_LAST,
+        "    BMI P1OcNoPark",
+        "    LDY P1OcSlot,X",
+        "    LDA #$A1",
+        "    CPX #$06",
+        "    BCS P1OcParkB",
+        "    STA $%04X,Y" % (0x2300 + 3),
+        "    JMP P1OcNoPark",
+        "P1OcParkB:",
+        "    STA $%04X,Y" % (0x2400 + 3),
+        "P1OcNoPark:",
+        "    LDA #$FF",
+        "    STA $%04X" % P1_OC_LAST,
+        # --- how far ahead is player 2? negate the gap -----------------------
+        "    LDA $%04X" % S,       "    PHA",
+        "    LDA $%04X" % (S + 1), "    PHA",
+        "    SEC",
+        "    LDA #$00", "    SBC $%04X" % GAP_LO, "    STA $%04X" % S,
+        "    LDA #$00", "    SBC $%04X" % GAP_HI, "    STA $%04X" % (S + 1),
+        "    BPL P1OcAhead",
+        "    JMP P1OcDone",                       # player 2 is behind
+        "P1OcAhead:",
+        "    JSR P2ZRow",
+        "    CPX #$FF",
+        "    BNE P1OcRow",
+        "    JMP P1OcDone",
+        "P1OcRow:",
+        "    LDA $%04X,X" % ROW_TO_BAND,
+        "    BNE P1OcGo",
+        "    JMP P1OcDone",
+        "P1OcGo:",
+        "    STA $%04X" % P1_OC_BAND,
+        # --- lateral difference, scaled at that band -------------------------
+        "    SEC",
+        "    LDA $%04X" % P2_LATERAL, "    SBC $%04X" % PLAYER_X,
+        "    STA $%04X" % P2_OC_D,
+        "    BPL P1OcAbs",
+        "    EOR #$FF", "    CLC", "    ADC #$01",
+        "P1OcAbs:",
+        "    LDX $%04X" % P1_OC_BAND,
+        "    LDY P2OcM,X",
+        "    STA $%04X" % P2_OC_CNT,
+        "    LDA #$00", "    STA $%04X" % P2_OC_ML, "    STA $%04X" % P2_OC_MH,
+        "P1OcMul:",
+        "    TYA", "    LSR A", "    TAY",
+        "    BCC P1OcNoAdd",
+        "    CLC",
+        "    LDA $%04X" % P2_OC_ML, "    ADC $%04X" % P2_OC_CNT,
+        "    STA $%04X" % P2_OC_ML,
+        "    LDA $%04X" % P2_OC_MH, "    ADC #$00",
+        "    STA $%04X" % P2_OC_MH,
+        "P1OcNoAdd:",
+        "    ASL $%04X" % P2_OC_CNT,
+        "    TYA",
+        "    BNE P1OcMul",
+        "    LDA $%04X" % P2_OC_ML,
+        "    ASL A",
+        "    LDA $%04X" % P2_OC_MH,
+        "    ROL A",
+        "    LDX $%04X" % P2_OC_D,
+        "    BPL P1OcPos",
+        "    EOR #$FF", "    CLC", "    ADC #$01",
+        "P1OcPos:",
+        "    STA $%04X" % P2_OC_D,                # the scaled offset
+        # --- write the four header bytes, on whichever page this band is on --
+        "    LDX $%04X" % P1_OC_BAND,
+        "    CPX #$06",
+        "    BCS P1OcWriteB",
+    ]
+    for tag, page in (("A", 0x2300), ("B", 0x2400)):
+        if tag == "B":
+            lines += ["P1OcWriteB:"]
+        lines += [
+            "    LDX $%04X" % P1_OC_BAND,
+            "    LDY P1OcRoad,X",
+            "    LDA $%04X,Y" % page,             # player 1's road x there
+            "    CLC", "    ADC $%04X" % P2_OC_D,
+            "    LDY P1OcSlot,X",
+            "    STA $%04X,Y" % (page + 3),
+            "    LDA P2OcWid,X",
+            "    STA $%04X,Y" % (page + 1),
+            "    LDA P2OcHi,X",
+            "    STA $%04X,Y" % (page + 2),
+            "    LDA $%04X" % P2_LEAN,
+            "    STA $%04X,Y" % page,
+            "    LDA $%04X" % P1_OC_BAND,
+            "    STA $%04X" % P1_OC_LAST,
+        ]
+        if tag == "A":
+            lines += ["    JMP P1OcDone"]
+    lines += [
+        "P1OcDone:",
+        "    PLA", "    STA $%04X" % (S + 1),
+        "    PLA", "    STA $%04X" % S,
+    ]
+    return lines
 
 
 def p2_othercar_src():
@@ -2199,7 +2353,7 @@ def p2_drift_table():
         ptr = at(DRIFT_PTR_HI + idx) * 256 + at(DRIFT_PTR_LO + idx)
         assert BASE <= ptr <= 0xFFF8, "curve %d points outside ROM at $%04X" % (idx, ptr)
         flat += [at(ptr + k) for k in range(8)]
-    return ["P2DriftTab:", "    .byte " + ",".join("$%02X" % v for v in flat)]
+    return flat
 
 
 def p2_drift_src():
@@ -2229,7 +2383,7 @@ def p2_drift_src():
         "    LSR A", "    LSR A", "    LSR A", "    LSR A", "    LSR A",
         "    CLC", "    ADC $%04X" % P2_DRIFT_ACC,
         "    TAY",
-        "    LDA P2DriftTab,Y",
+        "    LDA $%04X,Y" % P2_DRIFT_TBL,
         "    LDX $%04X" % P2_DRIFT_IDX,
         "    CPX #$06",
         "    BMI P2DriftPos",
@@ -2523,7 +2677,8 @@ def fix_mirror_split(p):
                 ("P2_HUD_TEMPLATE", P2_HUD_TEMPLATE, 12),
                 ("MINI_TEMPLATE", MINI_TEMPLATE, FINE_ZONES * MINI_DL_SIZE),
                 ("P2_ZROW_NEAR", P2_ZROW_NEAR, ZROW_NEAR),
-                ("P2_ZROW_FAR", P2_ZROW_FAR, ZROW_FAR_N)]
+                ("P2_ZROW_FAR", P2_ZROW_FAR, ZROW_FAR_N),
+                ("P2_DRIFT_TBL", P2_DRIFT_TBL, 88)]
     # the blob must still fit the $FF run it lives in; the templates must stay
     # inside the reclaimed injection
     if HUD_REASSERT_ADDR + _blob_len() - 1 > 0xFF7F:
@@ -2556,6 +2711,8 @@ def fix_mirror_split(p):
     _zn, _zf = p2_zrow_table()
     p.put(P2_ZROW_NEAR, _zn, expect=_stock_bytes(P2_ZROW_NEAR, len(_zn)))
     p.put(P2_ZROW_FAR, _zf, expect=_stock_bytes(P2_ZROW_FAR, len(_zf)))
+    _dr = p2_drift_table()
+    p.put(P2_DRIFT_TBL, _dr, expect=_stock_bytes(P2_DRIFT_TBL, len(_dr)))
     # Seed of player 2's HUD row: the same two character objects the row it
     # replaces uses, so it draws legibly from the first frame. Rewriting the
     # characters it points at is what makes it player 2's, and is not done yet.

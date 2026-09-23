@@ -4470,3 +4470,29 @@ The difference is not the projection, which was already solved. It is the
 a band-relative page that does not survive being moved. That is the argument for
 reading the 16-slot object arrays rather than player 1's lists -- an object's
 position and type are properties of the object, its page is not.
+
+## Both cars now appear in both views
+
+The mirror of the previous entry is in: player 2's car draws in player 1's view.
+run-01 and run-02 grade exactly as baseline.
+
+It needed a slot in player 1's lists, and there is a free one. **The first object
+slot of every band** -- `+04` on the far ones, `+08` on the near, which have
+their second road object at `+04` -- **was never once filled by the game across
+6800 frames**, while `+08`/`+0C` onwards and `+18` are in constant use. Being
+first, it also draws behind the game's own objects, which is the right order for
+a car further away.
+
+Only one band is written per frame, so instead of parking all thirteen the band
+used last frame is remembered and parked. Player 1's lists straddle two pages,
+so that write branches rather than indexes.
+
+Verified: drawn on 385 frames and **never once while the gap was positive** --
+never while player 2 was behind, where player 1 could not see it. At gap -80 it
+lands in band 8, where Z is 102, at x 85 with page `$9D10`: band 8's page plus
+an upright lean.
+
+**Not seen mid-race.** Under both recordings player 2 is parked, so the gap is
+almost always positive and no racing frame has player 2 ahead. This direction is
+verified by its numbers rather than by a picture, and a two-player recording
+would settle it.
