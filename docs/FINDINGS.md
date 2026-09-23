@@ -5762,3 +5762,29 @@ after the gap is updated.
 
 **Saved for last** (cleanup, per the standing rule): the visual glitches in
 player 2's view before a race starts.
+
+## Found: both cars are placed on the same spot at every start
+
+**Confirmed live** on test-pp2-2p-0923-0236 and -0205: one frame into the
+qualifying banner (state `$10`), player 1 is at x -28 and player 2 at -36 --
+both were put at -32 and the car-to-car push has already started separating
+them; 30 frames later they are at -12 and -52.
+
+Cause: `P2GridSym` sets `PlayerX = -GRID_LANE` and `P2_LATERAL = +GRID_LANE`,
+and `P2PlaceMirror` sets `P2_LATERAL = -PlayerX`. Both were written before
+"Correction: the two laterals run in opposite directions" -- player 2's position
+in player 1's terms is **-P2_LATERAL** -- so both now put player 2 exactly on
+player 1 instead of in the other lane. The correction fixed collision, drift
+and the other-car drawing but not these two.
+
+Consequences, now that the cars collide:
+- every qualifying start begins with the two cars inside each other, a bump
+  and a speed penalty for both (quite possibly the "player 1 bumps player 2"
+  seen in play);
+- every race start puts both cars in player 1's grid lane. In the scripted
+  race runs both then crashed into the grid car there (slot 10, 1 ahead) at
+  the rolling start, on track 1 and track 3 alike.
+
+Fixing the sign will put player 2 in the other lane of player 1's grid row --
+where an enemy car was placed (see "The race grid", step 4), so that car will
+also have to go.
