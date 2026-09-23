@@ -502,6 +502,17 @@ P2S_K = 0x27B1               # player 2's signs: countdown,
 P2S_ZL = 0x27B2              #   distance,
 P2S_ZH = 0x27B3
 P2S_SEG = 0x27B4             #   and object segment
+P2_CRASH = 0x27B5            # player 2's crash count, as CrashTimer ($D4)
+P2_B2 = 0x27B6               # its debris spread, as $B2
+P2_ARM = 0x27B7              # deep on the verge by the next sign, as $EB
+CL_ZL = 0x27B8               # P2Collide: an object's distance from player 2,
+CL_ZH = 0x27B9
+CL_T = 0x27BA                #   a threshold / a half count,
+CL_I = 0x27BB                #   the list index and the slot
+CL_X = 0x27BC
+CL_R = 0x27BD                #   the row, and player 2's lateral in player 1's
+CL_PX = 0x27BE               #   terms (-P2_LATERAL), for rom:C8D0's borrow chain
+COLLIDE_PUSH = 4             # each car's sideways shove a tick, in contact
 # the game's object slots and track object data (rom:CF47, rom:C4CB)
 OBJ_TYPE, OBJ_Z_LO, OBJ_Z_HI, OBJ_LATERAL = 0x19B4, 0x19C4, 0x19D4, 0x1A00
 OBJ_SEG_DESC, OBJ_SEG_LEN_LO, OBJ_SEG_LEN_HI = 0x18B4, 0x18D7, 0x195A
@@ -954,7 +965,7 @@ def hud_reassert_src(addr):
         [] if os.getenv("PP2_KEEP_INJECTION") else road_stage_src()
     ) + p2_stage_src() + p2_car_src() + [
         "    RTS",
-    ] + p2_stage_tables() + p2_slot_tables() + ["P2Emit = $%04X" % _ext()[1]["P2Emit"], "P2ObjSeg = $%04X" % _ext()[1]["P2ObjSeg"], "P2ObjInit = $%04X" % _ext()[1]["P2ObjInit"], "P2BuildLists = $%04X" % _rival_helpers()[1]["P2BuildLists"]] + [
+    ] + p2_stage_tables() + p2_slot_tables() + ["P2Emit = $%04X" % _ext()[1]["P2Emit"], "P2ObjSeg = $%04X" % _ext()[1]["P2ObjSeg"], "P2ObjInit = $%04X" % _ext()[1]["P2ObjInit"], "P2Collide = $%04X" % _ext()[1]["P2Collide"], "P2CrashTick = $%04X" % _ext()[1]["P2CrashTick"], "P2BuildLists = $%04X" % _rival_helpers()[1]["P2BuildLists"]] + [
 
         "WrapSlot0:",
         "    CMP #$A0",
@@ -1253,6 +1264,7 @@ def _check_p2_ram():
         ("P2_WORLD", P2_ACTIVE, 4),
         ("CAR_FRAME", CAR_FRAME, 16),
         ("CAR_WORLD", CR_PART, 16),
+        ("P2_HAZARD", P2_CRASH, 10),
         ("P2_ST", P2_ST_RATE, 2),
         ("P2_TRACK", P2_TRACK_SEG, 3),
         ("P2_SPEED", P2_SPEED, 1),
@@ -1570,7 +1582,9 @@ def p2_car_src():
     crash of its own yet. Not crashing is the right failure here: sympathetic
     crashing was the bug.
     """
-    lines = ["    LDA $%04X" % (P1_CAR_SLOT[3] + 2), "    BNE P2CarDraw"]
+    lines = ["    LDA $%04X" % P2_CRASH, "    BNE P2CarPark",      # P2CrashDraw has it
+             "    LDA $%04X" % (P1_CAR_SLOT[3] + 2), "    BNE P2CarDraw",
+             "P2CarPark:"]
     lay = p2_band_layout()
     for b in P2_CAR_BANDS:
         dl = lay[b]["addr"] + lay[b]["car"]
@@ -1813,6 +1827,12 @@ def p2_drive_src():
         "P2DragStore:",
         "    STA $%04X" % P2_SPEED,
         "P2OnRoad:",
+        # --- crashing: rom:C2C0's slowdown and the count, and nothing else ----
+        "    LDA $%04X" % P2_CRASH,
+        "    BEQ P2Gas",
+        "    JSR P2CrashTick",
+        "    JMP P2NoBrake",
+        "P2Gas:",
         # --- gas: the accel table step, or coast down 5 ----------------------
         "    LDA $%04X" % INPT3,
         "    BPL P2Coast",
@@ -1893,6 +1913,10 @@ def p2_drive_src():
         "    BNE P2Steer",
         "    JMP P2DriveDone",
         "P2Steer:",
+        "    LDA $%04X" % P2_CRASH,
+        "    BEQ P2StOk",
+        "    JMP P2DriveDone",
+        "P2StOk:",
         # The stick, as rom:C447 reads player 1's: toward -7 for left, +7 for
         # right, one step of 7 a tick, and straight back to 0 with the stick
         # centred. Left wins if both, as it does there.
@@ -2039,7 +2063,7 @@ def p2_gap_src():
         "    LDA $%04X" % P1_SEG,  "    STA $%04X" % GAP_PSEG,
         "    LDA $%04X" % P1_POS_LO, "    STA $%04X" % GAP_PLO,
         "    LDA $%04X" % P1_POS_HI, "    STA $%04X" % GAP_PHI,
-    ] + p2_collide_src()
+    ] + p2_collide_src() + ["    JSR P2Collide"]
 
 
 def p2_collide_src():
@@ -2056,10 +2080,11 @@ def p2_collide_src():
     accelerate off the line -- run-02 went from HEALTHY to STALLED, with player
     1's speed pinned at 0 for the first 1500 frames.
 
-    And contact PUSHES player 2 sideways, away from player 1, so the overlap
-    actually resolves instead of persisting until something else happens to
-    separate them. Only player 2 is pushed; shoving player 1's lateral would be
-    reaching into the game's own physics rather than alongside it.
+    And contact PUSHES the cars apart sideways, so the overlap actually
+    resolves instead of persisting until something else happens to separate
+    them. At first only player 2 was pushed, to keep out of player 1's physics;
+    in play that read as player 1 bumping player 2 with nothing coming back, so
+    both are shoved now, COLLIDE_PUSH each a tick.
     """
     if os.getenv("PP2_NO_COLLIDE"):
         return []
@@ -2068,15 +2093,17 @@ def p2_collide_src():
         "    LDA $%04X" % GAP_HI,
         "    BEQ P2HitZPos",
         "    CMP #$FF",
-        "    BNE P2NoHit",
+        "    BNE P2NoHitN",
         "    LDA $%04X" % GAP_LO,               # negative: -COLLIDE_Z..-1
         "    CMP #$%02X" % (0x100 - COLLIDE_Z),
-        "    BCC P2NoHit",
+        "    BCC P2NoHitN",
         "    JMP P2HitX",
+        "P2NoHitN:",                           # (the push put P2NoHit out of reach)
+        "    JMP P2NoHit",
         "P2HitZPos:",
         "    LDA $%04X" % GAP_LO,
         "    CMP #$%02X" % COLLIDE_Z,
-        "    BCS P2NoHit",
+        "    BCS P2NoHitN",
         "P2HitX:",
         # The two laterals have OPPOSITE signs. Measured by each view's road x
         # against its own lateral: player 1's road x falls as PlayerX rises
@@ -2095,24 +2122,39 @@ def p2_collide_src():
         "    EOR #$FF", "    CLC", "    ADC #$01",
         "P2HitAbs:",
         "    CMP #$%02X" % COLLIDE_X,
-        "    BCS P2NoHit",
+        "    BCS P2NoHitN",
         # --- touching: push player 2 clear, respecting the camera's limits ---
         # Six units a tick: the push was one a frame when this ran every
         # frame, and the drive now runs once per six-frame tick.
         "    LDA $%04X" % GAP_TLO,
         "    BMI P2PushLeft",
-        "    LDA $%04X" % P2_LATERAL, "    CLC", "    ADC #$06",
+        "    LDA $%04X" % P2_LATERAL, "    CLC", "    ADC #$%02X" % COLLIDE_PUSH,
         "    BMI P2PushStore",
         "    CMP #$%02X" % (P2_LIMIT + 1), "    BCC P2PushStore",
         "    LDA #$%02X" % P2_LIMIT,
         "    JMP P2PushStore",
         "P2PushLeft:",
-        "    LDA $%04X" % P2_LATERAL, "    SEC", "    SBC #$06",
+        "    LDA $%04X" % P2_LATERAL, "    SEC", "    SBC #$%02X" % COLLIDE_PUSH,
         "    BPL P2PushStore",
         "    CMP #$%02X" % ((0x100 - P2_LIMIT) & 0xFF), "    BCS P2PushStore",
         "    LDA #$%02X" % ((0x100 - P2_LIMIT) & 0xFF),
         "P2PushStore:",
         "    STA $%04X" % P2_LATERAL,
+        # and player 1 the other way, within rom:C537's +-104
+        "    LDA $%04X" % GAP_TLO,
+        "    BMI P1PushLeft",
+        "    LDA $%04X" % PLAYER_X, "    CLC", "    ADC #$%02X" % COLLIDE_PUSH,
+        "    BMI P1PushStore",
+        "    CMP #$69", "    BCC P1PushStore",
+        "    LDA #$68",
+        "    BNE P1PushStore",
+        "P1PushLeft:",
+        "    LDA $%04X" % PLAYER_X, "    SEC", "    SBC #$%02X" % COLLIDE_PUSH,
+        "    BPL P1PushStore",
+        "    CMP #$98", "    BCS P1PushStore",
+        "    LDA #$98",
+        "P1PushStore:",
+        "    STA $%04X" % PLAYER_X,
         # --- the speed penalty, once per contact ---
         "    LDA $%04X" % P2_HIT,
         "    BNE P2HitEnd",
@@ -2467,6 +2509,12 @@ def car_world_src():
         "    CLC",
         "    LDA $%04X" % P2_OA0, "    ADC $%04X,X" % OBJ_SEG_LEN_LO, "    STA $%04X" % P2_OA0,
         "    LDA $%04X" % (P2_OA0 + 1), "    ADC $%04X,X" % OBJ_SEG_LEN_HI, "    STA $%04X" % (P2_OA0 + 1),
+        # rom:C8F9: past a sign while deep on the verge on its side
+        "    LDA $%04X" % P2_ARM,
+        "    BEQ P2OsDone",
+        "    LDA $%04X" % P2_CRASH,
+        "    BNE P2OsDone",
+        "    JMP P2CrashStart",
         "P2OsDone:",
         "    RTS",
 
@@ -2476,6 +2524,281 @@ def car_world_src():
         "    LDA $00A1", "    STA $%04X" % (P2_OA0 + 1),
         "    LDA $00A2", "    STA $%04X" % P2_OA2,
         "    LDA #$00", "    STA $%04X" % P2_ACTIVE,
+        "    STA $%04X" % P2_CRASH, "    STA $%04X" % P2_ARM,
+        "    RTS",
+    ]
+
+
+def p2_hazard_src():
+    """Player 2 against the world: puddles, cars and signs, by player 1's rules.
+
+    rom:C86E (ObjectCollision) tests every slot within -45..77 of player 1:
+    the row it would draw on (rom:C8AA), its x there through rom:E676 less the
+    road curve and $40, against PlayerX -- a contact under 30 units, or 26 at
+    Z 75..77. A puddle (class 2) costs Speed/8 with a splash; a car is a crash
+    (rom:CrashStart: 32 ticks, sounds 7 and 8, low gear). Signs are not tested
+    by position at all: rom:C1D3 arms a flag while the car is deep on the verge
+    (|x| 82 left, 86 right) on the side of the next sign, and rom:C8F9 crashes
+    it if the object segment then steps -- the car went past the sign out there.
+
+    Here the same, with player 2's lateral in player 1's terms (-P2_LATERAL),
+    its distances (player 1's plus the gap), and its own object segment for
+    the sign. The cars are the shared ones, so a car either player hits is a
+    real car in both views.
+    """
+    off = (P2_CAR_X - 0x40) & 0xFF
+    return [
+        "P2Collide:",
+        "    LDA $%04X" % P2_CRASH,
+        "    BEQ P2ClGo",
+        "    RTS",                             # nothing new while crashing
+        "P2ClGo:",
+        # --- the sign: armed while deep on the verge on the next sign's side
+        "    LDA #$00", "    SEC", "    SBC $%04X" % P2_LATERAL,   # x, player 1's terms
+        "    BMI P2ClLeft",
+        "    CMP #$56", "    BCC P2ClUnarm",
+        "    LDX $%04X" % P2_OA2,
+        "    LDA $%04X,X" % OBJ_SEG_DESC,
+        "    AND #$01",
+        "    BNE P2ClArm",                     # lane $24: the right-hand sign
+        "    BEQ P2ClUnarm",
+        "P2ClLeft:",
+        "    CMP #$AF",                        # -82 or further left
+        "    BCS P2ClUnarm",
+        "    LDX $%04X" % P2_OA2,
+        "    LDA $%04X,X" % OBJ_SEG_DESC,
+        "    AND #$01",
+        "    BEQ P2ClArm",                     # lane $23: the left-hand sign
+        "P2ClUnarm:",
+        "    LDA #$00",
+        "    BEQ P2ClArmSet",
+        "P2ClArm:",
+        "    LDA #$01",
+        "P2ClArmSet:",
+        "    STA $%04X" % P2_ARM,
+        # --- cars and puddles ------------------------------------------------
+        "    LDY $00AE",
+        "    BMI P2ClDone",
+        "P2ClLoop:",
+        "    STY $%04X" % CL_I,
+        "    LDX $19A4,Y",
+        "    LDA $19B4,X", "    AND #$07",
+        "    BEQ P2ClKind",
+        "    CMP #$02",
+        "    BNE P2ClNext",
+        "P2ClKind:",
+        "    JSR P2ClOne",
+        "    LDA $%04X" % P2_CRASH,
+        "    BNE P2ClDone",
+        "P2ClNext:",
+        "    LDY $%04X" % CL_I,
+        "    DEY",
+        "    BPL P2ClLoop",
+        "P2ClDone:",
+        "    RTS",
+
+        # one slot X: in reach, on the same line, and what it does
+        "P2ClOne:",
+        "    STX $%04X" % CL_X,
+        "    CLC",
+        "    LDA $19C4,X", "    ADC $%04X" % GAP_LO, "    STA $%04X" % CL_ZL,
+        "    LDA $19D4,X", "    ADC $%04X" % GAP_HI, "    STA $%04X" % CL_ZH,
+        "    LDA $19B4,X", "    AND #$07",
+        "    CMP #$02",
+        "    BNE P2ClRange",
+        # a puddle: the instance nearest player 2 (as P2PdFold folds it)
+        "    TXA", "    TAY",
+        "    LDA $19C4,Y", "    PHA", "    LDA $19D4,Y", "    PHA",
+        "    LDA $%04X" % CL_ZL, "    STA $19C4,Y",
+        "    LDA $%04X" % CL_ZH, "    STA $19D4,Y",
+        "    JSR P2PdFold",
+        "    LDY $%04X" % CL_X,
+        "    LDA $19C4,Y", "    STA $%04X" % CL_ZL,
+        "    LDA $19D4,Y", "    STA $%04X" % CL_ZH,
+        "    PLA", "    STA $19D4,Y", "    PLA", "    STA $19C4,Y",
+        "    LDX $%04X" % CL_X,
+        "P2ClRange:",
+        # -45..77: high byte 0 and low under $4E, or $FF and $D3 or more
+        "    LDA $%04X" % CL_ZH,
+        "    BEQ P2ClNear",
+        "    CMP #$FF",
+        "    BNE P2ClDone",
+        "    LDA $%04X" % CL_ZL,
+        "    CMP #$D3",
+        "    BCC P2ClDone",
+        "    LDA #$4D",                        # behind: the bottom row
+        "    BNE P2ClRow",
+        "P2ClNear:",
+        "    LDA $%04X" % CL_ZL,
+        "    CMP #$4E",
+        "    BCS P2ClDone",
+        # the row, as rom:C8AA: one past the last row whose distance exceeds Z+6
+        "    CLC", "    ADC #$06", "    STA $0048",
+        "    LDA #$00", "    ADC #$00", "    STA $0049",
+        "    JSR $E3CD",                       # the row search (FastZRow)
+        "    INX",
+        "    CPX #$4E",
+        "    BCC P2ClRowX",
+        "    LDX #$4D",
+        "P2ClRowX:",
+        "    TXA",
+        "P2ClRow:",
+        "    STA $%04X" % CL_R,
+        "    CLC", "    ADC #$04", "    STA $%04X" % OC_M,
+        "    LDX $%04X" % CL_X,
+        "    LDY $1A00,X",
+        "    LDA $E80F,Y", "    STA $%04X" % OC_CL,
+        "    LDA $A8A1,Y", "    STA $%04X" % OC_CH,
+        "    LDA #$00", "    SEC", "    SBC $%04X" % P2_LATERAL,
+        "    STA $%04X" % CL_PX,
+        "    JSR OcMul",                       # hi(c * (row + 4)), signed
+        # rom:E6D0 then rom:C8CD, instruction for instruction: the road curve
+        # at the row goes in and comes out again, and its carries with it --
+        # a simpler + $0F - x differs by one in 38% of cases
+        "P2ClCurve:",
+        "    LDY $%04X" % CL_R,
+        "    CLC", "    ADC $1A31,Y", "    ADC #$4F",
+        "    SEC", "    SBC $1A31,Y", "    SBC #$40", "    SBC $%04X" % CL_PX,
+        "    BPL P2ClAbs",
+        "    EOR #$FF", "    CLC", "    ADC #$01",
+        "P2ClAbs:",
+        "    LDX #$1E",
+        "    LDY $%04X" % CL_ZH,
+        "    BNE P2ClThr",
+        "    LDY $%04X" % CL_ZL,
+        "    CPY #$4B",
+        "    BCC P2ClThr",
+        "    LDX #$1A",
+        "P2ClThr:",
+        "    STX $%04X" % CL_T,
+        "    CMP $%04X" % CL_T,
+        "    BCS P2ClOut",
+        # contact
+        "    LDX $%04X" % CL_X,
+        "    LDA $19B4,X", "    AND #$07",
+        "    CMP #$02",
+        "    BEQ P2Puddle",
+        "    JMP P2CrashStart",
+        "P2ClOut:",
+        "    RTS",
+
+        # rom:C914-C939: the splash (unless one is playing, or below 90), and
+        # Speed -= Speed/8
+        "P2Puddle:",
+        "    LDX #$00",
+        "P2PdVoice:",
+        "    LDA $2102,X",
+        "    CMP #$02",
+        "    BEQ P2PdDecay",
+        "    INX", "    CPX #$02", "    BCC P2PdVoice",
+        "    LDA $%04X" % P2_SPEED,
+        "    CMP #$5A",
+        "    BCC P2PdDecay",
+        "    LDA #$02", "    JSR $DEF3",
+        "P2PdDecay:",
+        "    LDA $%04X" % P2_SPEED,
+        "    LSR A", "    LSR A", "    LSR A",
+        "    EOR #$FF", "    SEC",
+        "    ADC $%04X" % P2_SPEED,
+        "    STA $%04X" % P2_SPEED,
+        "    RTS",
+
+        # rom:C93E: 32 ticks, sounds 7 and 8, low gear
+        "P2CrashStart:",
+        "    LDA #$20", "    STA $%04X" % P2_CRASH,
+        "    LDA #$00",
+        "    STA $%04X" % P2_B2, "    STA $%04X" % P2_ARM, "    STA $%04X" % P2_GEAR,
+        "    LDA #$07", "    JSR $DEF3",
+        "    LDA #$08", "    JSR $DEF3",
+        "    RTS",
+
+        # from player 2's drive, in place of gas and brake while crashing:
+        # rom:C2C0 (Speed -25, or 0 once under 50) and rom:C5E8 (the count)
+        "P2CrashTick:",
+        "    LDA $%04X" % P2_SPEED,
+        "    LSR A",
+        "    CMP #$19",
+        "    BCS P2CtSub",
+        "    LDA #$00",
+        "    BEQ P2CtSet",
+        "P2CtSub:",
+        "    LDA $%04X" % P2_SPEED,
+        "    SEC", "    SBC #$19",
+        "P2CtSet:",
+        "    STA $%04X" % P2_SPEED,
+        "    DEC $%04X" % P2_CRASH,
+        "    BNE P2CtDone",
+        "    LDA #$00", "    STA $%04X" % P2_SPEED,
+        "P2CtDone:",
+        "    RTS",
+
+        # --- player 2's crash as player 2 sees it: rom:E364's crash frames for
+        # the car (while the count is 20 or more) and rom:E2CA's two pieces of
+        # debris, as entries in player 2's list. P2Car parks its own headers.
+        "P2CrashDraw:",
+        "    LDA $%04X" % P2_CRASH,
+        "    BNE P2CdGo",
+        "    RTS",
+        "P2CdGo:",
+        "    LDA $%04X" % P2L_END,
+        "    CMP #$12",
+        "    BCC P2CdRoom",
+        "    RTS",
+        "P2CdRoom:",
+        "    LDA $%04X" % P2_CRASH,
+        "    CLC", "    ADC #$0A",                # rom:C5F8: the car's frame
+        "    CMP #$1E",
+        "    BCC P2CdDebris",                  # 10..29: the car is gone
+        "    TAY",
+        "    LDX $A797,Y",
+        "    LDY $%04X" % P2L_END,
+        "    LDA #$47", "    STA $1A94,Y",
+        "    SEC", "    SBC $B3FA,X", "    STA $1AA9,Y",
+        "    LDA $C0F4,X", "    STA $1ABE,Y",
+        "    LDA $C0FA,X", "    STA $1AD3,Y",
+        "    LDA $ADB6,X", "    STA $1BEA,Y",
+        "    LDA #$%02X" % P2_CAR_X,
+        "    CLC", "    ADC $AF29,X", "    STA $1AE8,Y",
+        "    INC $%04X" % P2L_END,
+        "P2CdDebris:",
+        "    LDA $%04X" % P2_CRASH,
+        "    TAX",
+        "    LSR A", "    STA $%04X" % CL_T,
+        "    LDA $BBCC,X",
+        "    TAX",
+        "    LDA $%04X" % P2L_END, "    STA $0045",
+        "    JSR $E344",
+        "    LDA $%04X" % P2_B2,
+        "    CLC", "    ADC #$%02X" % ((0x4F + off) & 0xFF),
+        "    STA $1AE8,Y",
+        "    INC $%04X" % P2L_END,
+        "    LDA $%04X" % CL_T,
+        "    LSR A",
+        "    BEQ P2CdOne",
+        "    CMP #$08",
+        "    BNE P2CdTwo",
+        "    LDA #$07",
+        "    BNE P2CdTwo",
+        "P2CdOne:",
+        "    LDA #$01",
+        "P2CdTwo:",
+        "    TAX",
+        "    LDA $%04X" % P2L_END, "    STA $0045",
+        "    JSR $E344",
+        "    LDA $%04X" % P2_B2,
+        "    ASL A", "    ASL A",
+        "    BMI P2CdOff",                     # flown off the screen
+        "    EOR #$FF",
+        "    CLC", "    ADC #$%02X" % ((0x50 + off) & 0xFF),
+        "    STA $1AE8,Y",
+        "    LDA $%04X" % P2_B2,
+        "    CMP #$4E",
+        "    BEQ P2CdKeep",
+        "    CLC", "    ADC #$02",
+        "    STA $%04X" % P2_B2,
+        "P2CdKeep:",
+        "    INC $%04X" % P2L_END,
+        "P2CdOff:",
         "    RTS",
     ]
 
@@ -2554,7 +2877,7 @@ def _ext():
     if not _EXT:
         lines = ([".org $%04X" % EXT_ADDR] + fast_zrow_src() + rival_car_src()
                  + ["P2Emit:"] + p2_emit_src() + ["    RTS"] + p2_slot_tables()
-                 + car_world_src())
+                 + car_world_src() + p2_hazard_src())
         _EXT.append(_assemble(lines))
     return _EXT[0]
 
@@ -2677,13 +3000,14 @@ def rival_car_src(part="main"):
         "RcP2Objs:",
     ] + ([] if os.getenv("PP2_NO_P2OBJECTS") else [
         # --- the world's objects, as player 2 sees them -----------------------
-        # Cars and the marker from the game's live slots (all of them, not
+        # Cars and puddles from the game's live slots (all of them, not
         # player 1's visible window: player 2 can see what player 1 cannot),
         # with the object's distance moved by the camera gap for the call and
         # put back after. Signs are player 2's own, computed from track data
         # (P2Signs). Each goes through P2Obj1 -- the game's own per-object
         # routines, x from P2X. Nearest first, so a full list drops the
         # farthest.
+        "    JSR P2CrashDraw",                 # player 2's own crash, first
         "    LDX $00AE",
         "    BMI P2ObSigns",
         "    CPX #$10",
@@ -2703,7 +3027,7 @@ def rival_car_src(part="main"):
         "    ADC $%04X" % GAP_HI, "    STA $19D4,Y",
         "    LDA $19B4,Y", "    AND #$07",
         "    CMP #$02", "    BNE P2ObGo",
-        "    JSR P2Marker",
+        "    JSR P2PdFold",
         "P2ObGo:",
         "    JSR P2Near",
         "    BCS P2ObBack",                    # nowhere near player 2's view
@@ -2837,11 +3161,13 @@ def rival_car_src(part="main"):
         "P2O1Out:",
         "    RTS",
 
-        # --- the marker's distance for player 2 (slot $44, already moved by
-        # the gap). Player 1 re-places it L ahead once it is 120 behind
-        # (rom:CAED), so it recurs every L + 121 or so. Player 2 sees the
-        # instance nearest ahead of it: fold into -120..L.
-        "P2Marker:",
+        # --- a puddle's distance for player 2 (slot $44, already moved by the
+        # gap). Player 1 re-places it L ahead once it is 120 behind (rom:CAED,
+        # dat_AFC2/AFC6), so it recurs every L + 121 or so. Player 2 sees the
+        # instance nearest ahead of it: fold into -120..L. (Class 2 is the
+        # puddle -- docs/FINDINGS.md, "Type 2 is the puddle"; checkpoint 61
+        # called it a marker.)
+        "P2PdFold:",
         "    LDX $00C4",                       # TrackIndex
         "    SEC",
         "    LDA $AFC6,X", "    SBC $19C4,Y",

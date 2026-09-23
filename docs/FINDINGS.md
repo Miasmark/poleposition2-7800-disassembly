@@ -5532,3 +5532,143 @@ Also on W4:
   no cars.
 - **`tools/p2-objects-gap0-check.py`** now stands for cars only; signs are
   checked by `tools/world-check.py`.
+
+## Player 2 collides: puddles, cars and signs by player 1's rules
+
+Checkpoint 62. Two reports: when the cars touched, player 1 bumped player 2
+but nothing came back the other way; and player 2 drove straight through the
+world. Asked, too, whether player 2 sees puddles.
+
+### Correction: class 2 is the puddle, not a marker
+
+Checkpoint 61 called object class 2 "the marker" and built a fold for it
+(`P2Marker`, now `P2PdFold`). It is the **puddle**, found long ago in this file
+("Type 2 is the puddle, and one dodge proves it"): type `$C2`, lateral 15-18,
+laid for the race by rom:D1DF (`dat_ACD4` per track; qualifying is set up with
+none at rom:CFD1) and re-placed `dat_AFC2/AFC6` ahead once passed. So player 2
+has been *drawing* puddles since checkpoint 61, through that fold. It had no
+effect until now.
+
+### Player 1's rules (rom:C86E, rom:C1D3, rom:C93E)
+
+- **Cars and puddles, by position.** Every slot within -45..77 of the player:
+  - the row it would draw on (rom:C8AA);
+  - its x there from rom:E676 (the lane coefficient times row+4, plus the road
+    curve at the row, plus `$4F`);
+  - then `- curve - $40 - PlayerX` in one borrow chain.
+
+  Under 30 is a contact, or under 26 when the stale `$4E` is 75 or more. A
+  puddle costs Speed/8, with the splash (sound 2) if none is playing and speed
+  is 90 or more. Anything else is a crash.
+- **Signs, not by position.** rom:C1D3 arms `$EB` while the car is deep on
+  the verge (x <= -82, or >= 86) on the same side as the next sign (lane `$23`
+  left, `$24` right). rom:C8F9 crashes it once the object segment steps while
+  armed: the car went past the sign out there.
+- **The crash** (rom:C93E), measured: `CrashTimer` 32, counted down once a
+  tick. On run-02 it lasted 187 frames, 31 main-loop passes.
+  - Each tick costs 25 speed, down to 0 (rom:C2C0).
+  - No steering (rom:C500) and no further tests (rom:C866).
+  - Sounds 7 and 8; low gear.
+  - The car's sprite index `$E1` = timer + 10 (rom:C5F8): spin frames through
+    `A797` -> `B3FA` height, `C0F4`/`C0FA` sprite, `AF29` x offset, `ADB6`
+    palette/width while the index is 30 or more. After that the car is hidden,
+    and two pieces of debris (rom:E2CA) fly out for the whole crash.
+  - `PlayerX` is not reset.
+
+### What was built
+
+- **`P2Collide`** (the `$4000` area), once a tick after the gap is updated,
+  applies the same rules with player 2's lateral in player 1's terms
+  (`-P2_LATERAL`), its distances (player 1's plus the gap, puddles folded to
+  the nearest instance), and its own object segment for the sign. The contact
+  arithmetic is rom:E6D0/C8CD's instruction for instruction, road curve and
+  borrow chain included.
+- **The sign crash** fires in `P2ObjSeg` when player 2's segment steps while
+  `P2_ARM` is set.
+- **`P2CrashStart` / `P2CrashTick`:** player 2's own 32-tick crash, with the
+  same speed loss, no gas, brake or steering, low gear, and sounds 7 and 8.
+  At the end, speed 0.
+- **`P2CrashDraw`** puts player 2's crash into its own list, first after
+  player 1's car: the spin frames, then rom:E2CA's two pieces of debris (via
+  rom:E344). `P2Car` parks player 2's four car headers meanwhile.
+- **Car to car:** contact now shoves **both** cars apart, `COLLIDE_PUSH` (4)
+  each a tick. Before, only player 2 was pushed, which is what "player 1 bumps
+  player 2, and nothing comes back" was.
+- The cars player 2 hits are the shared ones (checkpoint 61), so a car either
+  player hits is a real car in both views.
+
+### How it was checked
+
+**The contact test is the same arithmetic as player 1's, exactly.**
+`tools/contact-model-check.py` models rom:C8C1-C8EC with rom:E676 byte for
+byte:
+- the model against every player 1 test logged live
+  (`tools/probe-contact-tests.lua`, `tools/probe-collide-scenario.lua`): 180 of
+  180 values and decisions, on run-03 and two scripted races;
+- player 2's code against the model: 134 of 134;
+- exhaustively, player 2's arithmetic at the same place as player 1's: every
+  car and puddle lane, every row a contact can be on, every road-curve value,
+  every lateral. **0 of 23,969,792 differ.**
+
+The one deliberate difference: for an object already behind the player,
+player 1's 30-or-26 choice reads `$4E`, which then holds a stale value. Player 2
+uses 30.
+
+Races on tracks 1 and 3 with both players held level and in the same lane
+(`probe-collide-scenario.lua`):
+- player 2 crashes into the same cars as player 1, at the same gap when level
+  (car slot 10, gap -1: f4785 and f4790), and first when it leads;
+- both crash at the signs while deep on either verge;
+- both take puddle slowdowns.
+
+Screenshots: player 2's view shows its spin frames and debris, while player 1's
+view carries on.
+
+Car to car, the same start with laterals left free: on checkpoint 61 player 1
+stayed at -10 while player 2 went to -52. Now player 1 goes to +10 and player 2
+to -30, 40 apart (the contact box), then both drift with the road.
+
+Also on checkpoint 62:
+- player 2's list integrity: 0 zeroed road headers on three recordings;
+- rival-car model: 103/103, 335/335 (player 2's car in player 1's view) and
+  166/166, 132/132, 125/125 (player 1's in player 2's);
+- signs exact on every tick;
+- health: unchanged.
+
+Cost: player 2's tick (rom:D713-D716) averages 516 scanlines against 506
+before, peaking at 691 when a crash starts. RivalCars averages 161 lines while
+player 2 is not crashing (152 before) and 207 while it is, for the crash's
+entries. The traffic scenario's pass spacing got worse (12-frame passes 187
+against 127), but that run now plays differently, with both cars crashing, so
+it does not compare like for like.
+
+### Wrong turns
+
+- **The first player 2 formula**, `hi(c * (row+4)) + $0F - x`, looked like
+  the ROM's once the curve cancels. It differs by one in **38%** of cases,
+  because the curve goes in with a carry and comes out with a borrow. Replaced
+  by the ROM's own sequence, which the exhaustive check then settled.
+- **Probe artifacts, not code:**
+  - the curve byte was read after the computation (the display interrupt
+    rewrites that table);
+  - `P2_LATERAL` was read after a per-frame poke had changed it mid-test;
+  - a player 1 test and its hit were logged either side of a frame boundary.
+
+  Each probe now reads the value at the moment it is used (a `P2ClCurve`
+  label, `CL_PX`), and the checker matches the hit on the same frame or the
+  next.
+- **The first scripted runs** found no puddles: qualifying is set up with
+  none. The scenario now drives on into the race.
+
+### Limits, for later
+
+- **Player 2's crash is not shown in player 1's view.** Player 2's car keeps
+  its ordinary sprite there. The game's own rival-crash frames (kind 3, rom:E4B7
+  / E59D / E5E8, driven by `CrashTimer`) are the way to do it.
+- **Player 1's crash is not shown in player 2's view** (the car it hit, class
+  3, is skipped there, and player 1's car keeps its ordinary sprite).
+- **A car player 2 hits carries on.** For player 1 it becomes the crash kind
+  and is moved behind player 1 when the crash ends (rom:D037). Player 2's
+  crash leaves the shared car alone, so it drives on ahead.
+- The splash and crash sounds share the TIA's two voices with player 1's, by
+  the game's own priorities.
