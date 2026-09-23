@@ -442,9 +442,13 @@ P2_OC_D = 0x271B             # lateral difference between the two cars
 P2_OC_ML = 0x271C            # the scaled offset, 16 bit
 P2_OC_MH = 0x271D
 P2_OC_CNT = 0x271E           # multiply loop counter
-P1_OC_BAND = 0x271F          # band player 2's car is drawn in, in P1's view
-P1_OC_LAST = 0x2720          # the band it used last frame, $FF for none
-P1_OC_DST = 0x2721           # that band's slot offset within its page
+# These were at $271F-$2721, and $2720 is P2_WALK -- the other car's state sat
+# directly on top of the walk's scratch and corrupted it every frame. Moved into
+# the gap between the walk and player 2's track state, avoiding $2730, which is
+# not free. _check_p2_ram below now catches this class of mistake at build time.
+P1_OC_BAND = 0x2740          # band player 2's car is drawn in, in P1's view
+P1_OC_LAST = 0x2741          # the nearest band it used last frame, $FF for none
+P1_OC_DST = 0x2742           # scratch for the slice loop
 ZROW_SCRATCH = 0x0048        # the 16-bit Z the row lookup reads
 ZROW_NEAR = 256              # Z below this is indexed directly
 ZROW_FAR_STEP = 8            # above it, in steps of this
@@ -1152,6 +1156,43 @@ def _stock_bytes(addr, n):
     assert RECLAIMED_LO <= addr and addr + n - 1 <= RECLAIMED_HI, \
         "$%04X..$%04X is outside the reclaimed injection" % (addr, addr + n - 1)
     return list(rom[addr - BASE:addr - BASE + n])
+
+
+def _check_p2_ram():
+    """No two of player 2's variables may overlap.
+
+    Written after P1_OC_LAST was placed at $2720, which is P2_WALK: the other
+    car's state sat on the walk's scratch and corrupted it every frame, showing
+    up in play as the player's own car breaking up.
+    """
+    regions = [
+        ("P2_DL_BASE", P2_DL_BASE, p2_dl_bytes()),
+        ("P2_LATERAL", P2_LATERAL, 1),
+        ("P2_SCRATCH", P2_SCRATCH, 7),
+        ("P2_PHASE", P2_PHASE, 6),          # phase, acc, lean, car_ok, gear, steer
+        ("P2_STEP_HI", P2_STEP_HI, 1),
+        ("P2_STAGE_TMP", P2_STAGE_TMP, 1),
+        ("P2_DRIFT", P2_DRIFT_IDX, 3),
+        ("P2_OC", P2_OC_BAND, 6),
+        ("P2_WALK", P2_WALK, 11),
+        ("P1_OC", P1_OC_BAND, 3),
+        ("P2_TRACK", P2_TRACK_SEG, 3),
+        ("P2_SPEED", P2_SPEED, 1),
+        ("P2_CAR_DELTA", P2_CAR_DELTA, 1),
+        ("P2_FRAC", P2_FRAC, 1),
+        ("P2_HALF", P2_HALF, 2),
+        ("P2_QUOT", P2_QUOT, 1),
+        ("GAP", GAP_PSEG, 7),
+        ("P2_BANDX", P2_BANDX, 13),
+        ("P2_HIT", P2_HIT, 2),
+        ("P2_HUD_DL", P2_HUD_DL, 12),
+    ]
+    regions.sort(key=lambda r: r[1])
+    for (n1, a1, s1), (n2, a2, _) in zip(regions, regions[1:]):
+        if a1 + s1 > a2:
+            raise SystemExit(
+                "player 2 RAM overlap: %s $%04X..$%04X runs into %s at $%04X"
+                % (n1, a1, a1 + s1 - 1, n2, a2))
 
 
 def _blob_len():
@@ -2274,12 +2315,14 @@ def p2_othercar_src():
         "    CLC", "    ADC $%04X,Y" % P2_DL_BASE,
         "    LDY $%04X" % P2_OC_DST,
         "    STA $%04X,Y" % (P2_DL_BASE + 3),
-        # --- the sprite: this band's page, plus player 1's lean --------------
-        "    LDX $%04X" % P2_OC_BAND,
-        "    LDA P2OcWid,X",
-        "    STA $%04X,Y" % (P2_DL_BASE + 1),
-        "    LDA P2OcHi,X",
-        "    STA $%04X,Y" % (P2_DL_BASE + 2),
+        # --- the sprite, across every band the car spans ---------------------
+        # A car is five bands tall close up -- pages $A3 $9D $97 $91 $8B over
+        # bands 7 to 11, which is how player 1's own car is drawn -- and one band
+        # out in the distance. Writing a single slice drew one six-line strip of
+        # it, which reads as a lone wheel. The slices run from the base band
+        # UPWARD, toward the horizon, each taking its own band's page, and stop
+        # at band 7 so they stay inside the eight-byte sprite's range.
+        "    STA $%04X" % P2_OC_D,                # keep the x for every slice
         "    LDA $%04X" % (P1_CAR_SLOT[3] + 2),
         "    CMP #$8B",
         "    BNE P2OcUpright",
@@ -2289,7 +2332,25 @@ def p2_othercar_src():
         "P2OcUpright:",
         "    LDA #$10",
         "P2OcLean:",
+        "    STA $%04X" % P2_OC_CNT,              # the lean, reused per slice
+        "P2OcSlice:",
+        "    LDX $%04X" % P2_OC_BAND,
+        "    LDA P2ObjOfs-1,X",
+        "    TAY",
+        "    LDA $%04X" % P2_OC_D,
+        "    STA $%04X,Y" % (P2_DL_BASE + 3),
+        "    LDA P2OcWid,X",
+        "    STA $%04X,Y" % (P2_DL_BASE + 1),
+        "    LDA P2OcHi,X",
+        "    STA $%04X,Y" % (P2_DL_BASE + 2),
+        "    LDA $%04X" % P2_OC_CNT,
         "    STA $%04X,Y" % P2_DL_BASE,
+        # next slice up, while the car is the tall sprite and band 7 is not past
+        "    CPX #$08",
+        "    BCC P2OcSliceDone",
+        "    DEC $%04X" % P2_OC_BAND,
+        "    JMP P2OcSlice",
+        "P2OcSliceDone:",
         "P2OcDone:",
         "    PLA", "    STA $%04X" % (S + 1),
         "    PLA", "    STA $%04X" % S,
@@ -2704,6 +2765,7 @@ def fix_mirror_split(p):
             "P2_LIMIT %d runs off the lateral ramp, which has %d entries"
             % (P2_LIMIT, LATERAL_RAMP_LEN))
 
+    _check_p2_ram()
     p.put(DLL_TEMPLATE, dll_template(),
           expect=_stock_bytes(DLL_TEMPLATE, DLL_ZONES * 3))
     p.put(P2_TEMPLATE, p2_dl_template(),

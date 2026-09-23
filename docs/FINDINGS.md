@@ -4496,3 +4496,35 @@ an upright lean.
 almost always positive and no racing frame has player 2 ahead. This direction is
 verified by its numbers rather than by a picture, and a two-player recording
 would settle it.
+
+## Two faults from play: a RAM collision and the band slicing
+
+**The corruption was a RAM collision, and a blunt one.** `P1_OC_LAST` was placed
+at `$2720`, which is `P2_WALK` -- the other car's state was written directly on
+top of the walk's scratch every frame. Moved to `$2740`, and a
+`_check_p2_ram()` guard now sorts every one of player 2's regions and refuses to
+build if any two overlap. That guard is the real fix; the address was only the
+symptom.
+
+**"A single wheel" was the band slicing, and it confirms the earlier theory.** A
+car is five bands tall close up -- pages `$A3 $9D $97 $91 $8B` across bands 7 to
+11, which is exactly how player 1's own car is drawn -- so writing one slice
+drew a single six-line strip of it. Player 2's view now writes a slice into
+every band from the base upward toward the horizon, each taking its own band's
+page, stopping at band 7 so they stay inside the eight-byte sprite's range.
+
+run-01 and run-02 grade at baseline, and the two-player recording grades
+**HEALTHY** at 101 clock values.
+
+### Still single-slice: player 1's view
+
+The same change applied to player 1's view broke run-01 and run-02 down to 3
+distinct clock values while leaving the two-player recording untouched, and
+`PP2_NO_OTHERCAR` isolates it to the other-car code rather than to the staging
+tables that moved in the same round. Not diagnosed. So **player 2's car will
+still look like a wheel in player 1's view** until that is solved.
+
+What is odd about it, and worth starting from: in run-01 and run-02 player 2 is
+parked, so the gap is positive and player 1's pass should reject before drawing
+anything at all. Something in that pass costs or corrupts even on the path where
+it draws nothing.
