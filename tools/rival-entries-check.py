@@ -43,8 +43,7 @@ def mul(c, m):
 
 
 def row_of(z):
-    if z & 0x8000:
-        return None
+    # as rom:E3E6: +6 first, then the sign (a car up to 6 behind is in view)
     z = (z + 6) & 0xFFFF
     if z & 0x8000:
         return None

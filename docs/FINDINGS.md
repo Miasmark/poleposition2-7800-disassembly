@@ -5788,3 +5788,47 @@ Consequences, now that the cars collide:
 Fixing the sign will put player 2 in the other lane of player 1's grid row --
 where an enemy car was placed (see "The race grid", step 4), so that car will
 also have to go.
+
+## Starts fixed: side by side, and the car in the way moved
+
+Checkpoint 65, fixing the bug found just above.
+
+- **Qualifying (the `$10` banner): side by side.** `P2GridSym` now puts player 1
+  at -32 and player 2 at +32 (`P2_LATERAL` -32), level on the track. On both
+  recordings: -32 and +32 one frame in, still there 30 frames later, no bump.
+- **Race: player 2 in the other lane of player 1's grid row.** `P2PlaceMirror`
+  sets `P2_LATERAL = PlayerX`, i.e. x2 = -x1, at the `$11` banner and again at
+  `$03` when the game sets player 1's lane. A slot closer than 20 to the centre
+  (the mirror would be inside the contact box) sends player 2 64 away on the
+  other side instead; `GRID_MIN_MIRROR` went from 16 to 20 for that reason.
+- **Player 1 is no longer moved at the race banner.** `P2RaceInit` used to call
+  `P2GridSym` at `$11` too, which set `PlayerX` to -32 -- straight into the grid
+  car sharing player 1's row, which player 1 then crashed into. The game leaves
+  `PlayerX` alone there (a leftover, measured 44) and sets the real lane at `$03`;
+  so does this now.
+- **`P2Clear` moves a car out of player 2's way.** Any car level with player 2
+  (-128..160) and within 40 of its lateral is sent 128 behind both players,
+  where the recycle pass retires it at once and it rejoins as traffic ahead --
+  what the game already does with every grid car that starts behind player 1.
+  Run at every placement. On the race grid it is exactly the car the game put
+  in player 2's new lane.
+
+What the grid looks like (track 3 and track 1 alike): rows of two, 272 apart,
+lanes `$02` and `$20`, the `$20` car 16 further ahead. Player 1's row holds one
+enemy car. After the fix: player 1 at 44 (its own), player 2 at -44, the car
+that was in lane `$02` beside player 1 moved to -128 and recycled, and no crash
+at the start on either track with nothing held during the race.
+
+### And the other car was missing from player 2's view at the start
+
+With the two level, the gap is typically -1: player 2 one unit ahead, so in
+player 2's view player 1 is one unit *behind*. `OcRow` rejected any negative
+distance, but rom:E3E6 adds 6 first and only then looks at the sign, so the
+game draws a car up to 6 behind on the bottom rows. `OcRow` now does the same
+(and so does `tools/rival-entries-check.py`'s model); player 1's car now shows
+beside player 2's at both starts. Rival-car model on the recordings: 69/69,
+79/79 and 46/46, 93/93, 117/117 (fewer entries than before -- the recordings
+now play differently, since the cars no longer start inside each other).
+Integrity and health unchanged.
+
+`tools/probe-start-positions.lua` reads both positions at each start.

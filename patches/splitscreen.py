@@ -643,8 +643,9 @@ GAME_STATE = 0x009D          # $02 qualifying drive, $03 race drive,
 GRID_LANE = 0x20             # half the gap between the two grid lanes, 32.
                              # 64 apart is outside the collision box of 40 and
                              # well inside the road edge at 59.
-GRID_MIN_MIRROR = 0x10       # below this, player 1's slot is too near the
-                             # centre to mirror usefully, so fall back
+GRID_MIN_MIRROR = 0x14       # below this, player 1's slot is too near the
+                             # centre to mirror clear of the collision box
+                             # (2 x 20 = 40), so player 2 goes 64 away instead
 
 # The divider is shared: its top row belongs to player 2 and its lower rows to
 # player 1, matching the viewport above and below it. Player 2's row needs a
@@ -968,7 +969,7 @@ def hud_reassert_src(addr):
         [] if os.getenv("PP2_KEEP_INJECTION") else road_stage_src()
     ) + p2_stage_src() + p2_car_src() + [
         "    RTS",
-    ] + p2_stage_tables() + p2_slot_tables() + ["P2Emit = $%04X" % _ext()[1]["P2Emit"], "P2ObjSeg = $%04X" % _ext()[1]["P2ObjSeg"], "P2ObjInit = $%04X" % _ext()[1]["P2ObjInit"], "P2Collide = $%04X" % _ext()[1]["P2Collide"], "P2CrashTick = $%04X" % _ext()[1]["P2CrashTick"], "P2BuildLists = $%04X" % _rival_helpers()[1]["P2BuildLists"]] + [
+    ] + p2_stage_tables() + p2_slot_tables() + ["P2Emit = $%04X" % _ext()[1]["P2Emit"], "P2ObjSeg = $%04X" % _ext()[1]["P2ObjSeg"], "P2ObjInit = $%04X" % _ext()[1]["P2ObjInit"], "P2Collide = $%04X" % _ext()[1]["P2Collide"], "P2Clear = $%04X" % _ext()[1]["P2Clear"], "P2CrashTick = $%04X" % _ext()[1]["P2CrashTick"], "P2BuildLists = $%04X" % _rival_helpers()[1]["P2BuildLists"]] + [
 
         "WrapSlot0:",
         "    CMP #$A0",
@@ -2197,27 +2198,42 @@ def p2_race_init_src():
         # so this is safe to call after the session is already running. If
         # player 1 is too near the centre to mirror usefully, the symmetric pair
         # is used instead.
+        # Player 2 into the other lane of player 1's grid row: the mirror,
+        # x2 = -x1, which in player 2's terms (-P2_LATERAL) is P2_LATERAL =
+        # PlayerX. (Until checkpoint 65 this stored -PlayerX and the
+        # symmetric pair +GRID_LANE -- written before the laterals were found
+        # to run in opposite directions, so both put player 2 ON player 1.)
+        # A slot too near the centre to mirror clear of the contact box goes
+        # 64 away on the other side instead. Either way, a car standing where
+        # player 2 now is gets moved (P2Clear).
         "P2PlaceMirror:",
         "    LDA $%04X" % PLAYER_X,
         "    BPL P2GridAbs",
         "    EOR #$FF", "    CLC", "    ADC #$01",
         "P2GridAbs:",
         "    CMP #$%02X" % GRID_MIN_MIRROR,
-        "    BCC P2GridSym",
+        "    BCC P2GridNear",
         "    LDA $%04X" % PLAYER_X,
-        "    EOR #$FF", "    CLC", "    ADC #$01",
         "    STA $%04X" % P2_LATERAL,
-        "    RTS",
-        # One car per lane. Used for the qualifying banner, where there is no
-        # qualifying result to place anyone by, and as the mirror's fallback.
+        "    JMP P2Clear",
+        "P2GridNear:",
+        "    LDA $%04X" % PLAYER_X,
+        "    BMI P2GridNearL",
+        "    LDA #$40", "    SEC", "    SBC $%04X" % PLAYER_X,   # x2 = x1 - 64
+        "    STA $%04X" % P2_LATERAL,
+        "    JMP P2Clear",
+        "P2GridNearL:",
+        "    LDA #$C0", "    SEC", "    SBC $%04X" % PLAYER_X,   # x2 = x1 + 64
+        "    STA $%04X" % P2_LATERAL,
+        "    JMP P2Clear",
+        # The qualifying lap: side by side, player 1 left and player 2 right,
+        # GRID_LANE either side of the centre line.
         "P2GridSym:",
         "    LDA #$%02X" % ((0x100 - GRID_LANE) & 0xFF),
-        "    STA $%04X" % PLAYER_X,
-        "    LDA #$%02X" % GRID_LANE,
-        "    STA $%04X" % P2_LATERAL,
-        "    RTS",
+        "    STA $%04X" % PLAYER_X,                   # x1 = -32
+        "    STA $%04X" % P2_LATERAL,                 # x2 = +32
+        "    JMP P2Clear",
         "P2RaceInit:",
-        "    JSR P2GridSym",
         "    LDA #$00",
         "    STA $%04X" % P2_SPEED, "    STA $%04X" % P2_FRAC,
         "    STA $%04X" % P2_PHASE, "    STA $%04X" % P2_PHASE_ACC,
@@ -2235,6 +2251,18 @@ def p2_race_init_src():
         "    STY $%04X" % GAP_PSEG,
         "    LDA $%04X" % P1_POS_LO, "    STA $%04X" % GAP_PLO,
         "    LDA $%04X" % P1_POS_HI, "    STA $%04X" % GAP_PHI,
+        # placed once the gap is zeroed, so P2Clear measures from player 2.
+        # The qualifying banner ($10) puts both side by side; the race banner
+        # ($11) leaves player 1 where the game has it -- the game sets its
+        # grid lane at $03, and moving it here drove it into the car sharing
+        # its grid row -- and mirrors it, again at $03 (P2DoPlace).
+        "    LDA $%04X" % GAME_STATE,
+        "    CMP #$10",
+        "    BNE P2RiRace",
+        "    JSR P2GridSym",
+        "    JMP P2ObjInit",
+        "P2RiRace:",
+        "    JSR P2PlaceMirror",
         "    JMP P2ObjInit",                   # and its object segment
     ]
 
@@ -2883,6 +2911,66 @@ def p2_hazard_src():
         "    LDA $19D4,X",
         "    RTS",
 
+        # --- clear player 2's starting spot (P2PlaceMirror / P2GridSym): any
+        # car level with player 2 (-128..160) and within 40 of its lateral is
+        # sent to 128 behind both players, where the recycle pass retires it
+        # at once and it rejoins as traffic ahead, as a grid car behind player
+        # 1 does. On the race grid that is the car the game put in the lane
+        # player 2 now takes.
+        "P2CrOut:",
+        "    RTS",
+        "P2Clear:",
+        "    LDY $00AE",
+        "    BMI P2CrOut",
+        "P2CrLoop:",
+        "    STY $%04X" % CL_I,
+        "    LDX $19A4,Y",
+        "    STX $%04X" % CL_X,
+        "    LDA $19B4,X", "    AND #$07",
+        "    BNE P2CrNext",                    # cars only
+        "    CLC",
+        "    LDA $19C4,X", "    ADC $%04X" % GAP_LO, "    STA $%04X" % CL_ZL,
+        "    LDA $19D4,X", "    ADC $%04X" % GAP_HI, "    STA $%04X" % CL_ZH,
+        "    BEQ P2CrNearZ",
+        "    CMP #$FF",
+        "    BNE P2CrNext",
+        "    LDA $%04X" % CL_ZL, "    CMP #$80",
+        "    BCC P2CrNext",
+        "    BCS P2CrLat",
+        "P2CrNearZ:",
+        "    LDA $%04X" % CL_ZL, "    CMP #$A0",
+        "    BCS P2CrNext",
+        "P2CrLat:",
+        "    LDY $1A00,X",
+        "    LDA $E80F,Y", "    STA $%04X" % OC_CL,
+        "    LDA $A8A1,Y", "    STA $%04X" % OC_CH,
+        "    LDA #$51", "    STA $%04X" % OC_M,     # the bottom row, $4D + 4
+        "    JSR OcMul",
+        "    CLC", "    ADC #$0F",
+        "    CLC", "    ADC $%04X" % P2_LATERAL,
+        "    BPL P2CrAbs",
+        "    EOR #$FF", "    CLC", "    ADC #$01",
+        "P2CrAbs:",
+        "    CMP #$28",
+        "    BCS P2CrNext",
+        "    LDX $%04X" % CL_X,
+        "    LDA $%04X" % GAP_HI,
+        "    BMI P2CrP1",
+        "    SEC",                             # player 2 behind or level:
+        "    LDA #$80", "    SBC $%04X" % GAP_LO, "    STA $19C4,X",   # 128 behind it
+        "    LDA #$FF", "    SBC $%04X" % GAP_HI, "    STA $19D4,X",
+        "    JMP P2CrNext",
+        "P2CrP1:",
+        "    LDA #$80", "    STA $19C4,X",     # player 1 behind: 128 behind it
+        "    LDA #$FF", "    STA $19D4,X",
+        "P2CrNext:",
+        "    LDY $%04X" % CL_I,
+        "    DEY",
+        "    BMI P2CrDone",
+        "    JMP P2CrLoop",
+        "P2CrDone:",
+        "    RTS",
+
         # --- the other player's car while that player crashes, in this view:
         # the game's crashed-rival look (rom:E443 row, rom:E4B7 height,
         # rom:E59D sprite, rom:E5C7 palette -- A7A1[count] into the same six
@@ -3480,9 +3568,11 @@ def rival_car_src(part="main"):
         "    RTS",
 
         # --- $48/$49 = distance ahead -> OC_ROW/SIZE/BOT, carry set to reject
+        # Behind by more than 6: not in view. rom:E3E6 adds 6 before it looks
+        # at the sign, so a car up to 6 behind draws on the bottom rows; the
+        # first version rejected any negative distance, which lost the other
+        # car from player 2's view on the grid (gap -1).
         "OcRow:",
-        "    LDA $0049",
-        "    BMI OcRej",                       # behind: not in view
         "    CLC",                             # rom:E3E6: +6, then the search
         "    LDA $0048", "    ADC #$06", "    STA $0048",
         "    LDA $0049", "    ADC #$00", "    STA $0049",
