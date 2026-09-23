@@ -4739,3 +4739,69 @@ read over four recordings**, 486 of them in 19 stretches of 16+ (largest 41,
 at page edges in `$86xx-$8Axx`). Those recordings never show attract mode, the
 other tracks, results or every crash frame, so these are candidates to prove,
 not space to spend.
+
+## The attract demo, and what cutting it would free
+
+With no input the game alternates the title and track map (state `$00`,
+~1,400 frames) with a computer-driven race (state `$01`, ~1,414 frames), on
+whichever track is selected. State `$01` appears in no real game -- real play
+runs `00 06 04 10 02` (qualifying) `0B .. 11 03` (the race) `0C 09` -- so
+"what the demo uses" is exactly "what is read in state `$01`".
+
+### How it is built: the real race, with the stick replaced
+
+* **Launch**, rom:D272-D298, inside the title handler: when the idle timer
+  (`sub_DA5C`, a countdown in `$BF/$C0`) expires it sets state 1, loads the
+  track, picks a grid slot from the frame counter, and calls the ordinary race
+  start `$D0B9` and race init `$D8AC`.
+* **Handler**, rom:D2D3: stick moved -> `$D888` (back to title, shared by four
+  callers); otherwise the race tick. Its last three bytes, `$D302: JMP $D701`,
+  are the race-tick jump that states `$02` and `$03` branch to as well.
+* **The autopilot is 28 bytes.** rom:C3E1 is the player's steering-input
+  routine, called once, from `$C1D3`. In the demo it decides direction from the
+  car's lateral position (`$D1`, a +/-10 dead band) at `$C3E7-$C3FC`; in play
+  it reads the stick at `$C447`. Both then share the steering application at
+  `$C3FD-$C43D` -- the stick path branches back into it at `$C460`, `$C465` and
+  `$C478`. An earlier reading here took all of `$C3E1-$C446` for the
+  autopilot; those branches show it is not.
+* Six small `CMP #$01` tests elsewhere (`$C2D4` countdown skip, `$C43E` clock,
+  `$C705`, `$CBDD`, `$DF3D` sound, and our own `$F50C`).
+
+### What it would free
+
+| where | bytes | how |
+|---|---|---|
+| `$D275-$D298` launch | 36 | `$D272: JMP $D299`, so an expired timer keeps the title up |
+| `$D2D3-$D301` handler | 47 | never entered; keep `$D302` |
+| `$C3E1-$C3FC` demo steering | 28 | retarget `$C1D3`'s `JSR` to `$C447` |
+| `$C43F-$C446` demo clock test | 8 | `RTS` at `$C43E` |
+| our blob, `$F50C` test | 6 | drop from `splitscreen.py` |
+
+**About 120 bytes of original ROM in four pieces (8-47), and 6 in the code
+blob.** Small, because the demo is the race engine; the other `CMP #$01` tests
+save three to six bytes each and need re-routing, so they are not worth it.
+
+### What the coverage said, and why most of it is not demo code
+
+`tools/probe-state-coverage.lua` taps every read of the cart (CPU and MARIA
+alike), armed only once the cart's reset code at `$D205` runs so the BIOS's
+signature scan is excluded, and tags each byte with `$9D` **at the moment of
+the read**. Tagging by the state at frame end, the first version, filed the
+demo's launch code under the title. `tools/state-coverage-diff.py` subtracts.
+
+Over sixteen runs -- every recording plus the demo on all four tracks (held by
+writing `TrackIndex`, `$C4`, during the title) -- **2,108 bytes are read only
+in the demo**: 747 in code, 1,361 in graphics and tables. Almost none of it is
+demo logic:
+
+* `$D0C1-$D204`, ~300 bytes, is the race start, `$D0B9`. Its other caller,
+  `$D655`, is the real race start after qualifying -- which **no recording
+  reaches on the two-player build**: they all go `02 0D 0A 00` and never see
+  state `$03`. That gap hides every race-only path.
+* `$CAEE-$CB4F` and the like are object and traffic paths (kind-2 markers,
+  respawning) that the demo reaches by driving further, on more tracks.
+* The graphics -- one 8-byte, ~30-line sprite in pages `$8A-$A3` among them --
+  are objects no recording happened to draw.
+
+A four-track recording that qualifies and reaches the race on each track would
+shrink the list to what is genuinely the demo's.
