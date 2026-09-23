@@ -4862,3 +4862,61 @@ So there is no hidden space in the fill. Freeing ROM means removing or moving
 something that is used: the attract demo (~120 bytes in four pieces), or the
 work-relocation options above that retire the 416-byte Z-to-row tables and
 duplicated code.
+
+## Player 2's walk and other-car passes move to the main loop
+
+Checkpoint 55. Player 1's physics turns out to run in the main loop, once per
+six-frame cycle -- measured by the phase of the `$B8` counter on which each
+byte changes: speed and track position only ever change at phase 2, lateral
+position only at phase 3. Everything built for player 2 ran every frame inside
+display interrupts instead. This is stage A of putting it beside player 1's.
+
+* **The walk** now runs from the race tick at rom:D713, which called player
+  1's walk (`sub_E93D`) and now calls `P2Tick`: that walk, then player 2's
+  in full. The race tick runs in states `$02`/`$10` and `$03`/`$11` (they
+  share handlers), exactly where player 1's walk runs. Its input is a copy of
+  `P2_TRACK_*` taken with a re-read check, because the drive that moves those
+  bytes still runs in an interrupt that can land between two reads.
+* **The other-car passes** run at the object rebuild, rom:E70D, once vblank
+  has begun. Player 2's view is written first, while the beam draws nothing,
+  because that view is on top. Player 1's is written *after* the game's
+  rebuild (`$E6D7`), which rewrites player 1's lists: the first build wrote
+  it before, the rebuild wiped it every cycle, and player 2's car vanished
+  from player 1's view. After, it is still long before the beam reaches the
+  bottom view.
+* **One multiply.** With both passes out of the interrupt, a `JSR` is free,
+  and the duplicated multiply became one routine -- the change that stopped
+  player 1 when tried at checkpoint 54.
+
+Verified:
+
+    walk        1,197 walks recomputed independently from their snapshots
+                (tools/walk-check.py): 0 mismatches
+    other car   wrongside=0, offscreen=0 in both views; the player-1-view
+                slot never found wiped between updates
+    health      run-01 and run-02 exactly baseline; both two-player runs
+                HEALTHY at 101 clock values
+    main loop   still one pass every 6.00 frames
+
+And what it bought, on `test-pp2-2p-0922-2037`:
+
+    player 2's work inside RoadTail, per frame    63.7 -> 5.7 scanlines (median)
+    spare time in the interrupt chain, p10        774 -> 3,906 cycles
+    spare time in the interrupt chain, median     1,116 -> 4,380 cycles
+    code blob spare                               11 -> 37 bytes
+
+Player 2's walk had been taking about a quarter of every frame inside an
+interrupt. It now costs the main loop about 1,150 cycles a frame, averaged,
+out of the idle it was already spending in the stage wait.
+
+A wrong turn worth recording: the first independent check reported 28 and 49
+mismatched walks, each wrong output equal to the right one for the previous
+snapshot. The fault was the checker -- it added the low byte's carry into the
+starting distance twice -- not the ROM. A trace of every walk's entry, snapshot
+and output showed the ROM's outputs changing exactly when a sample crossed into
+a new segment, which is all the walk depends on.
+
+Still in the interrupt: the drive, drift, gap and collision. They move next,
+onto player 1's tick and player 1's rules -- player 2 currently applies the
+accel-table step, braking and drag every frame where player 1 applies its
+step once per cycle, which is a real difference in how the two cars respond.

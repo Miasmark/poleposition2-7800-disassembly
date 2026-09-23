@@ -494,6 +494,12 @@ ROAD_EDGE = 0x3B             # |lateral| at or past this is off the racing line,
 P2_TRACK_SEG = 0x2750        # player 2 track state; $2730 is NOT free -- see findings
 P2_TRACK_LO = 0x2751
 P2_TRACK_HI = 0x2752
+# The walk runs in the main loop now, and the drive that moves these three
+# bytes still runs in a display interrupt, which can land between two of the
+# walk's reads. The walk works from a copy taken with a re-read check.
+P2_SNAP_SEG = 0x2743
+P2_SNAP_LO = 0x2744
+P2_SNAP_HI = 0x2745
 P2_WALK = 0x2720             # walk scratch: dist, seg, v, p, curvature
 P2_SPEED = 0x2753            # player 2's own speed along the track
 P2_FRAC = 0x2755             # remainder of the /12 advance, always < 12
@@ -888,7 +894,7 @@ def hud_reassert_src(addr):
         [] if os.getenv("PP2_KEEP_INJECTION") else road_stage_src()
     ) + p2_stage_src() + p2_car_src() + [
         "    RTS",
-    ] + p2_stage_tables() + p2_othercar_tables() + p2_slot_tables() + p1_slot_tables() + p2_zrow_src() + [
+    ] + p2_stage_tables() + p2_othercar_tables() + p2_slot_tables() + p1_slot_tables() + oc_scale_src() + p2_zrow_src() + [
         "WrapSlot0:",
         "    CMP #$A0",
         "    BCC WrapKeep",
@@ -1180,6 +1186,7 @@ def _check_p2_ram():
         ("P2_OC", P2_OC_BAND, 7),
         ("P2_WALK", P2_WALK, 11),
         ("P1_OC", P1_OC_BAND, 3),
+        ("P2_SNAP", P2_SNAP_SEG, 3),
         ("P2_TRACK", P2_TRACK_SEG, 3),
         ("P2_SPEED", P2_SPEED, 1),
         ("P2_CAR_DELTA", P2_CAR_DELTA, 1),
@@ -1260,10 +1267,9 @@ def p2_walk_src():
         # walk integrating zero curvature, the steering doing nothing, and the
         # band output sitting at exactly the per-band base values.
         "P2Frame:",
-        "    INC $2758",
     ] + p2_drive_src() + [
-        "    JSR P2Geom",
         "    RTS",
+    ] + p2_tick_src() + [
         "P2Geom:",
     ] + (["    RTS"] if os.getenv("PP2_STUB_GEOM") else []) + [
         # distance starts where the engine starts it: $47 plus the player's
@@ -1277,9 +1283,9 @@ def p2_walk_src():
         "    LDA $%04X" % P2_HALF,
         "    BNE P2GNoInit",
         "    CLC",
-        "    LDA #$47", "    ADC $%04X" % P2_TRACK_LO, "    STA $%04X" % W,
-        "    LDA #$00", "    ADC $%04X" % P2_TRACK_HI, "    STA $%04X" % (W + 1),
-        "    LDA $%04X" % P2_TRACK_SEG, "    STA $%04X" % (W + 2),
+        "    LDA #$47", "    ADC $%04X" % P2_SNAP_LO, "    STA $%04X" % W,
+        "    LDA #$00", "    ADC $%04X" % P2_SNAP_HI, "    STA $%04X" % (W + 1),
+        "    LDA $%04X" % P2_SNAP_SEG, "    STA $%04X" % (W + 2),
         "    LDA #$00",
         "    STA $%04X" % (W + 3), "    STA $%04X" % (W + 4),
         "    STA $%04X" % (W + 5), "    STA $%04X" % (W + 6),
@@ -1378,6 +1384,67 @@ def p2_walk_src():
         "    BEQ P2GDone",
         "    JMP P2GLoop",
         "P2GDone:",
+        "    RTS",
+    ]
+
+
+def p2_tick_src():
+    """Player 2's work that runs in the MAIN LOOP rather than an interrupt.
+
+    Everything here used to run inside display interrupts, where a deadline is
+    a scanline: the walk had to be split across two frames to fit, and two JSRs
+    too many stopped player 1. The main loop has the time -- about 25,000 idle
+    cycles in each six-frame cycle, measured (docs/FINDINGS.md, "PP2 is already
+    a two-rate engine").
+
+    P2Tick replaces the race tick's call to player 1's walk (rom:D713): it makes
+    that call, then walks player 2's track the same way, in full, once per
+    cycle -- the same rate player 1's road updates at.
+
+    P2ObjCommit replaces the object rebuild's call to rom:E6D7 (rom:E70D),
+    which runs once vblank has begun ($E5 cleared). Player 2's other-car entry
+    is written first, while the beam is drawing nothing -- its view is on top
+    and would be mid-draw at any later point. Then the game's rebuild, then
+    player 1's entry, which the rebuild would otherwise overwrite; player 1's
+    view is at the bottom, so that is still well ahead of the beam.
+    """
+    return [
+        "P2Tick:",
+        "    JSR $E93D",                       # player 1's own walk, as before
+        # A consistent copy of the track position: the drive can move it
+        # between any two reads, so read, then read again until it holds.
+        "P2Snap:",
+        "    LDA $%04X" % P2_TRACK_SEG, "    STA $%04X" % P2_SNAP_SEG,
+        "    LDA $%04X" % P2_TRACK_LO,  "    STA $%04X" % P2_SNAP_LO,
+        "    LDA $%04X" % P2_TRACK_HI,  "    STA $%04X" % P2_SNAP_HI,
+        "    LDA $%04X" % P2_TRACK_SEG, "    CMP $%04X" % P2_SNAP_SEG, "    BNE P2Snap",
+        "    LDA $%04X" % P2_TRACK_LO,  "    CMP $%04X" % P2_SNAP_LO,  "    BNE P2Snap",
+        # All thirteen samples in one go. P2Geom still works in halves -- its
+        # first call initialises and walks 0-6, the second carries on 7-12 --
+        # so the pair is kept, and the half flag is reset so the pair can
+        # never start on the wrong half.
+        "    LDA #$00", "    STA $%04X" % P2_HALF,
+        "    JSR P2Geom",
+        "    JMP P2Geom",
+        "P2ObjCommit:",
+        "    LDX #$0B",
+        "P2OcClear:",
+        "    LDY P2ObjOfs,X",
+        "    LDA #$A1",
+        "    STA $%04X,Y" % (P2_DL_BASE + 3),
+        "    DEX",
+        "    BPL P2OcClear",
+    ] + p2_othercar_src() + [
+        # The game's own rebuild comes between the two passes, not after both.
+        # It rewrites player 1's lists -- including the slot player 2's car is
+        # borrowing there -- so a pass made before it was wiped every cycle and
+        # the car never showed in player 1's view. Player 2's lists are not
+        # touched by it, and player 2's view is on top, so that pass has to
+        # come first, in vblank; player 1's view is at the bottom, so its pass
+        # can follow the rebuild and still finish long before the beam gets
+        # there.
+        "    JSR $E6D7",
+    ] + p1_othercar_src() + [
         "    RTS",
     ]
 
@@ -1964,14 +2031,7 @@ def p2_collide_src():
         "P2NoHit:",
         "    LDA #$00", "    STA $%04X" % P2_HIT,
         "P2HitEnd:",
-        "    LDX #$0B",
-        "P2OcClear:",
-        "    LDY P2ObjOfs,X",
-        "    LDA #$A1",
-        "    STA $%04X,Y" % (P2_DL_BASE + 3),
-        "    DEX",
-        "    BPL P2OcClear",
-    ] + p2_othercar_src() + p1_othercar_src()
+    ]
 
 
 def p2_race_init_src():
@@ -2190,58 +2250,8 @@ def p1_othercar_src():
         "    LDA #$7F",
         "P1OcFits2:",
         "    STA $%04X" % P2_OC_D,
-        "    BPL P1OcAbs",
-        "    EOR #$FF", "    CLC", "    ADC #$01",
-        "P1OcAbs:",
         "    LDX $%04X" % P1_OC_BAND,
-        "    LDY P2OcM,X",
-        "    STA $%04X" % P2_OC_CNT,
-        "    LDA #$00",
-        "    STA $%04X" % P2_OC_CNTH,
-        "    STA $%04X" % P2_OC_ML, "    STA $%04X" % P2_OC_MH,
-        "P1OcMul:",
-        "    TYA", "    LSR A", "    TAY",
-        "    BCC P1OcNoAdd",
-        "    CLC",
-        "    LDA $%04X" % P2_OC_ML, "    ADC $%04X" % P2_OC_CNT,
-        "    STA $%04X" % P2_OC_ML,
-        "    LDA $%04X" % P2_OC_MH, "    ADC $%04X" % P2_OC_CNTH,
-        "    STA $%04X" % P2_OC_MH,
-        "P1OcNoAdd:",
-        "    ASL $%04X" % P2_OC_CNT,
-        "    ROL $%04X" % P2_OC_CNTH,
-        "    TYA",
-        "    BNE P1OcMul",
-        "    LDA $%04X" % P2_OC_ML,
-        "    ASL A",
-        "    LDA $%04X" % P2_OC_MH,
-        "    ROL A",
-        # Clamp before the sign goes on. The car is drawn from x 64 and an
-        # 8-bit HPOS cannot say "off the right edge": 64 + 121 is 185, which
-        # MARIA renders as NEGATIVE and draws at the LEFT. A pair of cars far
-        # enough apart therefore drew on the left whichever side they were
-        # really on -- a separate cause from the sign, and the reason a sign
-        # fix alone still left six frames of run-02 on the wrong side.
-        # 90 keeps x within -26..154: the low end lands in $A0..$FF and
-        # renders as the negative it is, the high end stays on screen. Clamped
-        # rather than parked, so a distant car pins to the edge of the view
-        # instead of vanishing out of it.
-        "    CMP #$5B",
-        "    BCC P1OcFits",
-        "    LDA #$5A",
-        "P1OcFits:",
-        "    LDX $%04X" % P2_OC_D,
-        # The sign, measured rather than assumed this time. Player 1's own
-        # car sits at x 64 in every frame of a run; it is the ROAD that moves,
-        # and the road goes LEFT as the lateral goes POSITIVE (lat 0 -> road
-        # x 12, lat +45 -> road x 234, lat -72 -> road x 64). A road to the
-        # left of a fixed car means the car is to the RIGHT, so a positive
-        # lateral is a car to the RIGHT and the offset runs WITH the
-        # difference. The earlier "positive is left" reading was wrong, and
-        # inverted the other car in both views.
-        "    BPL P1OcPos",
-        "    EOR #$FF", "    CLC", "    ADC #$01",
-        "P1OcPos:",
+        "    JSR OcScale",
         # A carries the offset straight into the write below; it was stored
         # here and read back twice, which cost nine bytes for nothing.
         # --- write the four header bytes, on whichever page this band is on --
@@ -2332,60 +2342,8 @@ def p2_othercar_src():
         "    LDA #$7F",
         "P2OcFits2:",
         "    STA $%04X" % P2_OC_D,
-        "    BPL P2OcAbs",
-        "    EOR #$FF", "    CLC", "    ADC #$01",
-        "P2OcAbs:",
         "    LDX $%04X" % P2_OC_BAND,
-        "    LDY P2OcM,X",
-        # (|d| * M) >> 7, shift and add
-        "    STA $%04X" % P2_OC_CNT,
-        "    LDA #$00",
-        "    STA $%04X" % P2_OC_CNTH,
-        "    STA $%04X" % P2_OC_ML, "    STA $%04X" % P2_OC_MH,
-        "P2OcMul:",
-        "    TYA", "    LSR A", "    TAY",
-        "    BCC P2OcNoAdd",
-        "    CLC",
-        "    LDA $%04X" % P2_OC_ML, "    ADC $%04X" % P2_OC_CNT,
-        "    STA $%04X" % P2_OC_ML,
-        "    LDA $%04X" % P2_OC_MH, "    ADC $%04X" % P2_OC_CNTH,
-        "    STA $%04X" % P2_OC_MH,
-        "P2OcNoAdd:",
-        "    ASL $%04X" % P2_OC_CNT,
-        "    ROL $%04X" % P2_OC_CNTH,
-        "    TYA",
-        "    BNE P2OcMul",
-        # >> 7 is << 1 of the high byte plus the top bit of the low
-        "    LDA $%04X" % P2_OC_ML,
-        "    ASL A",
-        "    LDA $%04X" % P2_OC_MH,
-        "    ROL A",
-        # Clamp before the sign goes on. The car is drawn from x 64 and an
-        # 8-bit HPOS cannot say "off the right edge": 64 + 121 is 185, which
-        # MARIA renders as NEGATIVE and draws at the LEFT. A pair of cars far
-        # enough apart therefore drew on the left whichever side they were
-        # really on -- a separate cause from the sign, and the reason a sign
-        # fix alone still left six frames of run-02 on the wrong side.
-        # 90 keeps x within -26..154: the low end lands in $A0..$FF and
-        # renders as the negative it is, the high end stays on screen. Clamped
-        # rather than parked, so a distant car pins to the edge of the view
-        # instead of vanishing out of it.
-        "    CMP #$5B",
-        "    BCC P2OcFits",
-        "    LDA #$5A",
-        "P2OcFits:",
-        "    LDX $%04X" % P2_OC_D,
-        # The sign, measured rather than assumed this time. Player 1's own
-        # car sits at x 64 in every frame of a run; it is the ROAD that moves,
-        # and the road goes LEFT as the lateral goes POSITIVE (lat 0 -> road
-        # x 12, lat +45 -> road x 234, lat -72 -> road x 64). A road to the
-        # left of a fixed car means the car is to the RIGHT, so a positive
-        # lateral is a car to the RIGHT and the offset runs WITH the
-        # difference. The earlier "positive is left" reading was wrong, and
-        # inverted the other car in both views.
-        "    BPL P2OcPos",
-        "    EOR #$FF", "    CLC", "    ADC #$01",
-        "P2OcPos:",
+        "    JSR OcScale",
         # --- x = player 2's road there, plus that offset ---------------------
         # The road object's x is its LEFT EDGE, so adding the offset to it
         # pinned the car to the left of the road whatever the lateral was.
@@ -2433,6 +2391,76 @@ def p2_othercar_src():
         "P2OcDone:",
         "    PLA", "    STA $%04X" % (S + 1),
         "    PLA", "    STA $%04X" % S,
+    ]
+
+
+def oc_scale_src():
+    """Scale a lateral difference to a screen offset for one band.
+
+    Both other-car passes carried an identical copy of this. Folding them
+    into one routine was tried at checkpoint 54 and dropped: the passes then
+    ran inside a display interrupt, where two JSRs were enough to stop
+    player 1. They run in the main loop now, where a JSR is free.
+
+    In: P2_OC_D holds the saturated signed difference (the other car's
+    lateral less the viewer's), X holds the band. Out: A holds the signed,
+    clamped offset from x 64. X and Y are clobbered.
+    """
+    return [
+        "OcScale:",
+        "    LDY P2OcM,X",
+        "    LDA $%04X" % P2_OC_D,
+        "    BPL OcAbs",
+        "    EOR #$FF", "    CLC", "    ADC #$01",
+        "OcAbs:",
+        "    STA $%04X" % P2_OC_CNT,
+        "    LDA #$00",
+        "    STA $%04X" % P2_OC_CNTH,
+        "    STA $%04X" % P2_OC_ML, "    STA $%04X" % P2_OC_MH,
+        "OcMul:",
+        "    TYA", "    LSR A", "    TAY",
+        "    BCC OcNoAdd",
+        "    CLC",
+        "    LDA $%04X" % P2_OC_ML, "    ADC $%04X" % P2_OC_CNT,
+        "    STA $%04X" % P2_OC_ML,
+        "    LDA $%04X" % P2_OC_MH, "    ADC $%04X" % P2_OC_CNTH,
+        "    STA $%04X" % P2_OC_MH,
+        "OcNoAdd:",
+        "    ASL $%04X" % P2_OC_CNT,
+        "    ROL $%04X" % P2_OC_CNTH,
+        "    TYA",
+        "    BNE OcMul",
+        "    LDA $%04X" % P2_OC_ML,
+        "    ASL A",
+        "    LDA $%04X" % P2_OC_MH,
+        "    ROL A",
+        # Clamp before the sign goes on. The car is drawn from x 64 and an
+        # 8-bit HPOS cannot say "off the right edge": 64 + 121 is 185, which
+        # MARIA renders as NEGATIVE and draws at the LEFT. A pair of cars far
+        # enough apart therefore drew on the left whichever side they were
+        # really on -- a separate cause from the sign, and the reason a sign
+        # fix alone still left six frames of run-02 on the wrong side.
+        # 90 keeps x within -26..154: the low end lands in $A0..$FF and
+        # renders as the negative it is, the high end stays on screen. Clamped
+        # rather than parked, so a distant car pins to the edge of the view
+        # instead of vanishing out of it.
+        "    CMP #$5B",
+        "    BCC OcFits",
+        "    LDA #$5A",
+        "OcFits:",
+        "    LDX $%04X" % P2_OC_D,
+        # The sign, measured rather than assumed this time. Player 1's own
+        # car sits at x 64 in every frame of a run; it is the ROAD that moves,
+        # and the road goes LEFT as the lateral goes POSITIVE (lat 0 -> road
+        # x 12, lat +45 -> road x 234, lat -72 -> road x 64). A road to the
+        # left of a fixed car means the car is to the RIGHT, so a positive
+        # lateral is a car to the RIGHT and the offset runs WITH the
+        # difference. The earlier "positive is left" reading was wrong, and
+        # inverted the other car in both views.
+        "    BPL OcPos",
+        "    EOR #$FF", "    CLC", "    ADC #$01",
+        "OcPos:",
+        "    RTS",
     ]
 
 
@@ -2940,6 +2968,17 @@ def fix_mirror_split(p):
     mirror_init_addr = syms["MirrorInit"]
     mirror_stage_addr = syms["MirrorStage"]
     road_tail_addr = syms["RoadTail"]
+    p2_tick_addr = syms["P2Tick"]
+    p2_commit_addr = syms["P2ObjCommit"]
+
+    # rom:D713 -- the race tick's `JSR sub_E93D`, player 1's walk. P2Tick
+    # makes that call and then walks player 2's track (see p2_tick_src).
+    p.put(0xD713, [0x20, p2_tick_addr & 0xFF, p2_tick_addr >> 8],
+          expect=[0x20, 0x3D, 0xE9])
+    # rom:E70D -- the object rebuild's `JSR sub_E6D7`, reached once vblank has
+    # begun. P2ObjCommit writes both views' other-car entries, then jumps on.
+    p.put(0xE70D, [0x20, p2_commit_addr & 0xFF, p2_commit_addr >> 8],
+          expect=[0x20, 0xD7, 0xE6])
 
     # -- and bring the HUD back once normal driving begins -------------------
     # Two different places turn out to do that, not one (docs/FINDINGS.md,
