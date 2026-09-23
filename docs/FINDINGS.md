@@ -4842,3 +4842,23 @@ the manual's rule -- 120 seconds to drive, 73 to qualify -- not a bug.
 The game's timer runs about 1.6x real time: track 2's 79.79 took ~49 real
 seconds (2,946 frames), track 0's 57.45 about 36. So 73.00 is roughly 45 real
 seconds a lap, which is what makes the longer tracks hard.
+
+### Correction: the zero runs are not free space
+
+The survey above counted 1,056 zero bytes never read after boot, 486 of them in
+19 stretches of 16+, and called them candidates. With the coverage from the
+attract work -- 39 runs, including `run-03` on all four tracks and the demo on
+all four -- **68 of the 2,316 zero bytes are never read, and none lie in a
+stretch of 16 or more** (94 if the demo is cut). The earlier figure was four
+recordings not showing enough of the game.
+
+These files arm at the cart's reset code rather than at frame 300, so a boot
+pass could in principle inflate them; none does -- no zero byte is read only
+during boot (state `$55`). The zeros are read in play: qualifying (42 bytes
+read there and nowhere else), race start (14), the demo (26), the race (4).
+They are transparent pixels and zero table entries, as they looked.
+
+So there is no hidden space in the fill. Freeing ROM means removing or moving
+something that is used: the attract demo (~120 bytes in four pieces), or the
+work-relocation options above that retire the 416-byte Z-to-row tables and
+duplicated code.
