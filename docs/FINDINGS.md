@@ -4624,3 +4624,118 @@ note that RoadTail "has far more" slack than MirrorStage's two scanlines -- at
 this point in the path it does not. Not merged; the generator is kept in the
 scratchpad as `with-ocscale.py`. Worth revisiting only alongside a real
 measurement of what the path actually costs.
+
+## Where the frame actually goes -- and how Motor Psycho and Fatal Run differ
+
+Asked whether Motor Psycho or Fatal Run use a better structure for the same
+kind of road. The answer turned out to be less about them than about this
+game: PP2 is not short of CPU. About a quarter of every frame is spent
+waiting, and it feels cramped because the idle time and the work are in
+different places.
+
+### Same instrument on all four
+
+`tools/probe-render-survey.lua` counts per frame the display interrupts (reads
+of the NMI vector), `WSYNC` writes, and the last `DPPH`/`DPPL`/`CTRL` written,
+and dumps RAM for `tools/zones-bill.py`, which walks the lists and bills them
+with `dmabudget.py`'s measured constants.
+
+| | DLIs | WSYNCs | CTRL | DLL | zones | MARIA DMA |
+|---|---|---|---|---|---|---|
+| PP2 stock | 5 | 97 | `$40` | fixed `$2200` | 35, mostly 6-line | 21.7% |
+| PP2 two-player | 5 | 17 | `$40` | fixed `$2500` | 34, mostly 6-line | 28.9% |
+| Motor Psycho | 4-5 | 5 | `$50` | flips `$226C`/`$2383` | 57-80, mostly **2-line** | 18-31% |
+| Fatal Run | 5 | 11 | `$50` | flips `$1F3F`/`$1E4C` | 51-60, mostly **2-line** | 27-30% |
+
+MARIA's bill is about the same everywhere, so DMA is not the difference.
+
+**The two 1990 games share one design.** Each road zone is two scanlines
+holding one road object, drawn from a **pre-drawn road image in ROM**: the
+graphics page steps down the screen while the width grows (Motor Psycho
+`$9E66`->`$7B5E`, 1->20 bytes; Fatal Run `$5E00`->`$5A..`, 1->26 bytes), so a
+zone's whole contribution is its x -- which is the curve. Stripes appear to be
+the palette flipped 0/1 per zone, not different graphics. The sky and
+mountains are character mode (`CTRL` bit 4, two-byte characters) whose
+character strings point straight into ROM, so the backdrop costs the CPU
+nothing to compose.
+
+**And both double-buffer, at a variable rate.** The DLL flips between two
+buffers when the back one is finished:
+
+    Motor Psycho  frames between flips: 3:95 4:192 5:112 6:94 7:17  -> 13.4 updates/s
+    Fatal Run     frames between flips: 2:193 3:171                  -> 24.3 updates/s
+
+The spread is the tell: they flip when the CPU finishes, so their frame rate
+falls wherever the work lands. They are not more efficient than PP2 -- PP2
+redraws its road at 60 -- they simply have no deadline.
+
+### PP2 is already a two-rate engine
+
+`tools/probe-pcprof.lua` is a sampling profiler that needs no timer: MARIA
+reads the DLL at every zone boundary, so a read tap there fires about 35 times
+a frame at even beam positions with the 6502 halted, and its PC is a fair
+sample. The hottest code in both builds is not work:
+
+    $EA28  LDA $B8 / BNE $EA28     stock 34.8% of samples, two-player 24.1%
+    $E709  LDA $E5 / BNE $E709     two-player 6.4%
+
+Both run at SP `$1FD`, one call below the main loop's `$1FF` -- **main-loop
+code, not interrupt code** (the vblank spin, by contrast, sits at `$1F1-$1F5`).
+
+* `$B8` is a **six-frame counter**, written 0..5 by the NMI at rom:F14A.
+  `$EA28` is the true entry of `StageRowCurveForDLI` and holds until it wraps
+  to 0. That is why the main loop kept "finding the tick six ahead".
+* `$E5` is set to `$FF` by a display interrupt at rom:ED26 and cleared at
+  rom:F150 in vblank, so `$E709` waits for vblank before rebuilding the
+  object display lists at `$E6D7`.
+
+`tools/probe-mainloop-rates.lua` confirms the rate: the row staging and the
+object rebuild each run **once every 6.00 frames** in the two-player build
+(6.42 in stock, which occasionally misses a cycle). So the road and physics
+tick at 60 in the interrupt chain, and everything in the main loop -- objects
+included -- ticks at 10.
+
+`tools/probe-spins.lua` puts cycles on every wait (6 cycles an iteration, 9
+for the tick spin):
+
+| mean cycles/frame | stage wait | object wait | vblank spin | tick spin | **idle** |
+|---|---|---|---|---|---|
+| PP2 stock, run-01 | 8,026 | 1 | 1,116 | 821 | **~10,000 (33%)** |
+| two-player, 0922-2037 | 4,244 | 1,086 | 1,832 | 1 | **~7,200 (24%)** |
+| two-player, run-01 | 2,367 | 2,731 | 2,221 | 642 | **~8,000 (27%)** |
+
+The two-player build has *less* idle than stock but not by much, because
+bypassing the 97-`WSYNC` row injection freed more than player 2 has added.
+None of the zero-idle frames that would signal an overrun appear in either.
+
+### Why it felt cramped anyway
+
+Everything added for player 2 so far lives in the interrupt chain --
+`MirrorStage` with its two scanlines, `RoadTail` inside `DLI_ED4F` -- where a
+deadline is a scanline, not a frame. The two failures that looked like "out of
+CPU" were both that: the general object pass drew nothing from `MirrorStage`,
+and two `JSR`s in `RoadTail` (checkpoint 54's dead end) stopped player 1. The
+main loop sat beside both with roughly **25,000 cycles of slack per 10 Hz
+cycle** and no scanline deadline.
+
+### The tear constraint that comes with the main loop
+
+`tools/probe-beam.lua` derives the beam from emulated time, anchored to the
+instant the `$DB8E` spin falls through (VBLANK going high): the game's own
+object rebuild starts **17.5 lines after vblank begins and runs 42.8 lines**,
+finishing about 40 lines into the next visible frame. That is safe for player
+1's view at the bottom. It is not automatically safe for player 2's view on
+top: a player-2 rebuild appended after it would race the beam through player
+2's own bands. It needs either to run while the beam is in player 1's half, or
+a second copy of player 2's lists to write into.
+
+### ROM: the blob is full, and the zeros are mostly not free
+
+The code blob ends at `$FF74` against a free run ending `$FF7F`: **11 bytes**.
+Of 2,316 bytes in zero runs of 16+, a read tap (`tools/probe-zero-reads.lua`)
+first reported every one read -- the 7800 BIOS reads the whole cartridge at
+boot to check its signature. Counting only from frame 300, **1,056 are never
+read over four recordings**, 486 of them in 19 stretches of 16+ (largest 41,
+at page edges in `$86xx-$8Axx`). Those recordings never show attract mode, the
+other tracks, results or every crash frame, so these are candidates to prove,
+not space to spend.
