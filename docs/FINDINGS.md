@@ -5192,3 +5192,178 @@ intermediate state is safe. run-03 now reaches both races on this build.
     player 2's lists: no zeroed road header on four recordings incl. run-03
     rival entries vs model: 167/167 both views
     walk: exact
+
+## Player 2 sees the world's objects
+
+Checkpoint 60. Player 2's view used to show the road and player 1's car only.
+It now shows the signs, the marker and the rival cars, each at the size, sprite
+and palette player 1 would see from player 2's distance, placed on player 2's
+road. Getting there needed three things: room in player 2's lists, room in the
+ROM, and CPU time.
+
+### Three object slots a band, built at boot
+
+Player 2's bands had one object slot, for the other car. Each band now has
+`P2_OBJ_SLOTS` = 3: the headers, three parked slots, and the end marker. The
+whole block still fits the 256 bytes a one-byte offset from `P2_DL_BASE` can
+reach, ending at `$26FC`, clear of `P2_LATERAL` at `$2702`. The boot template
+now holds only the headers plus each band's header length. `P2BuildLists`
+(MirrorInit) writes the parked slots and end markers itself, so a bigger layout
+did not cost a bigger template.
+
+Slots are handed out in list order, and player 1's car is listed first, so it
+always gets the first slot in its bands. That is the reserved slot, and it
+leaves two for world objects. A full band skips that entry's slice there, the
+way the game's own emitter does.
+
+### The ROM is now 48K
+
+The object code did not fit: the `$F400` blob came up 183 bytes short. As
+agreed earlier ("expand the ROM to 48KB if we ever run out of space
+altogether"), the build is now a 48K cart:
+- header size 49152, type `$0000`, mapped at `$4000-$FFFF` with no banking,
+  like Karateka;
+- the 32K source sits unchanged at `$8000-$FFFF`;
+- `$4000-$7FFF` starts as `$FF` and holds new code (`EXT_ADDR`), written with
+  `expect` = `$FF` like every other put.
+
+Checked before relying on it:
+- RC6 padded to 48K gives identical 7,000-frame state logs to the 32K RC6 on
+  run-01 and test-pp2-2p-0923-0205;
+- bytes placed at `$4000` and `$7FF0` read back through the CPU;
+- a `--sign` build passes `sign7800.verify` and boots through the BIOS to the
+  title screen. `$FFF9` is `$87`, so the BIOS hashes from `$8000` and the new
+  area is not covered, which does not stop it booting.
+
+RivalCars, player 2's objects, `P2X`, the emitter and FastZRow moved to
+`$4000`: 808 bytes, 15,576 free. The blob has 543 spare.
+
+**`--bundle` now refuses.** A `.abp` section is a fixed extent of the source
+body and the format cannot grow it (patchset-format.md, "Length changes"). The
+committed `dist/pp2-splitscreen.abp` dates from d05d31f and was already stale.
+
+### FastZRow: the row search by halving
+
+`sub_E3CD` finds an object's row by walking from `$4D` down until a row's
+distance exceeds Z: up to 78 passes, and it now runs twice per object, once
+per view. The distance table (`$EB56`/`$EAB9`) falls strictly from 1300 at
+the horizon to 0 at the bumper, so the answer is the largest row whose
+distance exceeds Z, which halving finds in seven steps. rom:E3CD now jumps to
+`FastZRow`. The build asserts it matches the linear search for every Z from 0
+to `$7FFF`; both ROM callers and OcRow test for a negative Z first.
+
+Confirmed live with `tools/probe-fastzrow-check.lua`, which recomputes the
+original search on every return: **0 differences in 11,320 searches (run-03)
+and 3,722 (test-pp2-2p-0923-0205).**
+
+*Wrong turn:* the first run of that probe reported 2,594 and 1,975
+differences. The probe had read the distance table when the script loaded,
+before the cart was mapped, so its "expected" rows were all `$FF`. Reading
+the table on first use fixed it; FastZRow was never wrong.
+
+RivalCars per call, in scanlines (`tools/probe-rivalcars-cost.lua`):
+
+| build | run-03 median / p90 / max | 0923-0205 median / p90 / max |
+|---|---|---|
+| RC6 (no player 2 objects) | 69.5 / 207.9 / 250.0 | 181.0 / 212.3 / 247.8 |
+| OB4 linear search, with objects | 190.8 / 269.1 / 659.2 | 180.4 / 225.3 / 300.1 |
+| OB5 FastZRow, with objects | 49.9 / 167.9 / 274.0 | 61.2 / 168.5 / 204.7 |
+
+Player 2's objects cost less than nothing overall: the halving search saves
+more than they add. The main loop holds its 6-frame cycle (6.00, from 6.05 on
+OB3).
+
+### How player 2's objects are built
+
+After player 1's list and player 2's car entry, `P2Objects` walks the same
+object window (`$B0` down to `$B1`) and, for each object, runs the game's own
+routines with the object's distance moved by the camera gap:
+- `sub_E3E0` for the row, kind (`$4A`) and height index (`$49`);
+- `sub_E475` for the height;
+- `sub_E55B` for the sprite by kind;
+- `sub_E5C7` for the palette and width.
+
+The distance is restored straight after `sub_E3E0`. Entries go into the
+game's own arrays straight after player 1's list (`P2L_START`..`P2L_END`):
+the game's emitter stops at `$DD` and never sees them, and `P2Emit` writes
+them into player 2's bands in the same main-loop pass.
+
+Only x is our own. `P2X` takes the object's lane coefficient (`$E80F`/`$A8A1`
+by `$1A00`) and computes hi(c x (row+4)), plus player 2's camera at the row's
+band, plus that band's road offset, plus `$4F`. It is the same projection as
+player 1's car in player 2's view. Signs keep their second entry and its x
+offset (`$BFF6`), as rom:E665 does. Kind 3 (player 1's crash) is skipped, and
+so is band 0, which player 2's view does not have. `sub_E461` (slot class) and
+`sub_E60F` (player 1's hide-by-lateral rules) are not called.
+
+### The kind byte, clobbered: found by forcing the gap to 0
+
+With the gap at 0, player 2 looks at the same objects from the same distance,
+so its entries must be player 1's except for x. `tools/probe-p2-objects-gap0.lua`
+forces the gap to 0 for player 2's object pass only, restoring it when the
+pass returns, and logs both lists. `tools/p2-objects-gap0-check.py` then
+matches the two lists in both directions.
+
+The first build (OB4) failed. Signs came out as one entry instead of two, and
+palettes were `$5E` where player 1 had `$9E`/`$9F` for signs and `$BF` for
+cars. The cause: `P2X` calls `OcMul`, which uses `$4A`/`$4B` as its product
+(and `$40`/`$41`/`$43`/`$4C` as scratch), and `$4A` is the kind that
+`sub_E55B` and `sub_E5C7` branch on. The kind is now kept in `P2L_KIND`
+(`$2790`) across the call.
+
+`$2790` was checked first: a write watch on the retail ROM over all of run-03
+saw no write anywhere in `$2700-$27FF` after frame 300. Every byte there is
+written during the first 300 frames, presumably by the boot RAM clear.
+
+After the fix (OB5), with the gap forced to 0:
+
+    0923-0205: 430 lists; player 2's entries: 659 exact, 3 sprite-only
+    run-03:   1874 lists; player 2's entries: 2114 exact, 74 sprite-only
+    player 1's entries player 2 lacks: all in band 0, crash debris
+      (class 18/1C, sub_E2CA), or player 2's own car (the last entry)
+
+OB4, by the same check on 0923-0205: 343 of player 2's entries were not in
+player 1's list, and 636 of player 1's sign entries were missing from player
+2's.
+
+The sprite-only differences are all cars (class 04). A car's viewing-angle
+sprite (rom:E4F1) depends on x, which is player 2's own, and on player 1's
+road slope at the row (`RowCurveOffset[row] - [row-1]`). Player 2 has no
+per-row road of its own. **Known approximation:** a rival car in player 2's
+view can show a neighbouring angle frame when the two players are on
+differently curved road. Player 1's car in player 2's view takes the level
+angle instead (OcSprite with `OC_S0/S1` = 0).
+
+A trace confirmed one case that looked like a bug and is correct: at f2741 of
+0923-0205 player 1 has a sign in view and player 2's list is empty. The sign
+was at Z = `$007A` with player 2 182 units ahead, so player 2 had already
+passed it.
+
+### Checks on OB5 (promoted, `patches/pp2-2p.a78`)
+
+    health: identical to OB3/OB4 on four recordings (the 0923-0205 frozen
+      run ends at f6955, 18 frames before OB3's -- the faster loop)
+    main loop: once every 6.00 frames (0923-0205 and 0923-0236)
+    player 2's lists: no zeroed road header on 0923-0205, 0923-0236, run-03
+    rival entries vs model (tools/rival-entries-check.py, now reading player
+      1's car from player 2's list): 146/146, 346/346, 117/117 in player 2's
+      view; 199/199, 140/140 in player 1's
+    FastZRow vs linear: 0 differences
+    slots: no band of player 2's needed more than 3 on 0923-0205 or 0923-0236
+      (the busiest held 2)
+    screenshots: signs and rival cars in player 2's view, in the track's own
+      palette (desert yellow, the other course white/blue)
+
+### Limits, for later
+
+- **Player 1's window.** The object window is player 1's. With player 2 far
+  ahead, objects past player 1's horizon are not in it yet, so player 2 sees
+  them appear late, nearer than the horizon. Fix: widen the window to cover
+  the leader, the leader/trailer idea from earlier.
+- **Two world objects a band** in player 2's view. Neither 2-player recording
+  reaches a race grid with player 2 among the rivals, so the grid stress case
+  (run-03's track 2 start) is not measured for player 2's view yet.
+- **Player 1's hide rules are not applied.** `sub_E60F` hides signs by player
+  1's lateral; player 2 shows every sign in view.
+- The pre-race visual issues on player 2's view (reported earlier) are still
+  deferred to cleanup.

@@ -189,7 +189,17 @@ sys.path.insert(0, TOOLKIT_TOOLS)
 
 HDR = 128
 BASE = 0x8000                    # linear, unbanked cart: $8000-$FFFF is all of it
-ROM_SIZE = 32768
+ROM_SIZE = 32768                 # the SOURCE ROM, as dumped
+# The patched cart is 48K: the 7800 maps a 48K cartridge at $4000-$FFFF with no
+# bank switching (Karateka is one: header size 49152, type $0000). The source
+# sits unchanged at $8000-$FFFF and $4000-$7FFF starts as $FF, room for code the
+# $F400 blob and the reclaimed injection no longer had. Checked before relying
+# on it: the build padded to 48K runs byte-identically to the 32K one on two
+# recordings, and bytes placed at $4000 and $7FFF read back through the CPU.
+OUT_BASE = 0x4000
+OUT_SIZE = 49152
+EXT_ADDR = 0x4000                # the object code's own area
+EXT_END = 0x7FFF
 
 ROM_NAME = "Pole Position II (NTSC) (Atari) (1987) (A85FB962).a78"
 SOURCES = [
@@ -206,6 +216,9 @@ class Patcher(object):
     """Byte edits against a headerless ROM, each checked before it is made."""
 
     def __init__(self, rom, base=BASE):
+        # A 32K source becomes the top of a 48K image; addresses stay absolute.
+        if base == BASE and len(rom) == ROM_SIZE:
+            rom, base = b"\xFF" * (OUT_SIZE - ROM_SIZE) + bytes(rom), OUT_BASE
         self.rom = bytearray(rom)
         self.base = base
         self.writes = []          # what this patcher wrote, in order
@@ -382,15 +395,16 @@ def p2_band_layout():
             car = off
             off += 4
         obj = off
-        out[b] = {"addr": addr, "road1": road1, "car": car, "obj": obj}
-        addr += obj + 4 + 2          # the object slot, then the end marker
+        out[b] = {"addr": addr, "road1": road1, "car": car, "obj": obj,
+                  "hdr": obj}         # bytes of headers ahead of the slots
+        addr += obj + 4 * P2_OBJ_SLOTS + 2   # the object slots, then the end marker
     return out
 
 
 def p2_dl_bytes():
     """Total size of player 2's lists, for the copy loop and the layout check."""
     lay = p2_band_layout()
-    return lay[12]["addr"] + lay[12]["obj"] + 6 - P2_DL_BASE
+    return lay[12]["addr"] + lay[12]["obj"] + 4 * P2_OBJ_SLOTS + 2 - P2_DL_BASE
 P2_TEMPLATE = 0xEE10
 
 # A constant added to player 2's road x. Zero makes the two views identical
@@ -451,13 +465,23 @@ OC_LO = 0x2745               # the chosen sprite, low byte
 OC_HI = 0x2746               # ...and page
 OC_PW = 0x2747               # palette and width
 OC_T = 0x2748                # a held term, and the commit's last band
-P2E_TOP = 0x2749             # player 1's car as staged for player 2's view:
-P2E_BOT = 0x274A             #   rows, sprite, palette/width, x -- $FF top
-P2E_LO = 0x274B              #   means nothing to draw
-P2E_HI = 0x274C
-P2E_PW = 0x274D
-P2E_X = 0x274E
-P2E_PG = 0x274F              # the commit's running page
+P2L_START = 0x2749           # player 2's list: first entry in the game's
+P2L_END = 0x274A             #   arrays (straight after player 1's), one past last
+P2L_I = 0x274B               # the entry or window index being worked on
+P2L_ZL = 0x274C              # an object's own distance, kept while the call
+P2L_ZH = 0x274D              #   runs with it moved by the camera gap
+P2L_PG = 0x274E              # the emitter's running sprite page
+P2_SLOTCNT = 0x277C          # the emitter's next slot offset, per band (13)
+T_LO = 0x2789                # the entry being emitted: sprite low byte,
+T_PW = 0x278A                #   palette/width, x, slot offset, farthest band
+T_X = 0x278B
+T_OFF = 0x278C
+T_END = 0x278D
+FZ_LO = 0x278E               # FastZRow's search bounds
+FZ_HI = 0x278F
+P2L_KIND = 0x2790            # an object's kind ($4A), kept across P2X: OcMul
+                             #   uses $4A/$4B as its product. The retail game
+                             #   never writes $2700-$27FF after boot (run-03).
 OC_TABLES = 0xEED0           # in the reclaimed injection, where the old
 OC_COEF = OC_TABLES          #   Z-to-row tables were: 128 bytes of coefficient
 OC_BASE = OC_TABLES + 128    #   and 13 of player 2's per-band walk base
@@ -466,7 +490,9 @@ RIVAL_HELPERS = OC_TABLES + OC_TABLES_LEN   # OcCoef, OcRow and OcSprite,
                                             # assembled on their own here: the
                                             # blob has not the room for them
 ZROW_SCRATCH = 0x0048        # the 16-bit Z the row lookup reads
-P2_DRIFT_TBL = 0xF070        # the 88-byte curve-drift table, also out of
+P2_DRIFT_TBL = 0xF0EB        # the 88-byte curve-drift table, at the very end of
+                             # the reclaimed injection so the helper code
+                             # before it has one run -- also out of
                              # the blob and into the reclaimed injection
 PERSP_Z_LO, PERSP_Z_HI = 0xEB56, 0xEAB9
 ROW_TO_BAND = 0xBB7E
@@ -630,6 +656,11 @@ BAND_SLOT1 = [None] * 8 + [(0x47, 0x80), (0x69, 0x80), (0x8D, 0x80),
 # 1's steering, which is the one part of this that is scaffolding.
 P1_CAR_SLOT = [0x244C + 0x1C, 0x246E + 0x1C, 0x2490 + 0x1C, 0x24B2 + 0x1C]
 P2_CAR_BANDS = [8, 9, 10, 11]
+# Object slots per band in player 2's lists: the first is reserved for the other
+# player's car, the rest take world objects. Three keeps every band's list, and
+# the whole block, inside the 256 bytes the one-byte offsets from P2_DL_BASE can
+# reach, and inside the free RAM before P2_LATERAL at $2702.
+P2_OBJ_SLOTS = 3
 P2_CAR_SEED = [(0x08, 0x9D), (0x08, 0x97), (0xE0, 0xAA), (0x08, 0x8B)]
 P2_CAR_W = 0xD8              # palette 6, 8 bytes
 P2_CAR_X = 0x40              # 64
@@ -868,7 +899,8 @@ def hud_reassert_src(addr):
         "P2Base:",  "    .byte " + ",".join("$%02X" % v for v in p2_walk_tables()["P2Base"]),
         "P2Band:",  "    .byte " + ",".join("$%02X" % v for v in p2_walk_tables()["P2Band"]),
         "MirrorInit:",
-        "    LDA #$FF", "    STA $%04X" % P2E_TOP,   # nothing staged yet
+        "    LDA #$00", "    STA $%04X" % P2L_START,  # no list yet
+        "    STA $%04X" % P2L_END,
         "    LDX #$00",
         "MiLoop1:",
         "    LDA $%04X,X" % DLL_TEMPLATE,
@@ -878,14 +910,7 @@ def hud_reassert_src(addr):
         "    BNE MiLoop1",
         "    JSR P2HudInit",
     ] + ([] if os.getenv("PP2_NO_MINI_COPY") else _mini_copy_src()) + [
-        "    LDX #$00",
-        "P2Loop:",
-        "    LDA $%04X,X" % P2_TEMPLATE,
-        "    STA $%04X,X" % P2_DL_BASE,
-        "    INX",
-        "    CPX #$%02X" % p2_dl_bytes(),
-        "    BNE P2Loop",
-        "    RTS",
+        "    JMP P2BuildLists",                 # in the helpers, for room
         # Once per frame, straight after the game stages the per-scanline road
         # curve: give each mirror zone its own width and x from the same two
         # arrays DLI_InjectRowCurveX reads. No WSYNC anywhere -- each zone is
@@ -900,7 +925,7 @@ def hud_reassert_src(addr):
         [] if os.getenv("PP2_KEEP_INJECTION") else road_stage_src()
     ) + p2_stage_src() + p2_car_src() + [
         "    RTS",
-    ] + p2_stage_tables() + p2_slot_tables() + rival_car_src() + [
+    ] + p2_stage_tables() + p2_slot_tables() + ["P2Emit = $%04X" % _ext()[1]["P2Emit"], "P2BuildLists = $%04X" % _rival_helpers()[1]["P2BuildLists"]] + [
 
         "WrapSlot0:",
         "    CMP #$A0",
@@ -1193,7 +1218,9 @@ def _check_p2_ram():
         ("OC", OC_ROW, 7),
         ("P2_WALK", P2_WALK, 11),
         ("OC2", OC_L, 3),
-        ("OC3", OC_LO, 11),
+        ("OC3", OC_LO, 10),
+        ("P2SLOTS", P2_SLOTCNT, 20),
+        ("P2L_KIND", P2L_KIND, 1),
         ("P2_ST", P2_ST_RATE, 2),
         ("P2_TRACK", P2_TRACK_SEG, 3),
         ("P2_SPEED", P2_SPEED, 1),
@@ -1438,10 +1465,10 @@ def p2_tick_src():
         "P2OcClear:",
         "    LDY P2ObjOfs,X",
         "    LDA #$A1",
-        "    STA $%04X,Y" % (P2_DL_BASE + 3),
+    ] + ["    STA $%04X,Y" % (P2_DL_BASE + 3 + 4 * k) for k in range(P2_OBJ_SLOTS)] + [
         "    DEX",
         "    BPL P2OcClear",
-    ] + p2_emit_src() + [
+        "    JSR P2Emit",
         "    JMP $E6D7",                       # then the game's own rebuild
     ]
 
@@ -1469,11 +1496,16 @@ def p2_dl_template():
         if lay[b]["car"] is not None:
             clo, chi = P2_CAR_SEED[P2_CAR_BANDS.index(b)]
             e += [clo, P2_CAR_W, chi, P2_CAR_X]
-        # the object slot, parked off-screen until something is put in it, then
-        # the two-byte end marker
-        e += [0x00, 0x1F, 0x00, 0xA1, 0x00, 0x00]
         out += e
-    return out
+    # Only the headers are stored: the object slots are identical parked
+    # entries and the end markers identical zeros, so MirrorInit writes those
+    # itself (P2Build). Followed by each band's header length, which the
+    # builder walks.
+    return out + [lay[b]["hdr"] for b in range(1, 13)]
+
+
+def p2_template_len():
+    return len(p2_dl_template())
 
 
 def p2_car_src():
@@ -2144,6 +2176,84 @@ def p2_follow_src():
     ]
 
 
+_EXT = []
+
+
+def fast_zrow_src():
+    """sub_E3CD by binary search.
+
+    The original walks rows from $4D down until a row's distance exceeds Z --
+    up to 78 passes, and it now runs twice per object, once for each view. The
+    distance table falls strictly from the horizon (1300) to the bumper (0), so
+    the answer is the largest row whose distance exceeds Z, which halving finds
+    in seven steps. Checked exhaustively at build time: identical for every Z
+    from 0 to $7FFF. Above that the signed compare wraps and the two differ, but
+    no caller passes a negative Z -- both of the ROM's (rom:E3F7, rom:E414) and
+    OcRow test for one first. The original always returns with Z clear (E3F7
+    branches on it) and callers never read A, so it ends on LDA #$FF.
+    """
+    if os.getenv("PP2_LINEAR_ZROW"):
+        return []
+    import io as _io
+    rom = bytearray(_io.open(load_source()[0], "rb").read())
+    rom = rom[len(rom) - ROM_SIZE:]
+    T = [rom[PERSP_Z_LO + x - BASE] | rom[PERSP_Z_HI + x - BASE] << 8 for x in range(78)]
+    assert all(T[i] > T[i + 1] for i in range(77)), "the distance table is not strictly falling"
+
+    def linear(z):
+        for x in range(0x4D, -1, -1):
+            if (z - T[x]) & 0x8000:
+                return x
+        return 0xFF
+
+    def halving(z):
+        lo, hi = 0, 78
+        while lo < hi:
+            mid = (lo + hi) // 2
+            if (z - T[mid]) & 0x8000:
+                lo = mid + 1
+            else:
+                hi = mid
+        return (lo - 1) & 0xFF if lo else 0xFF
+    assert all(linear(z) == halving(z) for z in range(0x8000)), "FastZRow would differ"
+    return [
+        "FastZRow:",
+        "    LDA #$00", "    STA $%04X" % FZ_LO,
+        "    LDA #$4E", "    STA $%04X" % FZ_HI,
+        "FzLoop:",
+        "    LDA $%04X" % FZ_LO,
+        "    CMP $%04X" % FZ_HI,
+        "    BCS FzDone",
+        "    ADC $%04X" % FZ_HI,               # carry clear: lo < hi
+        "    LSR A",
+        "    TAX",                             # mid
+        "    LDA $0048", "    SEC", "    SBC $%04X,X" % PERSP_Z_LO,
+        "    LDA $0049", "    SBC $%04X,X" % PERSP_Z_HI,
+        "    BMI FzAbove",                     # Z is short of this row's distance
+        "    STX $%04X" % FZ_HI,
+        "    JMP FzLoop",
+        "FzAbove:",
+        "    INX", "    STX $%04X" % FZ_LO,
+        "    JMP FzLoop",
+        "FzDone:",
+        "    LDX $%04X" % FZ_LO,
+        "    DEX",                             # lo - 1, or $FF for none
+        "    LDA #$FF",                        # Z clear, as the original leaves it
+        "    RTS",
+    ]
+
+
+def _ext():
+    """The $4000 code area, assembled on its own: (code, symbols), once. It
+    refers only to the helpers (assembled first) and to fixed addresses, so the
+    blob can refer to it without a cycle."""
+    if not _EXT:
+        lines = ([".org $%04X" % EXT_ADDR] + fast_zrow_src() + rival_car_src()
+                 + ["P2Emit:"] + p2_emit_src() + ["    RTS"] + p2_slot_tables())
+        _EXT.append(_assemble(lines))
+    return _EXT[0]
+
+
 def rival_car_tables():
     """Data for the rival-car projection, in the reclaimed injection.
 
@@ -2228,24 +2338,121 @@ def rival_car_src(part="main"):
         "    LDA #$04",           "    STA $1A7F,X",   # a car's slot class
         "    INC $00DD",
         "RcP1Done:",
-        # --- player 1's car in player 2's view ----------------------------
-        "    LDA #$FF", "    STA $%04X" % P2E_TOP,
+        # --- player 2's list ---------------------------------------------------
+        # Built in the game's own entry arrays, straight after player 1's list:
+        # the game's emitter stops at $DD and never sees it, and it is emitted
+        # into player 2's bands (P2ObjCommit) in the same pass, before the next
+        # list build can overwrite it. Player 1's car goes in first, so the
+        # emitter -- which hands out slots in list order -- always gives it the
+        # first slot in its bands: that is its reserved slot.
+        "    LDA $00DD",
+        "    STA $%04X" % P2L_START,
+        "    STA $%04X" % P2L_END,
     ] + (["    RTS"] if os.getenv("PP2_NO_P2RIVAL") else []) + [
         "    LDA $%04X" % GAP_LO, "    STA $0048",
         "    LDA $%04X" % GAP_HI, "    STA $0049",
         "    LDA $%04X" % PLAYER_X,
         "    JSR OcCoef",
         "    JSR OcRow",
-        "    BCS RcP2Done",
+        "    BCS RcP2Objs",
+        "    JSR P2X",
+        "    BCS RcP2Objs",
+        "    STA $%04X" % OC_X,
+        # player 2 has no per-row road, so the angle's road term is level
+        "    LDA #$00", "    STA $%04X" % OC_S0, "    STA $%04X" % OC_S1,
+        "    JSR OcSprite",
+        "    LDX $%04X" % P2L_END,
+        "    LDA $%04X" % OC_ROW, "    STA $1A94,X",
+        "    LDA $%04X" % OC_BOT, "    STA $1AA9,X",
+        "    LDA $%04X" % OC_LO,  "    STA $1AD3,X",
+        "    LDA $%04X" % OC_HI,  "    STA $1ABE,X",
+        "    LDA $%04X" % OC_PW,  "    STA $1BEA,X",
+        "    LDA $%04X" % OC_X,   "    STA $1AE8,X",
+        "    INC $%04X" % P2L_END,
+        "RcP2Objs:",
+    ] + ([] if os.getenv("PP2_NO_P2OBJECTS") else [
+        # --- the world's objects, as player 2 sees them -----------------------
+        # The game's own per-object routines (rom:E3E0 row, E475 height, E55B
+        # sprite by kind, E5C7 palette/width), with the object's distance moved
+        # by the camera gap for the call and put back after -- so rows, sizes,
+        # sprites and palettes are exactly the game's. Only x is recomputed,
+        # against player 2's road and camera (P2X), from the object's own lane
+        # coefficient. The window is player 1's, so with player 2 well ahead,
+        # objects past player 1's horizon are not there yet.
+        "    LDX $00B0",
+        "    JMP P2ObTest",
+        "P2ObLoop:",
+        "    STX $%04X" % P2L_I,
+        "    LDA $19A4,X", "    STA $0044", "    TAY",
+        "    LDA $19C4,Y", "    STA $%04X" % P2L_ZL,
+        "    CLC", "    ADC $%04X" % GAP_LO, "    STA $19C4,Y",
+        "    LDA $19D4,Y", "    STA $%04X" % P2L_ZH,
+        "    ADC $%04X" % GAP_HI, "    STA $19D4,Y",
+        "    LDA $%04X" % P2L_END, "    STA $0045",
+        "    JSR $E3E0",
+        "    LDY $0044",
+        "    LDA $%04X" % P2L_ZL, "    STA $19C4,Y",
+        "    LDA $%04X" % P2L_ZH, "    STA $19D4,Y",
+        "    LDA $0048",
+        "    BMI P2ObNext",                    # not in player 2's view
+        "    LDA $004A",
+        "    CMP #$03",                        # crash-state kind: player 1's
+        "    BEQ P2ObNext",
+        "    JSR $E475",
+        "    LDY $0044",                       # E475 leaves Y on the entry
+        "    LDX $1A00,Y",                     # the object's lane coefficient
+        "    LDA $E80F,X", "    STA $%04X" % OC_CL,
+        "    LDA $A8A1,X", "    STA $%04X" % OC_CH,
+        "    LDA $0048", "    STA $%04X" % OC_ROW,
+        # E55B and E5C7 choose by kind in $4A, which OcMul (in P2X) uses as its
+        # product: without this a sign came out as one entry, with a car's
+        # palette. Checked with the gap forced to 0 (docs/FINDINGS.md).
+        "    LDA $004A", "    STA $%04X" % P2L_KIND,
+        "    JSR P2X",
+        "    BCS P2ObNext",
+        "    STA $004D",
+        "    LDA $%04X" % P2L_KIND, "    STA $004A",
+        "    JSR $E55B",
+        "    JSR $E5C7",
+        # x, and a sign's second entry, as rom:E665 does it
+        "    LDY $0045",
+        "    LDA $004D",
+        "    LDX $004A",
+        "    CPX #$01",
+        "    BNE P2ObOne",
+        "    STA $1AE9,Y",
+        "    INC $%04X" % P2L_END,
+        "    LDX $0049", "    CLC", "    ADC $BFF6,X",
+        "P2ObOne:",
+        "    STA $1AE8,Y",
+        "    INC $%04X" % P2L_END,
+        "P2ObNext:",
+        "    LDX $%04X" % P2L_I,
+        "    DEX",
+        "P2ObTest:",                           # the loop's exit, at its foot
+        "    BMI P2ObDone",
+        "    CPX $00B1",
+        "    BMI P2ObDone",
+        "    LDA $%04X" % P2L_END,
+        "    CMP #$14",                        # room for a two-entry sign
+        "    BCS P2ObDone",
+        "    JMP P2ObLoop",
+        "P2ObDone:",
+    ]) + [
+        "    RTS",
+
+        # --- in: OC_CL/CH coefficient, OC_ROW row. out: carry set for band 0,
+        # else A = screen x in player 2's view: hi(c * (row + 4)), plus player
+        # 2's camera at the row's band, plus the walk's road offset there, $4F.
+        "P2X:",
         "    LDX $%04X" % OC_ROW,
         "    LDA $%04X,X" % ROW_TO_BAND,
-        "    BNE RcP2Band",
-        "RcP2Done:",
+        "    BNE P2XGo",
+        "    SEC",
         "    RTS",
-        "RcP2Band:",
-        "    STA $%04X" % OC_T,                # the car's nearest band
-        # the car's own term, as for player 1's view
-        "    LDA $%04X" % OC_ROW, "    CLC", "    ADC #$04",
+        "P2XGo:",
+        "    STA $%04X" % OC_T,
+        "    TXA", "    CLC", "    ADC #$04",
         "    STA $%04X" % OC_M,
         "    JSR OcMul",
         "    STA $%04X" % OC_X,
@@ -2255,38 +2462,27 @@ def rival_car_src(part="main"):
         "    LDA $9DC3,X", "    SEC", "    SBC #$02",     # 6b + 5 - 2
         "    STA $%04X" % OC_M,
         "    LDA $%04X" % P2_LATERAL,
-        "    BPL RcMag",
+        "    BPL P2XMag",
         "    EOR #$FF", "    CLC", "    ADC #$01",
-        "RcMag:",
+        "P2XMag:",
         "    TAY",
         "    LDA $%04X,Y" % LATERAL_RAMP,    "    STA $%04X" % OC_CL,
         "    LDA $%04X,Y" % LATERAL_RAMP_HI, "    STA $%04X" % OC_CH,
         "    LDA $%04X" % P2_LATERAL,
-        "    BPL RcCamPos",
+        "    BPL P2XCam",
         "    SEC",
         "    LDA #$00", "    SBC $%04X" % OC_CL, "    STA $%04X" % OC_CL,
         "    LDA #$00", "    SBC $%04X" % OC_CH, "    STA $%04X" % OC_CH,
-        "RcCamPos:",
+        "P2XCam:",
         "    JSR OcMul",
-        # x = car term + camera + the walk's own road offset + $4F
         "    CLC", "    ADC $%04X" % OC_X, "    STA $%04X" % OC_X,
         "    LDX $%04X" % OC_T,
         "    LDA $%04X,X" % P2_BANDX,
         "    SEC", "    SBC $%04X,X" % OC_BASE,
         "    CLC", "    ADC $%04X" % OC_X,
         "    CLC", "    ADC #$%02X" % ((0x4F + P2_X_OFFSET) & 0xFF),
-        "    STA $%04X" % OC_X,
-        # player 2 has no per-row road, so the angle's road term is level
-        "    LDA #$00", "    STA $%04X" % OC_S0, "    STA $%04X" % OC_S1,
-        "    JSR OcSprite",
-        "    LDA $%04X" % OC_ROW, "    STA $%04X" % P2E_TOP,
-        "    LDA $%04X" % OC_BOT, "    STA $%04X" % P2E_BOT,
-        "    LDA $%04X" % OC_LO,  "    STA $%04X" % P2E_LO,
-        "    LDA $%04X" % OC_HI,  "    STA $%04X" % P2E_HI,
-        "    LDA $%04X" % OC_PW,  "    STA $%04X" % P2E_PW,
-        "    LDA $%04X" % OC_X,   "    STA $%04X" % P2E_X,
+        "    CLC",
         "    RTS",
-
     ]
     helpers = [
         # --- A = a lateral, player 1's terms -> OC_CL/CH coefficient, OC_L lane
@@ -2391,6 +2587,40 @@ def rival_car_src(part="main"):
 
     ]
     helpers += [
+        "P2BuildLists:",
+        # Player 2's lists, band by band: the band's headers from the template,
+        # then P2_OBJ_SLOTS parked object slots and the end marker.
+        "    LDX #$00",                        # template
+        "    LDY #$00",                        # list
+        "    STX $%04X" % OC_M,                # band, 0-11
+        "P2Build:",
+        "    STX $%04X" % OC_S0,
+        "    LDX $%04X" % OC_M,
+        "    LDA $%04X,X" % (P2_TEMPLATE + p2_template_len() - 12),
+        "    STA $%04X" % OC_T,
+        "    LDX $%04X" % OC_S0,
+        "P2BCopy:",
+        "    LDA $%04X,X" % P2_TEMPLATE,
+        "    STA $%04X,Y" % P2_DL_BASE,
+        "    INX", "    INY",
+        "    DEC $%04X" % OC_T,
+        "    BNE P2BCopy",
+        "    LDA #$%02X" % P2_OBJ_SLOTS, "    STA $%04X" % OC_T,
+        "P2BPark:",
+        "    LDA #$00", "    STA $%04X,Y" % P2_DL_BASE, "    INY",
+        "    LDA #$1F", "    STA $%04X,Y" % P2_DL_BASE, "    INY",
+        "    LDA #$00", "    STA $%04X,Y" % P2_DL_BASE, "    INY",
+        "    LDA #$A1", "    STA $%04X,Y" % P2_DL_BASE, "    INY",
+        "    DEC $%04X" % OC_T,
+        "    BNE P2BPark",
+        "    LDA #$00",
+        "    STA $%04X,Y" % P2_DL_BASE, "    INY",
+        "    STA $%04X,Y" % P2_DL_BASE, "    INY",
+        "    INC $%04X" % OC_M,
+        "    LDA $%04X" % OC_M,
+        "    CMP #$0C",
+        "    BNE P2Build",
+        "    RTS",
         # rom:E79C, the emitter's car slot: `LDA $1997,Y / ...` hands each car
         # the next of +4, +8, +12, +16 in the band -- then +20, which in bands
         # 7-11 is player 1's own car (its entry is slot class $14, a fixed
@@ -2464,7 +2694,7 @@ def rival_car_src(part="main"):
     if part == "helpers":
         return [".org $%04X" % RIVAL_HELPERS] + helpers
     _, hs = _rival_helpers()
-    return lines + mul + ["%s = $%04X" % (k, hs[k]) for k in ("OcCoef", "OcRow", "OcSprite")]
+    return lines + mul + ["%s = $%04X" % (k, hs[k]) for k in ("OcCoef", "OcRow", "OcSprite", "P2BuildLists")]
 
 
 _RIVAL = []
@@ -2478,48 +2708,85 @@ def _rival_helpers():
 
 
 def p2_emit_src():
-    """Emit the staged entry into player 2's bands, at vblank.
+    """Emit player 2's list into player 2's bands, at vblank.
 
-    As the game's emitter does it (rom:E729-E7C9): from the band holding the
-    car's nearest row outward, one header per band, the sprite page starting at
-    HI - rowbase[band] + top and stepping six a band. Player 2 has no band 0,
-    so the walk stops at band 1.
+    As the game's emitter does it (rom:E729-E7C9): each entry from the band
+    holding its nearest row outward, one header a band, the sprite page
+    starting at page - rowbase[band] + row and stepping six a band. Slots are
+    taken in list order, P2_OBJ_SLOTS a band, so player 1's car -- listed
+    first -- always gets the first slot in its bands. A band already full
+    skips that entry's slice there, the page still stepped. Player 2 has no
+    band 0.
+
+    Guarded: P2L_START/END are zero until a list is built, the end must be a
+    real index, and every row read back is one the game or OcRow produced.
     """
-    if os.getenv("PP2_NO_OTHERCAR") or os.getenv("PP2_NO_P2EMIT"):
+    if os.getenv("PP2_NO_OTHERCAR"):
         return []
     return [
-        # Only a real row: 0-$4D. The reset-switch path (rom:D7A9) runs the
-        # object rebuild without passing the list builder's hook, so this can
-        # run before anything was staged -- with P2E_TOP holding 0 from the
-        # RAM clear, not the $FF that means "nothing". Treated as a car there,
-        # row 0 put the walk in band 0, its index wrapped to $FF, and the loop
-        # zeroed player 2's lists wholesale; the per-frame stage only rewrites
-        # some of each header's bytes, so the damage stayed.
-        "    LDA $%04X" % P2E_TOP,
-        "    CMP #$4E",
-        "    BCS RcEmitDone",
-        "    TAX",
-        "    LDY $%04X,X" % ROW_TO_BAND,
-        "    BEQ RcEmitDone",                  # band 0: player 2 has none
-        "    LDA $%04X" % P2E_HI,
-        "    SEC", "    SBC $9DC3,Y",
-        "    CLC", "    ADC $%04X" % P2E_TOP,
-        "    STA $%04X" % P2E_PG,
-        "    LDX $%04X" % P2E_BOT,
-        "    LDA $%04X,X" % ROW_TO_BAND,
-        "    STA $%04X" % OC_T,
-        "RcEmit:",
-        "    LDX P2ObjOfs-1,Y",
-        "    LDA $%04X" % P2E_LO, "    STA $%04X,X" % P2_DL_BASE,
-        "    LDA $%04X" % P2E_PW, "    STA $%04X,X" % (P2_DL_BASE + 1),
-        "    LDA $%04X" % P2E_PG, "    STA $%04X,X" % (P2_DL_BASE + 2),
-        "    CLC", "    ADC #$06", "    STA $%04X" % P2E_PG,
-        "    LDA $%04X" % P2E_X,  "    STA $%04X,X" % (P2_DL_BASE + 3),
+        "    LDX $%04X" % P2L_END,
+        "    CPX #$16",
+        "    BCS P2EmOut",
+        "    CPX $%04X" % P2L_START,
+        "    BEQ P2EmOut",
+        "    BCS P2EmGo",
+        "P2EmOut:",
+        "    JMP P2EmDone",
+        "P2EmGo:",
+        "    LDY #$0C",
+        "    LDA #$00",
+        "P2EmCnt:",
+        "    STA $%04X,Y" % P2_SLOTCNT,
         "    DEY",
-        "    BEQ RcEmitDone",
-        "    CPY $%04X" % OC_T,
-        "    BCS RcEmit",
-        "RcEmitDone:",
+        "    BPL P2EmCnt",
+        "    LDX $%04X" % P2L_START,
+        "P2EmEnt:",
+        "    STX $%04X" % P2L_I,
+        "    LDY $1A94,X",
+        "    CPY #$4E",
+        "    BCS P2EmNext",                    # not a real row
+        "    LDA $%04X,Y" % ROW_TO_BAND,
+        "    BEQ P2EmNext",                    # wholly in band 0
+        "    TAY",
+        "    LDA $1ABE,X",
+        "    SEC", "    SBC $9DC3,Y",
+        "    CLC", "    ADC $1A94,X",
+        "    STA $%04X" % P2L_PG,
+        "    LDA $1AD3,X", "    STA $%04X" % T_LO,
+        "    LDA $1BEA,X", "    STA $%04X" % T_PW,
+        "    LDA $1AE8,X", "    STA $%04X" % T_X,
+        "    LDA $1AA9,X",
+        "    TAX",
+        "    LDA $%04X,X" % ROW_TO_BAND,
+        "    STA $%04X" % T_END,
+        "P2EmBand:",
+        "    LDA $%04X,Y" % P2_SLOTCNT,
+        "    CMP #$%02X" % (4 * P2_OBJ_SLOTS),
+        "    BCS P2EmSkip",                    # this band is full
+        "    STA $%04X" % T_OFF,
+        "    ADC #$04",                        # carry is clear
+        "    STA $%04X,Y" % P2_SLOTCNT,
+        "    LDA P2ObjOfs-1,Y",
+        "    CLC", "    ADC $%04X" % T_OFF,
+        "    TAX",
+        "    LDA $%04X" % T_LO,   "    STA $%04X,X" % P2_DL_BASE,
+        "    LDA $%04X" % T_PW,   "    STA $%04X,X" % (P2_DL_BASE + 1),
+        "    LDA $%04X" % P2L_PG, "    STA $%04X,X" % (P2_DL_BASE + 2),
+        "    LDA $%04X" % T_X,    "    STA $%04X,X" % (P2_DL_BASE + 3),
+        "P2EmSkip:",
+        "    LDA $%04X" % P2L_PG, "    CLC", "    ADC #$06",
+        "    STA $%04X" % P2L_PG,
+        "    DEY",
+        "    BEQ P2EmNext",
+        "    CPY $%04X" % T_END,
+        "    BCS P2EmBand",
+        "P2EmNext:",
+        "    LDX $%04X" % P2L_I,
+        "    INX",
+        "    CPX $%04X" % P2L_END,
+        "    BCS P2EmDone",
+        "    JMP P2EmEnt",                     # too far to branch back
+        "P2EmDone:",
     ]
 
 
@@ -2841,7 +3108,7 @@ def fix_mirror_split(p):
     # check the layout first and name the pair that collides.
     _regions = [("code blob", HUD_REASSERT_ADDR, _blob_len()),
                 ("DLL_TEMPLATE", DLL_TEMPLATE, DLL_ZONES * 3),
-                ("P2_TEMPLATE", P2_TEMPLATE, p2_dl_bytes()),
+                ("P2_TEMPLATE", P2_TEMPLATE, p2_template_len()),
                 ("P2_HUD_TEMPLATE", P2_HUD_TEMPLATE, 12),
                 ("MINI_TEMPLATE", MINI_TEMPLATE, FINE_ZONES * MINI_DL_SIZE),
                 ("OC_TABLES", OC_TABLES, OC_TABLES_LEN),
@@ -2876,7 +3143,7 @@ def fix_mirror_split(p):
     p.put(DLL_TEMPLATE, dll_template(),
           expect=_stock_bytes(DLL_TEMPLATE, DLL_ZONES * 3))
     p.put(P2_TEMPLATE, p2_dl_template(),
-          expect=_stock_bytes(P2_TEMPLATE, p2_dl_bytes()))
+          expect=_stock_bytes(P2_TEMPLATE, p2_template_len()))
     _oc = rival_car_tables()
     p.put(OC_TABLES, _oc, expect=_stock_bytes(OC_TABLES, len(_oc)))
     _rh = list(_rival_helpers()[0])
@@ -2973,7 +3240,16 @@ def fix_mirror_split(p):
     road_tail_addr = syms["RoadTail"]
     p2_tick_addr = syms["P2Tick"]
     p2_commit_addr = syms["P2ObjCommit"]
-    rival_addr = syms["RivalCars"]
+    rival_addr = _ext()[1]["RivalCars"]
+    # rom:E3CD -- the row search, `LDX #$4D / LDA $48 ...`, becomes a jump to
+    # FastZRow (see there). Serves the game's own list builder and ours.
+    if "FastZRow" in _ext()[1]:
+        fz = _ext()[1]["FastZRow"]
+        p.put(0xE3CD, [0x4C, fz & 0xFF, fz >> 8], expect=[0xA2, 0x4D, 0xA5])
+    _xc = list(_ext()[0])
+    if EXT_ADDR + len(_xc) - 1 > EXT_END:
+        raise SystemExit("the $4000 code area overruns $%04X" % EXT_END)
+    p.put(EXT_ADDR, _xc, expect=[0xFF] * len(_xc))
 
     # rom:D713 -- the race tick's `JSR sub_E93D`, player 1's walk. P2Tick
     # makes that call and then walks player 2's track (see p2_tick_src).
@@ -3213,8 +3489,10 @@ def build(out_path, sign=False):
         except sign7800.SignError as e:
             raise SystemExit("could not sign the patched image: %s" % e)
 
-    out = (b"\x00" * header if header == 0 else
-           io.open(src, "rb").read()[:header]) + body
+    hdr = bytearray(b"\x00" * header if header == 0 else io.open(src, "rb").read()[:header])
+    if header:
+        hdr[49:53] = len(body).to_bytes(4, "big")    # the a78 cart-size field
+    out = bytes(hdr) + body
     io.open(out_path, "wb").write(out)
     print("wrote %s (%d bytes changed)%s"
           % (out_path, len(p.writes), "" if sign else " -- unsigned"))
@@ -3223,6 +3501,15 @@ def build(out_path, sign=False):
 
 def build_bundle(out_path=None):
     """Write dist/pp2-splitscreen.abp: sections, the one option, its BPS."""
+    if OUT_SIZE != ROM_SIZE:
+        # A .abp section is a fixed extent of the source body, and the format
+        # has no way to grow the body (patchset-format.md, "Length changes"),
+        # so the 48K image -- code at $4000-$7FFF -- cannot be expressed as
+        # one. Refuse rather than write a bundle that would patch the wrong
+        # offsets. dist/pp2-splitscreen.abp predates this (commit d05d31f).
+        raise SystemExit("--bundle: the build is now a %dK cart and the .abp "
+                         "format cannot grow the %dK source; use --build"
+                         % (OUT_SIZE // 1024, ROM_SIZE // 1024))
     sys.path.insert(0, TOOLKIT_TOOLS)
     import patchset
     import bps

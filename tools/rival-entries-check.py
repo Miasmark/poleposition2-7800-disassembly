@@ -93,7 +93,7 @@ for line in open(sys.argv[1]):
         exp = (r, bot, x, lo, hi, pw, 4)
         tot[0] += 1; ok[0] += got == exp
         if got != exp and len(bad) < 5: bad.append(("P1 view", f, exp, got))
-    # player 1's car in player 2's view: P2E_*
+    # player 1's car in player 2's view
     c, lane = coef(s8(Z(0xD1)))
     ro = row_of(gap)
     if ro and rom(S.ROW_TO_BAND + ro[0]) != 0:
@@ -107,11 +107,14 @@ for line in open(sys.argv[1]):
         x = (x + ((Q(0x2760 + b) - BASE[b]) & 0xFF)) & 0xFF
         x = (x + 0x4F + S.P2_X_OFFSET) & 0xFF
         lo, hi, pw = sprite(x, lane, 0, 0, size)
-        got = tuple(Q(a) for a in (0x2749, 0x274A, 0x274E, 0x274B, 0x274C, 0x274D))
+        # the first entry of player 2's list, which follows player 1's in the
+        # game's arrays (P2L_START)
+        k = Q(0x2749)
+        got = (R(0x1A94 + k), R(0x1AA9 + k), R(0x1AE8 + k), R(0x1AD3 + k), R(0x1ABE + k), R(0x1BEA + k))
         exp = (r, bot, x, lo, hi, pw)
         tot[1] += 1; ok[1] += got == exp
         if got != exp and len(bad) < 10: bad.append(("P2 view", f, exp, got))
 print("player 2's car in player 1's view: %d of %d entries match the model" % (ok[0], tot[0]))
-print("player 1's car in player 2's view: %d of %d staged entries match the model" % (ok[1], tot[1]))
+print("player 1's car in player 2's view: %d of %d entries match the model" % (ok[1], tot[1]))
 for b in bad:
     print("  %s f%s expected %s got %s" % b)
