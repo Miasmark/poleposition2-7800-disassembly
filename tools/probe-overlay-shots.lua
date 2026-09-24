@@ -1,3 +1,8 @@
+-- probe-overlay-shots.lua -- screenshots of player 2's highlights in player
+-- 1's view: each frame, scan player 1's lists ($2200-$25FF) for a header with
+-- palette 4 / 8 bytes ($98) and a page in the highlight column ($70-$7F), not
+-- parked; snapshot up to six, 300+ frames apart. Loose match: stock headers
+-- can pass too, so check the low byte is a lean ($00-$20). Env: O, END.
 local M=(type(manager.machine)=="function") and manager:machine() or manager.machine
 local mem=M.devices[":maincpu"].spaces["program"]
 local f,last,shots,hits=0,-10000,0,0
