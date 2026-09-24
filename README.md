@@ -80,63 +80,88 @@ Add `--gaps` for a report of every byte reached as neither code nor a declared
 block, `--check-gaps` to have each apparent call into one classified as real or
 coincidental, and `--map` for a heatmap (needs Pillow).
 
-## The split-screen patch
+## Pole Position II VS: the two-player split-screen build
 
-`patches/splitscreen.py` rearranges the display list into a two-viewport
-layout -- player 2's view on top, the HUD moved to the centre as a divider,
-player 1's road below, unmoved. It ships no cartridge data: every edit is
-checked against the bytes it expects to find before it's made, and the
-distributable form ([`dist/pp2-splitscreen.abp`](dist/pp2-splitscreen.abp),
-the anchored-bundle format `a7800-toolkit` defines) carries a CRC32 of each
-edited region rather than the region itself.
+`patches/splitscreen.py` builds a two-player version of the game from your own
+retail dump: player 2 on the top half of the screen, player 1 on the bottom,
+the HUD between them. Each player has their own car, camera, laps, clock,
+score and result; they qualify, race, collide and are tallied separately, and
+the title logo reads *POLE POSITION VS*. The build is a 48K cartridge
+(`$4000-$FFFF`); the retail game is 32K.
+
+[`docs/SPLITSCREEN.md`](docs/SPLITSCREEN.md) describes the current design:
+screen layout, what runs when, RAM and ROM maps, features and known limits.
+`docs/FINDINGS.md` is how it got there (checkpoints 1-88).
+
+**Controls.** Player 1 as stock. Player 2 uses a two-button 7800 controller
+in port 2 with the same scheme: the buttons are gas and brake, left and right
+steer, up and down shift gear.
+
+### Building it
+
+You need:
+
+1. **The retail NTSC dump**, 32,768-byte body, CRC32 `A85FB962`, SHA-256
+   `b852432108a86d003c2c7d393455b5a52eafc474209a6e7e5ed11f99366b8d5e`, with
+   or without its 128-byte `.a78` header. Put it beside this README named
+   `Pole Position II (NTSC) (Atari) (1987) (A85FB962).a78`, or point
+   `PP2_ROM` at it. Any other file is refused before anything is written.
+2. **Python 3** (built with 3.10; nothing outside the standard library).
+3. **The a7800 toolkit's `tools` directory**: `asm.py` and `m6502.py` for
+   every build, `sign7800.py` to sign. It is looked for at
+   `../a7800-toolkit-local/tools` (built and verified with that checkout at
+   commit `59a55e9`); set `PP2_TOOLKIT` to use another.
+
+Then, from this directory:
 
 ```
-# apply it, against your own dump, through the toolkit's own patcher:
-python ../a7800-toolkit-local/tools/patchset.py apply dist/pp2-splitscreen.abp \
-    --rom "Pole Position II (NTSC) (Atari) (1987) (A85FB962).a78" \
-    --with mirror-split --out pp2-split.a78
-
-# or rebuild the bundle, or a quick unsigned test copy, from the script directly:
-python patches/splitscreen.py --bundle
-python patches/splitscreen.py --build -o pp2-split.a78
+python patches/splitscreen.py --build -o pp2-vs.a78           # unsigned: MAME, recordings
+python patches/splitscreen.py --build --sign -o pp2-vs.a78    # signed: real hardware
 ```
 
-Player 2's view is currently a *mirror* of player 1's road, not an independent
-camera -- see "Phase 1" in `docs/FINDINGS.md` for what that buys for free
-(geometry, colour, the stripe animation) and why it can't yet be smooth (the
-real road's curve is injected scanline-by-scanline by a display interrupt,
-which a mirror rendered elsewhere on screen can't borrow -- and that is
-measured, not assumed: the injection is beam-synchronised and a second copy
-would cost ~78 scanlines of stalled main loop against a measured budget of
-four to five). The patch script's
-own docstring has the zone-by-zone layout and the reasoning behind each edit.
+The build is deterministic and prints the result's SHA-256. From the headered
+dump, checkpoint 88 gives:
 
-Player 2's view now mirrors twelve of player 1's thirteen road bands, so it is
-72 lines against the road's 78 rather than a shortened 60, the player's own car
-included, and both views draw from identical palette registers -- the cars,
-signs, lap line and stripe animation match top and bottom. The one band it
-gives up is the farthest and least detailed; it pays for a blank zone the
-divider's display interrupt has to land on. The start light and the "POLE POSITION! ####" banner still show up
-at their usual moments -- centred in the same divider the HUD lives in, the
-HUD returning right after each one finishes (during qualifying too, not just
-the real race), in the divider's own correct colours rather than the
-mirror's road palette, and without the whole screen visibly bumping up and
-down as each message comes and goes. Getting all of that right took the
-first new code (as opposed to edited-in-place bytes) this patch has needed;
-see "The mirror was missing the car, and the divider was missing the light",
-"Colour, a third entry point, and a screen that bumped" and "The mirror was
-free; the interrupt positions were not" in `docs/FINDINGS.md` for the wrong
-turns along the way -- there were several, including two root causes that
-were confidently documented and then disproved -- each caught by disagreement
-with a recording or a screenshot rather than assumed away.
+| | SHA-256 |
+|---|---|
+| unsigned | `eb488ab710bd588d0b0129d8a786ac1f8303477df31817efd1976ae959c756e4` |
+| signed | `1270180be85da05aba2472f1018a3f9714c1b0e2ac462fb97bd81b95f3f71cd2` |
 
-**One thing worth knowing if you test a build against a recording:**
-`--build` writes an *unsigned* image by default, on purpose -- see the
-"cartridge signature" entry in `docs/FINDINGS.md`. Signing is for real
-hardware (or a fresh recording made against a signed build specifically);
-every `.inp` in this repo was recorded against the original, unsigned-by-
-this-patch cartridge, and a freshly *signed* build will play back a
-different, if equally plausible-looking, race against it.
+(A headerless dump gives a headerless 49,152-byte image with the same body.)
+
+Nothing from the cartridge is stored in this repository: every edit is
+checked against the bytes it expects to find, and the new graphics (player
+2's highlights, the sheared road slices, the VS) are generated from your
+dump's own pixels at build time.
+
+**Signed or unsigned.** A 7800's BIOS checks a signature at boot, and the
+check's running time depends on the signature bytes themselves. Every `.inp`
+recording here was made against an unsigned image, and a signed build plays
+them back as a different race. Use the unsigned build for MAME and for
+testing, the signed one for a real console or flash cart. The full account is
+in the generator's docstring.
+
+**Switches.** `PP2_NO_SMOOTH`, `PP2_NO_SPLIT`, `PP2_NO_OVL` and `PP2_NO_VS`
+leave out one feature each; `PP2_P2PAL=n` recolours player 2's car. They and
+the test hooks are listed in the generator's docstring.
+
+**Why no `.abp` bundle.** The toolkit's anchored-bundle format patches fixed
+extents of the source and cannot grow a 32K image into 48K, so `--bundle`
+refuses; the mirror-era bundle that used to sit in `dist/` has been removed
+as out of date.
+
+### Checking a build
+
+```
+MAME=/path/to/mame tools/check-build.sh pp2-vs.a78
+```
+
+replays the committed recordings and scripted races against the build --
+game health, player 2's display lists, the halving row search against the
+original, a trap for any jump into data, and the race's tick rate under
+load -- and prints what to compare (the expected values are in the script's
+header). It takes a couple of minutes and needs a 7800 BIOS (`BIOS`, default
+`../bios`).
 
 ## A higher-detail car sprite (credit: KevinMos3 and Defender_2600)
 
@@ -146,9 +171,9 @@ is **"Pole Position II Graphics Hack"** by **KevinMos3** and **Defender_2600**,
 published on the AtariAge forums on 2014-04-12. All credit for the artwork
 is theirs -- this only locates exactly which bytes their release changed
 (two sprite objects, confirmed live against the display list, not guessed
-from the diff) so the redraw can be applied on its own, combined with the
-split-screen patch above (the two touch entirely disjoint bytes), and always
-with their names attached.
+from the diff) so the redraw can be applied on its own to the retail 32K
+cartridge, always with their names attached. It is not part of the VS build
+(the two touch disjoint bytes, but see the note on the highlights below).
 
 ```
 python ../a7800-toolkit-local/tools/patchset.py apply dist/pp2-graphics-hack.abp \
@@ -198,9 +223,11 @@ mame a7800 -rompath ../bios -cart "<rom>" -skip_gameinfo \
 |---|---|
 | `annotations.json` | The recipe. Feed it to `disasm.py` to get the listing. |
 | `docs/FINDINGS.md` | The narrative -- read this first. |
-| `tools/` | This project's own probe scripts. |
-| `patches/` | Scripts that build a modified ROM from your own dump; see "The split-screen patch" above. |
-| `dist/` | The distributable `.abp` bundles those scripts produce -- no cartridge data, just CRC32s and BPS diffs of this project's own edits. |
+| `tools/` | This project's own probe scripts; each says what it does in its first lines. |
+| `docs/SPLITSCREEN.md` | The VS build's current design: layout, timing, RAM and ROM maps. |
+| `patches/` | Scripts that build a modified ROM from your own dump; see "Pole Position II VS" above. |
+| `dist/` | The graphics hack's `.abp` bundle -- no cartridge data, just CRC32s and a BPS diff of the edits. |
+| `tools/check-build.sh` | The regression set for a VS build (see "Checking a build"). |
 | `Play Recording.command`, `Record Session.command` | Double-click launchers (macOS + MAME on `PATH`). |
 
 Not committed (see `.gitignore`): the ROM, the generated `src/rom.asm` and

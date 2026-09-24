@@ -1387,13 +1387,9 @@ def _stock_bytes(addr, n):
     return list(rom[addr - BASE:addr - BASE + n])
 
 
-def _check_p2_ram():
-    """No two of player 2's variables may overlap.
-
-    Written after P1_OC_LAST was placed at $2720, which is P2_WALK: the other
-    car's state sat on the walk's scratch and corrupted it every frame, showing
-    up in play as the player's own car breaking up.
-    """
+def ram_claims():
+    """Every RAM range this build claims, as (name, address, size), sorted:
+    the list _check_p2_ram checks and tools/splitscreen-maps.py prints."""
     regions = [
         ("P2_DL_BASE", P2_DL_BASE, p2_dl_bytes()),
         ("P2_LATERAL", P2_LATERAL, 1),
@@ -1435,6 +1431,28 @@ def _check_p2_ram():
         ("HUD_BUFS", HUD_BUF1, 62),
     ]
     regions.sort(key=lambda r: r[1])
+    return regions
+
+
+def ram_claims_other():
+    """Claims outside player 2's own list: staging, sky, messages, zone list."""
+    return [("STG", STG_ROFF, 26), ("P2_HEAD", P2_HEAD, 5),
+            ("P2_DECOR_DL", P2_DECOR_DL, P2_DECOR_LEN),
+            ("P2_HOR_DL", P2_HOR_DL, P2_HOR_LEN),
+            ("P2_DECOR_TOP", P2_DECOR_TOP, P2_DECOR_LEN),
+            ("QM", QM_BUF, 46),
+            ("HUD_POS", HUD_POS2, 6), ("E8L_T", E8L_T, 2),
+            ("DLL", DLL_BASE, DLL_ZONES * 3)]
+
+
+def _check_p2_ram():
+    """No two of player 2's variables may overlap.
+
+    Written after P1_OC_LAST was placed at $2720, which is P2_WALK: the other
+    car's state sat on the walk's scratch and corrupted it every frame, showing
+    up in play as the player's own car breaking up.
+    """
+    regions = ram_claims()
     for (n1, a1, s1), (n2, a2, _) in zip(regions, regions[1:]):
         if a1 + s1 > a2:
             raise SystemExit(
@@ -1442,13 +1460,7 @@ def _check_p2_ram():
                 % (n1, a1, a1 + s1 - 1, n2, a2))
     # and nothing claimed may sit in a range still listed as free
     for lo, hi, why in FREE_RAM:
-        for n, a, sz in regions + [("STG", STG_ROFF, 26), ("P2_HEAD", P2_HEAD, 5),
-                                   ("P2_DECOR_DL", P2_DECOR_DL, P2_DECOR_LEN),
-                                   ("P2_HOR_DL", P2_HOR_DL, P2_HOR_LEN),
-                                   ("P2_DECOR_TOP", P2_DECOR_TOP, P2_DECOR_LEN),
-                                   ("QM", QM_BUF, 46),
-                                   ("HUD_POS", HUD_POS2, 6), ("E8L_T", E8L_T, 2),
-                                   ("DLL", DLL_BASE, DLL_ZONES * 3)]:
+        for n, a, sz in regions + ram_claims_other():
             if a <= hi and a + sz - 1 >= lo:
                 raise SystemExit("RAM $%04X..$%04X (%s) is listed free: %s"
                                  % (a, a + sz - 1, n, why))
@@ -5042,7 +5054,8 @@ def vbl_src():
         # --- sub_E8AC's rows, only the ones anything reads (checkpoint 81).
         # From rom:E8E6 on odd frames it wrote all 78 of RowCurveYStaged for
         # the bypassed injection, about 2,000 cycles; this build reads 13, one
-        # sample row a band (road_stage_src). Same arithmetic per row: the
+        # sample row a band (road_stage_src), plus row 6b+1 for each split
+        # band's top half (checkpoint 87). Same arithmetic per row: the
         # stripe texture through ($FD) at dat_C07E[row], plus $B6 from row $3C
         # down the screen, ORed with $1F3C[row]; then $E0 into those rows
         # between $E6 and $E7 (rom:E927, the sign stripe).
