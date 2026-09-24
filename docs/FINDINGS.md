@@ -6751,3 +6751,34 @@ with the car. No palette is spare in the road regions: 0-1 road, 2 road
 pieces and wrecks, 3-5 rivals and signs, 6 the cars, 7 white. Any per-player
 colour has to share palette 6, by view or by band (a decision for the
 user).
+
+### Player colours through 160B (evaluated, not built)
+
+Asked: would converting the car to 160B help? Yes. It is the one route that
+needs no palette register. In 160B each pixel carries two palette bits of
+its own. The header picks the group (palettes 0-3 or 4-7), the pixel picks
+one of the four. A 160B car in the 4-7 group can use any colour already
+loaded there. A write tap on the palette registers over two recordings found
+the road region's palettes constant in the race:
+
+    P4 $0E $98 $00   P5 $9C $96 $00   P6 $2F $26 $00 (car)   P7 $0F x3
+
+So a blue car (`$9C` for the car's `$2F`, `$96` or `$98` for its `$26`,
+black kept) changes nothing else on screen. Group 0-3 offers `$89/$8B/$8D`
+and `$1E/$17`, but palettes 0-1 are the road's.
+
+What it takes:
+
+- **Graphics.** 160B is 2 pixels a byte, so the 8-byte car slice becomes 16
+  bytes. There are 5 leans x 6 band sheets (bands 7, 8, 9, 11 and band 10's
+  two wheel frames) x 6 lines x 16 bytes = 2,880 bytes. That fits in the free
+  new code area (`$4000-$7FDF`). The lean offsets double (0, `$10` ... `$40`).
+- **Headers.** 160B needs the write-mode bit, so each band's car slot gets a
+  5-byte header. Player 2's lists are exactly 256 bytes, so the extra bytes
+  need room.
+- **Player 1's view.** Player 1's lists need the same 5-byte slot where
+  player 2's car appears (the other-car slot and its distant sprite).
+- **DMA.** About 8 more bytes a line over roughly 30 lines: a few hundred CPU
+  cycles a frame, on a race loop close to its limit, so measure it.
+- **Not covered.** The crash and spin frames stay gold unless those are
+  converted too.
