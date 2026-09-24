@@ -6870,3 +6870,63 @@ the higher-detail car (graphics hack), which redraws the upright frame
 `$8B10`, the highlights are derived from the stock car and misalign on that
 frame. `PP2_NO_OVL=1` builds without them. `PP2_NO_OVL_P1` (test hook)
 leaves out player 1's view only.
+
+## Player 2's bonuses, tallied with player 1's
+
+Checkpoint 84. Until now player 2's time bonus and cars-passed bonus went
+straight onto its score at its finish. Player 1's are tallied on screen.
+
+**Stock tally.** At the finish, rom:D4C5 puts the message up, takes the
+seconds left (`$DF`, the clock's low byte) into `$AC` and enters state `$0F`.
+Every 18 passes (`$C5`, reset by rom:DB7C), rom:D69E takes one off `$AC`
+and adds 4 x 50. The bold row shows `200 x SS` (`$1FEB-$1FF2`). At zero
+(rom:D6DF), rom:DB40 puts up PASSING BONUS. If there are cars (`$9E/$9F`,
+rom:DB55), state `$08` counts `$AB/$AC` down, 50 a step, showing `50 x NNN`.
+Then game over (rom:D5CD, rom:D316). Player 1 out of time goes through
+rom:D32D: the cars tally or game over, with no time bonus. The finish also
+rounds the score (rom:D478); the time-out path does not.
+
+**Built.**
+- **Kept, not paid.** Player 2's finish stores its seconds in `P2_TBS`
+  (`$202D`, the clock's low byte, as rom:D4E7 takes player 1's). Its time-out
+  no longer pays the cars; they stay in `P2_PASSN`. Both are cleared at a
+  new session.
+- **Counted together.** `TallyT` at rom:D6A9 and `TallyC` at rom:D58D run
+  player 2's step in the same beat, 200 or 50 onto `P2_SCORE`, and player
+  1's step only while it has any left. The state lasts until both are empty.
+- **Reached from every end.** `TallyCars` at rom:DB55 also checks player
+  2's cars. `TallyEnd` at rom:D32D (player 1 out of time, or sat out) goes
+  to the `$0F` tally when player 2 has seconds. It sets that up as rom:D4C5
+  does, but without rom:D478's rounding, and with player 1's seconds at 0.
+  Otherwise it goes to the cars tally if either player has cars, else game
+  over.
+- **A fallback.** `TallyFlush` at rom:D316 (game over) pays anything still
+  pending outright. No path found leaves any.
+- **On screen.** The divider's middle row shows both counts: `1UP 200x07` at
+  the left edge, `2UP 200x00` at the right, with the game's message and bold
+  row centred between them. Player 1's block is left out when it sat out, and
+  the row is only taken when player 2 raced. The first version was one
+  31-cell line; its 2UP block butted against TIME BONUS and PASSING BONUS in
+  the row above. The row is now two ten-cell objects (`QmSplit`, a constant
+  list in ROM), and the game-over result uses the same split.
+
+*Checked* (scripted, both player 2 and player 1 end cases):
+
+    race                    tally                      paid
+    both race, p2 out of time  1UP 9 s, 59 cars; 2UP 29 cars   +1,800 +2,950; +1,450
+    p1 out of time, p2 done    2UP 23 s; 1UP 3, 2UP 4 cars     +4,600; +150, +200
+    p1 sat out, p2 done        2UP 29 s, 1 car                 +5,800, +50; 1UP unchanged
+    p2 out of time, p1 done    1UP 5 s, 83 cars; 2UP 2 cars    +1,000 +4,150; +100
+
+Each state lasted as long as the longer count needed (e.g. `$08` ran on past
+player 1's 3 cars for player 2's 4). Health matches checkpoint 83 on four
+recordings, list integrity is 0 on four, qualifying ties are as before, and
+race tick rate is 100, 98, 98, 99, 97 and 100.
+
+*A behaviour change:* player 2's time bonus used to be 200 x the whole clock,
+hundreds included. It is now the seconds byte, as player 1's has always been.
+
+*Wrong turn:* the first build failed with a branch 322 bytes out of range.
+A new label `QmT2` matched an existing text label of the same name. The
+toolkit's assembler takes a label defined twice without complaint, so the
+branch resolved to the other one. `_assemble` now refuses duplicate labels.

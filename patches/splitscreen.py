@@ -679,6 +679,7 @@ P2_QSEC = 0x2029             # the qualifying lap's seconds and hundredths,
 P2_LAPC = 0x202A             #   for a tie on position
 P2_PARK = 0x202B             # 0 driving, 1 parked (qualified, waiting), 2 out
 P2_LAPPH = 0x202C            # player 2's lap tick phase 0..5, as $E0 is player 1's
+P2_TBS = 0x202D              # player 2's time bonus still to tally: seconds, BCD
 # player 2's race: its own clock (as $DE/$DF), laps, and whether it is done.
 # $A7 is 1 when the race starts and the race ends at the crossing where it
 # equals $C3 (5): four laps; player 2's count starts from $A7 too.
@@ -707,7 +708,7 @@ FREE_RAM = [
     (0x0067, 0x009B, "zero page: injection colour rows and the dead curve copy (patched out)"),
     (0x1B36, 0x1B4D, "RowCurveXStaged's tail: the dead curve copy's target (patched out)"),
     (0x1BCA, 0x1BE9, "RowCurveXStagedSrc's tail: the stripped walk tail's output"),
-    (0x202D, 0x203F, "untouched"),
+    (0x202E, 0x203F, "untouched"),
     (0x210F, 0x213F, "untouched (below the stack's reach)"),
     (0x2200, 0x2233, "stock race DLL, replaced by DLL_BASE; untouched"),
     (0x256F, 0x25FF, "past the end of DLL_BASE's 37 zones; untouched"),
@@ -1251,6 +1252,14 @@ def _assemble(lines):
     needs to JSR to one of several labels in the same blob (HudReassert
     below has three) doesn't have to hand-compute offsets."""
     import asm
+    import collections
+    # The assembler takes a label defined twice without a word and resolves
+    # every reference to one of them (checkpoint 84: a new QmT2 collided with
+    # a text label of the same name, and a branch went 322 bytes astray).
+    seen = collections.Counter(l.strip()[:-1] for l in lines
+                               if l.strip().endswith(":") and " " not in l.strip())
+    dup = [k for k, n in seen.items() if n > 1]
+    assert not dup, "labels defined twice: %s" % ", ".join(sorted(dup))
     a = asm.Assembler()
     code = bytes(a.assemble(lines))
     return code, dict(a.sym)
@@ -1452,6 +1461,7 @@ def _check_p2_ram():
         ("P2_HIT", P2_HIT, 2),
         ("P2_HUD", P2_HUD_DL, 12),
         ("P2_QUAL", P2_QST, 6),
+        ("P2_TBS", P2_TBS, 1),
         ("P2_RACE", P2_CLOCK, 7),
         ("TICK_BUSY", TICK_BUSY, 1),
         ("P2_PASS", P2_PASSM, 8),
@@ -2568,6 +2578,8 @@ def p2_race_init_src():
         "    LDA #$00",                        # a new qualifying session
         "    STA $%04X" % P2_QST, "    STA $%04X" % P2_QPOS, "    STA $%04X" % P2_PARK,
         "    STA $%04X" % P2_RACE, "    STA $%04X" % P1_OUT,
+        "    STA $%04X" % P2_TBS,
+        "    STA $%04X" % P2_PASSN, "    STA $%04X" % (P2_PASSN + 1),
         "    JMP P2GridSym",
         "P2RiRace:",
         "    JMP P2RaceSlot",                  # its grid slot, or sitting out
@@ -4228,7 +4240,7 @@ def qual_src():
         "    BNE P2RtDone",
         "    LDA #$02", "    STA $%04X" % P2_RST,          # out of time
         "    LDA #$01", "    STA $%04X" % P2_PARK,
-        "    JMP P2PayCars",
+        "    RTS",                             # its cars wait for the tally
         "P2RtDone:",
         "    RTS",
         # finished or out of time: once stopped, off the track -- not drawn in
@@ -4260,16 +4272,10 @@ def qual_src():
         "    RTS",
         "P2RlpFin:",
         "    LDA #$01", "    STA $%04X" % P2_RST, "    STA $%04X" % P2_PARK,
-        "    SED",
-        "    LDX #$02",                        # seconds x 200: twice into the hundreds
-        "P2RlpBon:",
-        "    CLC",
-        "    LDA $%04X" % (P2_SCORE + 1), "    ADC $%04X" % (P2_CLOCK + 1), "    STA $%04X" % (P2_SCORE + 1),
-        "    LDA $%04X" % P2_SCORE, "    ADC $%04X" % P2_CLOCK, "    STA $%04X" % P2_SCORE,
-        "    DEX",
-        "    BNE P2RlpBon",
-        "    CLD",
-        "    JMP P2PayCars",
+        # the seconds left, for the $0F tally (200 each). As rom:D4E7 takes
+        # player 1's: the low byte of the clock, the seconds.
+        "    LDA $%04X" % (P2_CLOCK + 1), "    STA $%04X" % P2_TBS,
+        "    RTS",
         # rom:D324 / rom:D4BC, `LDA CrashTimer / ORA Speed` ahead of "stopped:
         # end of the race": still nonzero -- player 1 held at 0 in the race
         # tick (rom:D6EB) -- while player 2 is racing
@@ -4344,7 +4350,115 @@ def qual_src():
         "    RTS",
         "PpBit:",
         "    .byte $01,$02,$04,$08,$10,$20,$40,$80",
-        # at player 2's finish or time-out: 50 a car, as the $08 tally pays
+        # --- player 2's bonuses, tallied with player 1's (checkpoint 84). The
+        # game counts player 1's down one a step, every 18 passes ($C5): $0F
+        # 200 a second left ($AC), then $08 50 a car passed ($AB/$AC). Player
+        # 2's count goes down in the same steps, and each state lasts until
+        # both are empty. QMsg shows both on the divider's middle row.
+        # rom:D6A9, $0F's step (`LDA $AC / BEQ` the end)
+        "TallyT:",
+        "    LDA $00AC",
+        "    ORA $%04X" % P2_TBS,
+        "    BNE TtGo",
+        "    JMP $D6DF",                       # both empty: on to the cars
+        "TtGo:",
+        "    LDA $%04X" % P2_TBS,
+        "    BEQ TtP1",
+        "    SED",
+        "    SEC", "    SBC #$01", "    STA $%04X" % P2_TBS,
+        "    CLC",
+        "    LDA $%04X" % (P2_SCORE + 1), "    ADC #$02", "    STA $%04X" % (P2_SCORE + 1),
+        "    LDA $%04X" % P2_SCORE, "    ADC #$00", "    STA $%04X" % P2_SCORE,
+        "    CLD",
+        "TtP1:",
+        "    LDA $00AC",
+        "    BEQ TtShow",
+        "    JMP $D6AD",                       # player 1's step, with A = $AC
+        "TtShow:",
+        "    JMP $D6BB",                       # the tally row only
+        # rom:D58D, $08's step (`LDA $AB / ORA $AC / BEQ` the end)
+        "TallyC:",
+        "    LDA $00AB", "    ORA $00AC",
+        "    ORA $%04X" % P2_PASSN, "    ORA $%04X" % (P2_PASSN + 1),
+        "    BNE TcGo",
+        "    JMP $D5CD",                       # both empty: game over
+        "TcGo:",
+        "    LDA $%04X" % P2_PASSN, "    ORA $%04X" % (P2_PASSN + 1),
+        "    BEQ TcP1",
+        "    SED",
+        "    SEC",
+        "    LDA $%04X" % P2_PASSN, "    SBC #$01", "    STA $%04X" % P2_PASSN,
+        "    LDA $%04X" % (P2_PASSN + 1), "    SBC #$00", "    STA $%04X" % (P2_PASSN + 1),
+        "    CLC",
+        "    LDA $%04X" % (P2_SCORE + 2), "    ADC #$50", "    STA $%04X" % (P2_SCORE + 2),
+        "    LDA $%04X" % (P2_SCORE + 1), "    ADC #$00", "    STA $%04X" % (P2_SCORE + 1),
+        "    LDA $%04X" % P2_SCORE, "    ADC #$00", "    STA $%04X" % P2_SCORE,
+        "    CLD",
+        "TcP1:",
+        "    LDA $00AB", "    ORA $00AC",
+        "    BEQ TcShow",
+        "    JMP $D593",                       # player 1's step
+        "TcShow:",
+        "    JMP $D5B0",
+        # rom:DB55, after $0F (and at rom:D339): cars to tally? Player 2's too.
+        "TallyCars:",
+        "    LDA $009F", "    ORA $009E",
+        "    ORA $%04X" % P2_PASSN, "    ORA $%04X" % (P2_PASSN + 1),
+        "    BEQ TyNone",
+        "    JMP $DB5E",
+        "TyNone:",
+        "    JMP $D316",
+        # rom:D32D, the end of a race player 1 did not finish (out of time, or
+        # sat out): stock tallies player 1's cars or ends the game. Player 2
+        # may have seconds left: then the $0F tally first, set up as rom:D4C5
+        # does at a finish but without rom:D478 (the finish's score rounding),
+        # and with no seconds for player 1.
+        "TallyEnd:",
+        "    LDA $%04X" % P2_TBS,
+        "    BNE TeTime",
+        "    LDA $009F", "    ORA $009E",
+        "    ORA $%04X" % P2_PASSN, "    ORA $%04X" % (P2_PASSN + 1),
+        "    BEQ TyNone",
+        "    JMP $D333",                       # the cars tally
+        "TeTime:",
+        "    JSR $DEC8",
+        "    JSR $D802",
+        "    LDX #$22",                        # rom:D4CB: the message
+        "TeMsg:",
+        "    LDA #$AB",
+        "    CPX #$0C", "    BCC TeMs",
+        "    CPX #$16", "    BCS TeMs",
+        "    LDA $B1EF,X",
+        "    CPX #$11", "    BCC TeMs",
+        "    LDA $A369,X",
+        "TeMs:",
+        "    STA $1FC8,X",
+        "    DEX",
+        "    BPL TeMsg",
+        "    LDA #$00", "    STA $00AC",
+        "    LDA #$0C", "    JSR $DEF3",
+        "    LDA #$0D", "    JSR $DEF3",
+        "    JSR $DB7C",
+        "    STA $00CE",
+        "    LDA #$0F", "    STA $009D",
+        "    JMP $D253",
+        # rom:D316, game over: anything of player 2's still pending is paid
+        # outright (no path should leave any; this makes sure)
+        "TallyFlush:",
+        "    SED",
+        "TfT:",
+        "    LDA $%04X" % P2_TBS,
+        "    BEQ TfC",
+        "    SEC", "    SBC #$01", "    STA $%04X" % P2_TBS,
+        "    CLC",
+        "    LDA $%04X" % (P2_SCORE + 1), "    ADC #$02", "    STA $%04X" % (P2_SCORE + 1),
+        "    LDA $%04X" % P2_SCORE, "    ADC #$00", "    STA $%04X" % P2_SCORE,
+        "    JMP TfT",
+        "TfC:",
+        "    CLD",
+        "    JSR P2PayCars",
+        "    JMP $DA1C",
+        # 50 a car, all at once (the game-over flush)
         "P2PayCars:",
         "    SED",
         "PcLoop:",
@@ -4608,10 +4722,14 @@ def vbl_src():
         "    LDA $009D",
         "    CMP #$12", "    BEQ QmOn",
         "    CMP #$0E", "    BEQ QmOn",
+        "    CMP #$0F", "    BEQ QmTallyJ",
+        "    CMP #$08", "    BEQ QmTallyJ",
         "    CMP #$0D", "    BEQ QmEndJ",
         "    CMP #$0A", "    BNE QmNotEnd",
         "QmEndJ:",
         "    JMP QmEnd",
+        "QmTallyJ:",
+        "    JMP QmTally",
         "QmNotEnd:",
         "    LDA $%04X" % QM_ON,
         "    BEQ QmRet",
@@ -4621,11 +4739,17 @@ def vbl_src():
         # in half.
         "    LDA #$00", "    STA $%04X" % QM_ON,
         "    LDA $%04X" % (DIVIDER_ADDR + 5),
+        "    LDX $%04X" % (DIVIDER_ADDR + 4),
         "    CMP #$%02X" % (QM_DL & 0xFF),
+        "    BNE QmOurs2",
+        "    CPX #$%02X" % (QM_DL >> 8),
+        "    BEQ QmOurs",
+        "QmOurs2:",
+        "    CMP #<QmSplit",
         "    BNE QmRet",
-        "    LDA $%04X" % (DIVIDER_ADDR + 4),
-        "    CMP #$%02X" % (QM_DL >> 8),
+        "    CPX #>QmSplit",
         "    BNE QmRet",
+        "QmOurs:",
         "    LDX #$02",
         "QmRest:",
         "    LDA $%04X,X" % QM_SAVE, "    STA $%04X,X" % (DIVIDER_ADDR + 3),
@@ -4731,7 +4855,7 @@ def vbl_src():
         "    LDA $1CA5", "    CMP $%04X" % P2_SCORE, "    BNE QmCmp",
         "    LDA $1CA6", "    CMP $%04X" % (P2_SCORE + 1), "    BNE QmCmp",
         "    LDA $1CA7", "    CMP $%04X" % (P2_SCORE + 2), "    BNE QmCmp",
-        "    JMP QmZone",                      # a tie
+        "    JMP QmZoneS",                     # a tie
         "QmCmp:",
         "    LDX #$00",                        # carry set: player 1's is higher
         "    BCS QmWin",
@@ -4748,7 +4872,101 @@ def vbl_src():
         "    DEY",
         "    BNE QmBl",
         "QmWz:",
-        "    JMP QmZone",
+        "    JMP QmZoneS",
+        # --- the tallies ($0F, $08): both players' counts on the middle row,
+        #     1UP 200x12           2UP 200x07
+        # as the result's layout below. Player 1's is the game's own ($AC,
+        # $AB the hundreds of cars); the bold row under it stays the game's.
+        # Only when player 2 raced; a player 1 that sat out shows no block.
+        "QmTally:",
+        "    LDA $%04X" % P2_RACE,
+        "    BNE QmTa",
+        "    JMP QmNotEnd",
+        "QmTa:",
+        "    JSR QmTake",
+        "    LDA $%04X" % P1_OUT,
+        "    BNE QmTp2",
+        "    LDA #$8D", "    STA $%04X" % QM_BUF,          # 1UP
+        "    LDA #$A8", "    STA $%04X" % (QM_BUF + 1),
+        "    LDA #$A3", "    STA $%04X" % (QM_BUF + 2),
+        "    LDA $00AC", "    STA $%04X" % QM_SC,
+        "    LDA $00AB", "    STA $%04X" % (QM_SC + 1),
+        "    LDY #$04",
+        "    JSR QmTRow",
+        "QmTp2:",
+        "    LDA #$8E", "    STA $%04X" % (QM_BUF + 21),   # 2UP
+        "    LDA #$A8", "    STA $%04X" % (QM_BUF + 22),
+        "    LDA #$A3", "    STA $%04X" % (QM_BUF + 23),
+        "    LDA $009D",
+        "    CMP #$0F",
+        "    BNE QmTp2c",
+        "    LDA $%04X" % P2_TBS, "    STA $%04X" % QM_SC,
+        "    LDA #$00", "    STA $%04X" % (QM_SC + 1),
+        "    JMP QmTp2r",
+        "QmTp2c:",
+        "    LDA $%04X" % P2_PASSN, "    STA $%04X" % QM_SC,
+        "    LDA $%04X" % (P2_PASSN + 1), "    STA $%04X" % (QM_SC + 1),
+        "QmTp2r:",
+        "    LDY #$19",
+        "    JSR QmTRow",
+        "    JMP QmZoneS",
+        # one tally from cell Y: "200x" and two digits in $0F, "50x" and three
+        # in $08 (the hundreds, QM_SC+1, as the game shows them: 1 or blank)
+        "QmTRow:",
+        "    LDA $009D",
+        "    CMP #$0F",
+        "    BNE QmTrC",
+        "    LDA #$8E", "    STA $%04X,Y" % QM_BUF, "    INY",
+        "    LDA #$8C", "    STA $%04X,Y" % QM_BUF, "    INY",
+        "    STA $%04X,Y" % QM_BUF, "    INY",
+        "    JMP QmTrX",
+        "QmTrC:",
+        "    LDA #$91", "    STA $%04X,Y" % QM_BUF, "    INY",
+        "    LDA #$8C", "    STA $%04X,Y" % QM_BUF, "    INY",
+        "QmTrX:",
+        "    LDA #$AE", "    STA $%04X,Y" % QM_BUF, "    INY",   # x
+        "    LDA $009D",
+        "    CMP #$0F",
+        "    BEQ QmTrD",
+        "    LDA $%04X" % (QM_SC + 1),
+        "    BEQ QmTrH",
+        "    CLC", "    ADC #$8C",
+        "    JMP QmTrHs",
+        "QmTrH:",
+        "    LDA #$AB",
+        "QmTrHs:",
+        "    STA $%04X,Y" % QM_BUF, "    INY",
+        "QmTrD:",
+        "    LDA $%04X" % QM_SC,
+        "    LSR A", "    LSR A", "    LSR A", "    LSR A",
+        "    CLC", "    ADC #$8C", "    STA $%04X,Y" % QM_BUF, "    INY",
+        "    LDA $%04X" % QM_SC,
+        "    AND #$0F",
+        "    CLC", "    ADC #$8C", "    STA $%04X,Y" % QM_BUF,
+        "    RTS",
+        # take the middle row (once) and blank it
+        "QmTake:",
+        "    LDA $%04X" % QM_ON,
+        "    BNE QmTkB",
+        "    LDX #$02",
+        "QmTkS:",
+        "    LDA $%04X,X" % (DIVIDER_ADDR + 3), "    STA $%04X,X" % QM_SAVE,
+        "    DEX",
+        "    BPL QmTkS",
+        "    LDX #$06",
+        "QmTkH:",
+        "    LDA QmHdr,X", "    STA $%04X,X" % QM_DL,
+        "    DEX",
+        "    BPL QmTkH",
+        "    LDA #$01", "    STA $%04X" % QM_ON,
+        "QmTkB:",
+        "    LDX #$1E",
+        "    LDA #$AB",
+        "QmTkC:",
+        "    STA $%04X,X" % QM_BUF,
+        "    DEX",
+        "    BPL QmTkC",
+        "    RTS",
         # six BCD digits from QM_SC into QM_BUF from cell Y, leading zeros
         # blank but the last
         "QmScore:",
@@ -4790,6 +5008,18 @@ def vbl_src():
         "    CLC", "    ADC #$8C", "    STA $%04X,Y" % QM_BUF,
         "    INY",
         "    RTS",
+        # the tallies and the result: the row as two ten-cell objects, 1UP's
+        # block at the left edge and 2UP's at the right, clear of the game's
+        # centred message above and its bold tally below
+        "QmZoneS:",
+        "    LDA #$06", "    STA $%04X" % (DIVIDER_ADDR + 3),
+        "    LDA #>QmSplit", "    STA $%04X" % (DIVIDER_ADDR + 4),
+        "    LDA #<QmSplit", "    STA $%04X" % (DIVIDER_ADDR + 5),
+        "    RTS",
+        "QmSplit:",
+        "    .byte $%02X,$60,$%02X,$%02X,$04" % (QM_BUF & 0xFF, QM_BUF >> 8, 0x40 | (32 - 10)),
+        "    .byte $%02X,$60,$%02X,$%02X,$74" % ((QM_BUF + 21) & 0xFF, (QM_BUF + 21) >> 8, 0x40 | (32 - 10)),
+        "    .byte $00,$00",
         "QmHdr:",                              # as the HUD's lines
         "    .byte $%02X,$60,$%02X,$41,$%02X,$00,$00" % (QM_BUF & 0xFF, QM_BUF >> 8, HUD_X),
         "QmTxt:",
@@ -6248,6 +6478,16 @@ def fix_mirror_split(p):
                     _pos & 0xFF, 0x60, _pos >> 8, 0x40 | (32 - 3), HUD_POS_X, 0x00, 0x00],
               expect=[0xFF] * 12)
     p.put(HUD_DLB, [0x00, 0x00], expect=[0xFF, 0xFF])
+    # player 2's bonus tally (checkpoint 84): see TallyT
+    _ts = _ext()[1]
+    for _at, _sym, _exp in ((0xD6A9, "TallyT", [0xA5, 0xAC, 0xF0, 0x32]),
+                            (0xD58D, "TallyC", [0xA5, 0xAB, 0x05, 0xAC, 0xF0, 0x3A]),
+                            (0xDB55, "TallyCars", [0xA5, 0x9F, 0x05, 0x9E, 0xD0, 0x03]),
+                            (0xD32D, "TallyEnd", [0xA5, 0x9F, 0x05, 0x9E, 0xF0, 0xE3])):
+        _v = _ts[_sym]
+        p.put(_at, [0x4C, _v & 0xFF, _v >> 8] + [0xEA] * (len(_exp) - 3), expect=_exp)
+    _v = _ts["TallyFlush"]
+    p.put(0xD316, [0x20, _v & 0xFF, _v >> 8], expect=[0x20, 0x1C, 0xDA])
     if P2_OVL:
         _art = p2_overlay_art()
         for _pg in range(16):
