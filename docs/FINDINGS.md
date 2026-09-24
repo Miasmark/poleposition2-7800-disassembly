@@ -5957,3 +5957,67 @@ Checked from the TIA registers (`tools/probe-engine-voices.lua`), players at
 swapping when the speeds swap; both volume 8; after player 2's crash voice 1
 briefly carried an effect and then its engine again. Health unchanged. A
 recording of the run (a1.wav) was kept for listening.
+
+## The end of qualifying, and player 2's place on the race grid
+
+Checkpoint 69.
+
+**Player 1's end of qualifying** (rom:D3F7, state `$0B`, entered at the line):
+the lap is ranked against `dat_DBA0`/`DBA8`. Worse than 73.00 (or 100 s and
+over) and it is state `$02` again -- another lap while the clock lasts.
+Qualified, the car is stopped 16 a pass (SpeedPenalty16, rom:D6E8: the score
+rounded by rom:D478, then rom:D6EB, which runs the race tick). Once stopped:
+`$A6` = position, the POLE POSITION / QUALIFYING POSITION message,
+`dat_A6C4[pos]` hundreds of bonus to the tally (40 20 14 10 08 06 04 02),
+speed and clock zeroed, state `$12`. **The race grid** (rom:D1AD): row
+(pos-1)/2, row*256+$64 short of the line (both the walk, `$D5/$D6`, and the
+object segment, `$A0/$A1`); lane `$20` for odd positions, `$02` for even,
+projected at row `$48` for `PlayerX` (rom:D1E5-D202).
+
+**Player 2, built:**
+- `P2Line`, at player 2's line: a completed lap in `$02`/`$0B` is ranked the
+  same way (rom:D3F7's compares, player 2's seconds and its hundredths).
+  Qualified: position kept, the score rounded as rom:D478 does, the car
+  stopped 16 a tick and parked (`P2_PARK` 1). Not: another lap.
+- `QualHold` at rom:D422 (`INX / STX $A6`, reached once player 1 has
+  stopped): while player 2 is still on a lap that could qualify (under 73 s),
+  player 1 waits -- back into the race tick through rom:D6EB, speed held at
+  0, the clock still (C705 is not on that path). Then: player 2 out if it did
+  not make it; a tie on position goes to the better lap, the other one place
+  back (9th is out); player 2's `dat_A6C4` bonus added; `$A6` stored.
+- `P2RaceSlot` at the race banner: a qualified player 2 onto its own slot --
+  row and lane from its position as rom:D1AD does, its walk, object segment
+  and the gap all from the row, its x by rom:D1E5's projection -- and the car
+  the game put there cleared (P2Clear). One that did not qualify sits out:
+  parked behind the grid (a 9th slot), not drawn, no collisions (`P2_PARK` 2).
+- **Cars right behind a player start from rest.** Grid cars leave at full
+  speed and a player from 0, so a car behind a player in its lane rammed it
+  within a few ticks (seen: player 2 on row 1, crashed 47 frames into the
+  banner by the row-2 car behind it). Stock never meets this: every car
+  behind player 1 at the start is behind the only player and is recycled at
+  once. Now, at the grid, a car within 1,280 behind either player in that
+  player's lane gets speed 0; rom:CA32 brings it back up one a tick.
+
+Player 2's lap clock now has **its own tick phase** (`P2_LAPPH`, stepped as
+rom:C705 steps `$E0`). *Wrong turn:* on `$E0` it froze during the hold --
+C705 is not on the hold's path -- so a player 2 lap never reached 73 and the
+hold never ended (seen: player 1 held in `$0B` indefinitely).
+
+Checked (scripted, track 3):
+
+    A  p1 200, p2 190   p1 7th at 69.14; p2's lap went past 73 in the hold
+                        (it crashed on the way): out, sits the race out
+    B  p1 190, p2 200   p2 qualified first (7th, +400), parked; p1 8th, no
+                        hold; grid: p1 lane $02 x -41, p2 lane $20 x 44
+    D  p2 not driving   hold released as p2's lap passed 73: out
+    F  p1 200, p2 215   p2 4th (+1000), p1 7th: p2 two rows ahead, gap -513
+                        at placement, its slot's car moved to -128, and no
+                        crash at the start (before the rest start: rammed)
+
+Health identical to checkpoint 68 on run-02, run-03 and both 2-player
+recordings (a player 2 that never crossed the line releases the hold at once);
+integrity 0 on all.
+
+**Not yet**: player 2's qualifying position is not shown on screen (player 1's
+message is the game's), and "player 1 does not qualify, player 2 races alone"
+waits on player 2's own race logic (next).
