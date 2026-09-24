@@ -690,6 +690,19 @@ P2_PASSY = 0x273F            # the list index, while testing a slot
 # only by the walk tail this build strips (rom:E9BE) and read only by
 # rom:EA38's copy into zero page, which nothing reads: never written after boot
 # (a write tap over a whole 2-player race).
+# RAM nothing in this build reads after boot (coverage: every read and write
+# after frame 600 over a 2-player race and three recordings, run-03 covering
+# all four tracks and 0923-0205 the attract demo). "untouched": never written
+# either. Free for new work; claim a range by moving it out of this list.
+FREE_RAM = [
+    (0x0060, 0x009B, "zero page: injection colour rows and the dead curve copy (patched out)"),
+    (0x1B00, 0x1B4D, "RowCurveXStaged: the dead curve copy's target (patched out)"),
+    (0x1B9C, 0x1BE9, "RowCurveXStagedSrc: the stripped walk tail's output"),
+    (0x1FF3, 0x203F, "untouched"),
+    (0x210F, 0x213F, "untouched (below the stack's reach)"),
+    (0x2200, 0x2233, "stock race DLL, replaced by DLL_BASE; untouched"),
+    (0x2566, 0x25FF, "past the end of DLL_BASE's 34 zones; untouched"),
+]
 STG_ROFF = 0x1C38            # 13: RowCurveOffset at each band's sample row
 STG_BANDX = 0x1C45           # 13: P2_BANDX
 HUD_BUF1 = 0x27C2            # the 1UP line, 31 characters
@@ -1367,6 +1380,12 @@ def _check_p2_ram():
             raise SystemExit(
                 "player 2 RAM overlap: %s $%04X..$%04X runs into %s at $%04X"
                 % (n1, a1, a1 + s1 - 1, n2, a2))
+    # and nothing claimed may sit in a range still listed as free
+    for lo, hi, why in FREE_RAM:
+        for n, a, sz in regions + [("STG", STG_ROFF, 26)]:
+            if a <= hi and a + sz - 1 >= lo:
+                raise SystemExit("RAM $%04X..$%04X (%s) is listed free: %s"
+                                 % (a, a + sz - 1, n, why))
 
 
 def _blob_len():
@@ -5526,6 +5545,20 @@ def fix_mirror_split(p):
           expect=[0xA5, 0xDE, 0xD0, 0xE2])
     p.put(0xD70A, [0x20, _xs["P1Coll"] & 0xFF, _xs["P1Coll"] >> 8],
           expect=[0x20, 0x66, 0xC8])
+    # RAM freed from the bypassed injection's feeders (checkpoint 76). A
+    # coverage run (every RAM read and write after boot, a 2-player race and
+    # three recordings) found their outputs written and never read -- the
+    # "reads" were the 6502's dummy reads of its own indexed stores:
+    #   rom:EA2C StageRowCurveForDLI copies RowCurveXStagedSrc ($1B9C, never
+    #     written since the walk-tail strip) into RowCurveXStaged ($1B00) and
+    #     zero page $60-$7D, all three read only by the dead injection: RTS.
+    #   rom:E8F8 / rom:E90E / rom:E935, sub_E8AC's `STA $4E,X` for X >= $30 -- per-row
+    #     colours and the stripe for the injection, zero page $7E-$9B: NOPs.
+    # Frees $1B00-$1B4D, $1B9C-$1BE9 and zero page $60-$9B (see FREE_RAM).
+    p.put(0xEA2C, [0x60], expect=[0xA2])
+    p.put(0xE8F8, [0xEA, 0xEA], expect=[0x95, 0x4E])   # (the odd-frame copy)
+    p.put(0xE90E, [0xEA, 0xEA], expect=[0x95, 0x4E])
+    p.put(0xE935, [0xEA, 0xEA], expect=[0x95, 0x4E])
     # the vblank wait split in two (vbl_src): the NMI's handler tables moved
     # (rom:EBFC, rom:EC01), $E5 not released at rom:F150 (`STA` -> `BIT`,
     # same size and cycles), and rom:F160's spin replaced by VbSplit

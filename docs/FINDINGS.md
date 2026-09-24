@@ -6417,3 +6417,50 @@ through the horizon (dominant colours per scanline):
 Checked: all four tracks' horizon rows match stock (differences only where
 the decor has scrolled to a different heading); player 1's car stays yellow
 under the PREPARE banner; race tick rate still 100/600.
+
+## RAM: a coverage map, and 530 bytes freed
+
+Checkpoint 76. `tools/probe-ram-coverage.lua` counts every read and write per
+address after frame 600, over `$1800-$27FF` plus the zero-page and stack
+mirrors (`$0040-$00FF` = `$2040-$20FF`, `$0140-$01FF` = `$2140-$21FF`). Taps
+see MARIA's DMA reads (the DLL at `$2500`: about 88,000 reads over 30,000
+frames), so display lists count as used. Runs: a two-player scripted game
+(qualifying, race, game over, attract) and three recordings (run-03 covers
+all four tracks, 0923-0205 the attract demo).
+
+1,013 bytes were never read. One trap: the 6502's indexed stores (`STA
+abs,X`, `STA zp,X`) make a dummy read of their target, so an array written
+by one and never read shows exactly as many "reads" as writes. That is how
+`RowCurveXStaged` and zero page `$60-$7D` looked read.
+
+**Freed by patching out the injection's last feeders**, whose outputs only
+the bypassed injection read:
+- rom:EA2C `StageRowCurveForDLI` copied `RowCurveXStagedSrc` (never written
+  since the walk-tail strip) into `RowCurveXStaged` and zero page `$60-$7D`:
+  now `RTS`. That also saves its time on every tick.
+- sub_E8AC's `STA $4E,X` for X ≥ `$30` (rom:E8F8, the odd-frame copy;
+  rom:E90E; rom:E935, the stripe fill): per-row colours for zero page
+  `$7E-$9B`, now `NOP`s. The first attempt missed rom:E8F8; a write tap on
+  the range found it (zero writers after).
+
+**Free, as `FREE_RAM` in the patch** (the build refuses any region that
+overlaps one):
+
+| range | bytes | |
+|---|---|---|
+| `$0060-$009B` | 60 | zero page, freed above |
+| `$1B00-$1B4D` | 78 | `RowCurveXStaged`, freed above |
+| `$1B9C-$1BE9` | 78 | `RowCurveXStagedSrc`, freed above |
+| `$1FF3-$203F` | 77 | never touched |
+| `$210F-$213F` | 49 | never touched, below the stack's reach |
+| `$2200-$2233` | 52 | stock's race DLL, replaced by `DLL_BASE`; never touched |
+| `$2566-$25FF` | 154 | past `DLL_BASE`'s 34 zones; never touched |
+
+That is 548 bytes, 60 of them zero page. Smaller scraps not listed: the stack
+page's unused depth (`$2140-$21D6`, keep a margin); pieces of the stock race
+DLL at `$2239-$226A`; and a few 10-30 byte tails in the object and decor
+arrays (`$18CD`, `$18F0`, `$1973`, `$19E4-$19FF`, `$1CE7`, `$1D1C`, `$1D59`).
+
+Checked: health identical to checkpoint 75 on four recordings (run-02 differs
+in 6 single-frame samples); integrity 0 on four; race tick rate 100/600; no
+writes to the freed ranges.
