@@ -695,10 +695,10 @@ P2_PASSY = 0x273F            # the list index, while testing a slot
 # all four tracks and 0923-0205 the attract demo). "untouched": never written
 # either. Free for new work; claim a range by moving it out of this list.
 FREE_RAM = [
-    (0x0065, 0x009B, "zero page: injection colour rows and the dead curve copy (patched out)"),
+    (0x0067, 0x009B, "zero page: injection colour rows and the dead curve copy (patched out)"),
     (0x1B36, 0x1B4D, "RowCurveXStaged's tail: the dead curve copy's target (patched out)"),
     (0x1BCA, 0x1BE9, "RowCurveXStagedSrc's tail: the stripped walk tail's output"),
-    (0x2021, 0x203F, "untouched"),
+    (0x2027, 0x203F, "untouched"),
     (0x210F, 0x213F, "untouched (below the stack's reach)"),
     (0x2200, 0x2233, "stock race DLL, replaced by DLL_BASE; untouched"),
     (0x256F, 0x25FF, "past the end of DLL_BASE's 37 zones; untouched"),
@@ -710,6 +710,7 @@ P2_HEAD = 0x0060             # coarse heading 0..$77, as $C9
 P2_HEADF = 0x0061            # its fine part 0..3, as $CA
 P2_HEADA = 0x0062            # the accumulator's low byte, as $CB
 P2_SKY_T = 0x0063            # 2: player 1's $C9/$CA while player 2's are swapped in
+E8L_T = 0x0065               # 2: E8Lite's own scratch (it runs in an interrupt)
 P2_DECOR_DL = 0x1B00         # player 2's decor list: base object, up to 10, end
 P2_DECOR_LEN = 46
 P2_HOR_DL = 0x1B30           # player 2's horizon list: one object and the end
@@ -727,13 +728,18 @@ STG_ROFF = 0x1C38            # 13: RowCurveOffset at each band's sample row
 STG_BANDX = 0x1C45           # 13: P2_BANDX
 HUD_BUF1 = 0x27C2            # the 1UP line, 31 characters
 HUD_BUF2 = 0x27E1            # the 2UP line, 31 characters, to $27FF
-HUD_X = 0x12                 # both lines' x: (160 - 31*4) / 2
+HUD_X = 0x0A                 # both lines' x: (160 - 35*4) / 2 -- 31 characters,
+                             #   a space, and the race position's 3
+HUD_POS_X = HUD_X + 32 * 4   # the position's own object
+HUD_POS2 = 0x2021            # "1ST"/"2ND" for the 2UP line (3 characters)
+HUD_POS1 = 0x2024            # ... and for the 1UP line
 # The three divider rows' display lists, in the new code area's last page --
-# fixed, so HUD_ROWS stays a constant: one 31-character header each for the
-# two lines, and an empty list for the third row.
+# fixed, so HUD_ROWS stays a constant: a 31-character header and the
+# position's 3-character one for each of the two lines, and an empty list
+# for the third row.
 HUD_DL2 = 0x7FE0
-HUD_DL1 = 0x7FE8
-HUD_DLB = 0x7FF0
+HUD_DL1 = 0x7FEC
+HUD_DLB = 0x7FF8
 P2_HUD_TEMPLATE = 0xEEC0            # 12 bytes; moved off $FC00 to leave
                                     # P2_TEMPLATE room to grow
 SWCHA = 0x0280               # player 2's stick: bit 3 right, 2 left, 1 down, 0 up
@@ -1431,6 +1437,7 @@ def _check_p2_ram():
                                    ("P2_HOR_DL", P2_HOR_DL, P2_HOR_LEN),
                                    ("P2_DECOR_TOP", P2_DECOR_TOP, P2_DECOR_LEN),
                                    ("QM", QM_BUF, 46),
+                                   ("HUD_POS", HUD_POS2, 6), ("E8L_T", E8L_T, 2),
                                    ("DLL", DLL_BASE, DLL_ZONES * 3)]:
             if a <= hi and a + sz - 1 >= lo:
                 raise SystemExit("RAM $%04X..$%04X (%s) is listed free: %s"
@@ -3584,6 +3591,45 @@ def hud_src():
         "    TAX", "    LDA $BCE9,X", "    STA $%04X" % (B2 + 27),
         "    TYA", "    AND #$0F",
         "    TAX", "    LDA $BCE9,X", "    STA $%04X" % (B2 + 28),
+        # --- the race position, 1ST / 2ND, while both are racing: laps
+        # first ($A7 and player 2's count start equal), then the gap's sign
+        # (player 1 ahead when positive). Blank otherwise.
+        "    LDX #$05",
+        "    LDA #$AB",
+        "HfPsC:",
+        "    STA $%04X,X" % HUD_POS2,
+        "    DEX",
+        "    BPL HfPsC",
+        "    LDA $%04X" % P2_RACE,
+        "    BEQ HfPsX",
+        "    LDA $%04X" % P1_OUT,
+        "    BNE HfPsX",
+        "    LDA $%04X" % GAME_STATE,
+        "    CMP #$03", "    BEQ HfPsGo",
+        "    CMP #$0C", "    BEQ HfPsGo",
+        "    CMP #$09", "    BNE HfPsX",
+        "HfPsGo:",
+        "    LDA $00A7",
+        "    CMP $%04X" % P2_LAPN,
+        "    BEQ HfPsGap",
+        "    BCS HfP1Lead",                    # more laps: player 1 leads
+        "    BCC HfP2Lead",
+        "HfPsGap:",
+        "    LDA $%04X" % GAP_HI,
+        "    BMI HfP2Lead",
+        "HfP1Lead:",
+        "    LDX #$00", "    LDY #$03",        # player 1 first, player 2 second
+        "    JMP HfPsW",
+        "HfP2Lead:",
+        "    LDX #$03", "    LDY #$00",
+        "HfPsW:",
+        "    LDA #$8D", "    STA $%04X,Y" % HUD_POS2,   # "1ST" into the
+        "    LDA #$A6", "    STA $%04X,Y" % (HUD_POS2 + 1), #   leader's slot (Y)
+        "    LDA #$A7", "    STA $%04X,Y" % (HUD_POS2 + 2),
+        "    LDA #$8E", "    STA $%04X,X" % HUD_POS2,   # ... "2ND" into the other
+        "    LDA #$A1", "    STA $%04X,X" % (HUD_POS2 + 1),
+        "    LDA #$99", "    STA $%04X,X" % (HUD_POS2 + 2),
+        "HfPsX:",
         "    RTS",
 
         # one BCD digit into the next score cell of line 2 (Y counts cells
@@ -4392,6 +4438,49 @@ def vbl_src():
         # (the divider has been drawn by then). While the game shows its
         # qualifying message ($12, $0E) the divider's middle row, blank there,
         # points at QM_DL; after, the row gets its own entry back.
+        # --- sub_E8AC's rows, only the ones anything reads (checkpoint 81).
+        # From rom:E8E6 on odd frames it wrote all 78 of RowCurveYStaged for
+        # the bypassed injection, about 2,000 cycles; this build reads 13, one
+        # sample row a band (road_stage_src). Same arithmetic per row: the
+        # stripe texture through ($FD) at dat_C07E[row], plus $B6 from row $3C
+        # down the screen, ORed with $1F3C[row]; then $E0 into those rows
+        # between $E6 and $E7 (rom:E927, the sign stripe).
+        "E8Lite:",
+        "    LDX #$0C",
+        "ElRow:",
+        "    STX $%04X" % E8L_T,
+        "    LDA ElRows,X",
+        "    TAX",
+        "    LDY $C07E,X",
+        "    LDA ($FD),Y",
+        "    CPX #$3C",
+        "    BCC ElNoB6",
+        "    CLC", "    ADC $00B6",
+        "ElNoB6:",
+        "    ORA $1F3C,X",
+        "    STA $1B4E,X",
+        "    LDY $00E6",                       # the stripe: $E7 < row <= $E6,
+        "    BMI ElNext",                      #   $E6 = $FF none, $E7 = $FF
+        "    LDA $00E7",                       #   down to row 0 (rom:E927)
+        "    CMP #$FF",
+        "    BEQ ElHi",
+        "    CPX $00E7",
+        "    BEQ ElNext",
+        "    BCC ElNext",
+        "ElHi:",
+        "    STX $%04X" % (E8L_T + 1),
+        "    CPY $%04X" % (E8L_T + 1),         # $E6 >= row
+        "    BCC ElNext",
+        "    LDA #$E0",
+        "    ORA $1B4E,X",
+        "    STA $1B4E,X",
+        "ElNext:",
+        "    LDX $%04X" % E8L_T,
+        "    DEX",
+        "    BPL ElRow",
+        "    RTS",
+        "ElRows:",
+        "    .byte " + ",".join("$%02X" % (6 * b + BAND_SAMPLE) for b in range(13)),
         "QMsg:",
         "    LDA $009D",
         "    CMP #$12", "    BEQ QmOn",
@@ -5974,6 +6063,10 @@ def fix_mirror_split(p):
     #     colours and the stripe for the injection, zero page $7E-$9B: NOPs.
     # Frees $1B00-$1B4D, $1B9C-$1BE9 and zero page $60-$9B (see FREE_RAM).
     p.put(0xEA2C, [0x60], expect=[0xA2])
+    # rom:E8E6, sub_E8AC's row loops (odd frames): only the rows read (E8Lite)
+    if not os.getenv("PP2_FULL_E8AC"):
+        p.put(0xE8E6, [0x4C, _xs["E8Lite"] & 0xFF, _xs["E8Lite"] >> 8],
+              expect=[0xBC, 0x7E, 0xC0])
     p.put(0xE8F8, [0xEA, 0xEA], expect=[0x95, 0x4E])   # (the odd-frame copy)
     p.put(0xE90E, [0xEA, 0xEA], expect=[0x95, 0x4E])
     p.put(0xE935, [0xEA, 0xEA], expect=[0x95, 0x4E])
@@ -5995,9 +6088,10 @@ def fix_mirror_split(p):
     if not os.getenv("PP2_STOCK_TRAFFIC"):
         ct = _ext()[1]["CarTick"]
         p.put(0xD70D, [0x20, ct & 0xFF, ct >> 8], expect=[0x20, 0xAD, 0xC9])
-    for _dl, _buf in ((HUD_DL2, HUD_BUF2), (HUD_DL1, HUD_BUF1)):
-        p.put(_dl, [_buf & 0xFF, 0x60, _buf >> 8, 0x41, HUD_X, 0x00, 0x00],
-              expect=[0xFF] * 7)
+    for _dl, _buf, _pos in ((HUD_DL2, HUD_BUF2, HUD_POS2), (HUD_DL1, HUD_BUF1, HUD_POS1)):
+        p.put(_dl, [_buf & 0xFF, 0x60, _buf >> 8, 0x41, HUD_X,
+                    _pos & 0xFF, 0x60, _pos >> 8, 0x40 | (32 - 3), HUD_POS_X, 0x00, 0x00],
+              expect=[0xFF] * 12)
     p.put(HUD_DLB, [0x00, 0x00], expect=[0xFF, 0xFF])
     _xc = list(_ext()[0])
     if EXT_ADDR + len(_xc) - 1 > EXT_END:

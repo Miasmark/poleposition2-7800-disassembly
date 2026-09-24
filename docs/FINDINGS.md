@@ -6674,3 +6674,44 @@ Checked, scripted pairs on track 3 (slots: under 58.50, 60, 62, 64, 66, 68,
 | 198, 200 | 69.37 / 68.79 | both 7 | p2 7th, p1 8th |
 | 195, 198 | 70.00 / 72.37 | both 8 | p1 8th, p2 out (sits out) |
 | 189, 190 | 72.37 / 70.79 | both 8 | p2 8th, p1 out: the race starts with player 2 alone. Before this, p2 was out. |
+
+## Race position on the HUD, and sub_E8AC down to the rows anything reads
+
+Checkpoint 81.
+
+**1ST / 2ND.** Each HUD line was 31 characters, the most one text object can
+hold. The row lists (still in ROM, `$7FE0`/`$7FEC`/`$7FF8`) now carry a second
+3-character object per line (`HUD_POS2`/`HUD_POS1`, RAM `$2021-$2026`), and
+the pair is re-centred (x 10, 35 characters). HudFill writes the positions
+while both players are racing (`$03`, `$0C`, `$09`; not when one sits out):
+more laps first (`$A7` against player 2's count, which start equal), then the
+gap's sign (positive: player 1 ahead). Blank otherwise. Checked: player 1
+ahead ("2ND" on 2UP, "1ST" on 1UP) and player 2 ahead; nothing in
+qualifying.
+
+**The tick rate slipped to 89**, in the build after checkpoint 78, whose new
+code never runs in a race. What changed was ~200 bytes of layout in the code
+area (page crossings in hot loops). With both cars at 240 and traffic, the
+main loop had almost nothing left of its six-frame slot, so shuffling code
+tipped ticks over. Real headroom was needed, not cycle-chasing.
+
+**sub_E8AC, trimmed.** On odd frames it rebuilds all 78 rows of
+`RowCurveYStaged` (about 2,000 cycles, inside DLI idx11): rows `$4D-$3C` as
+texture `$1F00[CD + dat_C07E[row]] + $B6` ORed with `$1F3C[row]`, the rest
+without `$B6`, then `$E0` into rows between `$E6` and `$E7` (the sign stripe;
+`$E7` = `$FF` meaning down to row 0). The bypassed injection read them all;
+this build reads 13, each band's sample row (road_stage_src). rom:E8E6 now
+jumps to `E8Lite`, which computes exactly those 13 with the same arithmetic.
+The header (the texture phase `$AF`/`$CD` and the pointer) stays stock.
+`E8Lite` has its own scratch (zero page `$65-$66`): it runs in the
+interrupt, and borrowing the main loop's scratch would corrupt it.
+
+*Checked exact:* a probe recomputes the 13 rows from the same inputs each
+time the routine returns (rom:F15D): 74,087 rows over two 12,000-frame
+races, with 3-5 rare disagreements. The full stock routine, run under the
+same probe, shows the same kind (0 and 3), so they are the probe's timing,
+not E8Lite. Race tick rate back to 97/600; health and state flow as before
+on four recordings; integrity 0 on four.
+
+*Test harness:* MAME now runs with `-keyboardprovider none` everywhere,
+including `run.sh` (see checkpoint 79's pause).
