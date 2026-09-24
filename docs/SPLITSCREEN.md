@@ -1,6 +1,6 @@
 # Pole Position II VS -- the current design
 
-This page describes the build as it stands at **checkpoint 89**. It is the
+This page describes the build as it stands at **checkpoint 90**. It is the
 reference; `docs/FINDINGS.md` is the history (why each piece is the way it is,
 wrong turns included), and `patches/splitscreen.py` is the source, with the
 reasoning next to each edit. To build it, see the README ("Pole Position II
@@ -24,7 +24,7 @@ result; the rival traffic is shared.
 | Grid, HUD, player-vs-player contact, audio | 65-68 | | |
 | Qualifying for both, the race, sitting out | 69-71, 80 | `P2Line`, `QualHold`, `QualOut` | |
 | Cars-passed bonus for player 2 | 73 | `P2Pass` | |
-| Player 2's skybox, turning with player 2 | 77 | `P2Sky` | |
+| Player 2's skybox, turning with player 2 (its horizon zone full height, ck 90) | 77, 90 | `P2Sky` | |
 | Player 2's qualifying result, the two-player game-over result | 78, 79 | `QMsg` | |
 | 1ST/2ND on the HUD | 81 | `HudFill` | |
 | Player 2's highlights (design: Defender_2600) | 83 | `p2_overlay_art` | `PP2_NO_OVL` |
@@ -32,7 +32,7 @@ result; the rival traffic is shared.
 | VS in the title logo | 85 | `TITLE_VS` | `PP2_NO_VS` |
 | Far bands 1-5 smoothed (pre-sheared road slices; band 1 +/-4 px a line, 2-3 +/-4, 4-5 +/-3) | 86 | `smooth_art`, `SmSelect`, `SmApply` | `PP2_NO_SMOOTH` |
 | Near bands 8-11 smoothed (+/-1 px a line, the line re-split into two pieces) | 89 | `_slices_build`, `SmSelect`, `SmApply` (`SnLoop`), the stage | `PP2_NO_NEAR` |
-| Far bands 1-7 split in two, a stripe per half | 87 | `top_half_src`, `P2TopStage` | `PP2_NO_SPLIT` |
+| Far bands 1-7 split in two, a stripe per half; player 1's objects copied into the top halves after the game places them (ck 90) | 87, 90 | `top_half_src`, `P2TopStage`, `RbAfter` | `PP2_NO_SPLIT` |
 | The object pass's row search by halving | 88 | `zrow_up_src` | `PP2_LINEAR_CE3E` (test) |
 | The higher-detail car (KevinMos3 and Defender_2600); player 2's highlights gold on it | after 89 | `HIRES_CAR`, `car_colours`, `car_rom`, `ovl_pw` | `PP2_HIRES_CAR` (off by default; bundle option `vs-hires-car`) |
 
@@ -51,9 +51,12 @@ that runs every frame (60 Hz). The build adds to both.
 - `CarTick` (rom:D70D) and `RivalCars` (rom:D716): the object tick and the
   object list, with each player's car added to the other's view.
 - At the object rebuild, once vblank has begun (rom:E70D): `P2ObjCommit` --
-  player 2's emitter (`P2Emit`), `TopCopy2`, the game's own rebuild
-  (rom:E6D7), `TopCopy1`. The copies put each far band's first two objects
-  into its top half's list.
+  player 2's emitter (`P2Emit`), `TopCopy2`, then the game's rebuild: it
+  parks every band's slots (rom:E6D7, rom:E320) and places this tick's
+  objects (rom:E713 on). `TopCopy1` runs after all of it, from the
+  rebuild's callers (`RbAfter`, `RbAfterE70D` at rom:D71F, D7BE, D8C5).
+  The copies put each far band's first two objects into its top half's
+  list.
 
 **Every frame**, down the screen (zone numbers are in the table below):
 - Zone 0, DLI index 7: the sky's palettes (`SkyHold`).
@@ -80,8 +83,8 @@ that runs every frame (60 Hz). The build adds to both.
 
 - **Speed:** the stress scenario (both cars at 240 in traffic) runs 100 race
   ticks per 600 frames, the stock rate, at checkpoints 88 and 89.
-- **ROM:** essentially full. The code area ends at `$63AA` (limit `$63FF`,
-  85 bytes spare); the `$7E` code block has 10 of 216 bytes spare; the four
+- **ROM:** essentially full. The code area ends at `$63B6` (limit `$63FF`,
+  73 bytes spare); the `$7E` code block has 10 of 216 bytes spare; the four
   slice columns are packed to within ~30 bytes a line; the table windows in
   `$7C/$7D/$7F` have ~150 bytes left in pieces. More would mean compacting
   code (each loop costs some speed) -- FINDINGS, checkpoint 89.
@@ -94,8 +97,9 @@ that runs every frame (60 Hz). The build adds to both.
   bytes, and there was no ROM left for it).
 - Band 1's stripes (2.5 rows long) are still coarser than stock at half-band
   resolution.
-- A far band's third object, or one in an unexpected slot, draws in the
-  band's bottom half only (rare).
+- A far band's third object, or one in a slot the copy does not search,
+  draws in the band's bottom half only. Rare since checkpoint 90; before
+  it, every object in player 1's far bands did (FINDINGS).
 - In player 1's view, player 2's car has highlights only at the nearest size;
   further ahead it looks like a gold rival (with the higher-detail car, like
   player 1's blue and white one).
@@ -110,7 +114,7 @@ that runs every frame (60 Hz). The build adds to both.
 
 ![The VS build, byte by byte](img/vs-rom-map.png)
 
-Every byte of the 48K image, classified by `tools/vs-rom-map.py` (build
+Every byte of the 48K image at checkpoint 89, classified by `tools/vs-rom-map.py` (build
 against the retail dump, plus ROM coverage from six recordings and two
 scripted races -- "read" is a lower bound on what play uses):
 
@@ -169,9 +173,9 @@ after changing the layout.
 
 | zone | first line | lines | DLI | list | draws |
 |---:|---:|---:|:-:|---|---|
-| 0 | 0 | 16 | x | $24F6 | blank |
-| 1 | 16 | 4 |  | $24F6 | blank |
-| 2 | 20 | 2 |  | $1B30 | player 2's horizon |
+| 0 | 0 | 8 | x | $24F6 | blank |
+| 1 | 8 | 4 |  | $24F6 | blank |
+| 2 | 12 | 10 |  | $1B30 | player 2's horizon |
 | 3 | 22 | 8 |  | $1B9C | player 2's decor (top 8 lines) |
 | 4 | 30 | 2 | x | $1B00 | player 2's decor (last 2) |
 | 5 | 32 | 3 |  | $2200 | player 2, band 1 top half |
@@ -301,7 +305,7 @@ after changing the layout.
 
 | from | to | what |
 |---|---|---|
-| $4000 | $63AA | new code area (`_ext()`), 9131 bytes; limit $63FF |
+| $4000 | $63B6 | new code area (`_ext()`), 9143 bytes; limit $63FF |
 | $7028 | $75FF | sheared road slices: pages $70-$75, low bytes $28-$FF |
 | $7628 | $7BFF | sheared road slices: pages $76-$7B, low bytes $28-$FF |
 | $6A00 | $6FFF | sheared road slices: pages $6A-$6F, low bytes $00-$FF |
@@ -326,80 +330,83 @@ after changing the layout.
 | $7FE0 | $7FF9 | the divider's row lists |
 | $8000 | $FFFF | the retail 32K, changed in the ranges below |
 
-### Ranges changed in the retail 32K (73 ranges, 4034 bytes)
+### Ranges changed in the retail 32K (76 ranges, 4040 bytes)
 
 | from | bytes | first described at (patches/splitscreen.py line) |
 |---|---:|---|
-| $A5D6 | 4 | 1789 |
-| $A6BE | 1 | 6980 |
-| $A6C1 | 1 | 6990 |
-| $A6D3 | 1 | 6981 |
-| $B00E | 4 | 1799 |
-| $B10A | 8 | 1808 |
-| $B20A | 8 | 1807 |
-| $B30A | 8 | 1806 |
-| $B40A | 8 | 1805 |
-| $B50A | 8 | 1804 |
-| $B60A | 8 | 1803 |
-| $B70A | 8 | 1802 |
-| $B80A | 8 | 1801 |
-| $B90A | 8 | 1800 |
-| $C372 | 3 | 4391 |
-| $C378 | 3 | 4400 |
-| $C87E | 3 | 3822 |
-| $CBE3 | 4 | 902 |
-| $CBEB | 4 | 897 |
-| $CC5E | 3 | 6390 |
-| $CDF2 | 3 | 7125 |
-| $CE0F | 3 | 7125 |
-| $CE72 | 3 | 7125 |
-| $CE8B | 3 | 7125 |
-| $D30D | 4 | 5018 |
-| $D316 | 3 | 4983 |
-| $D31C | 4 | 5076 |
-| $D324 | 4 | 4817 |
-| $D32D | 6 | 4949 |
-| $D422 | 3 | 4470 |
-| $D4BC | 4 | 4817 |
-| $D58D | 6 | 4917 |
-| $D6A9 | 4 | 4896 |
-| $D70A | 6 | 5099 |
-| $D713 | 6 | 1681 |
-| $D81B | 2 | 6956 |
-| $D848 | 3 | 891 |
-| $D8BC | 3 | 7161 |
-| $D8D7 | 1 | 6966 |
-| $DA92 | 2 | 6958 |
-| $DB55 | 6 | 4941 |
-| $DF5A | 3 | 4337 |
-| $DFDA | 3 | 4362 |
-| $E3CD | 3 | 2852 |
-| $E4B7 | 5 | 3804 |
-| $E59D | 5 | 3956 |
-| $E5E8 | 5 | 3810 |
-| $E617 | 4 | 3816 |
-| $E70D | 3 | 1685 |
-| $E79C | 3 | 6367 |
-| $E8E6 | 3 | 5292 |
-| $E8F8 | 2 | 7086 |
-| $E90E | 2 | 7086 |
-| $E935 | 2 | 7086 |
-| $E9BE | 4 | 627 |
-| $EA2C | 1 | 824 |
-| $EBFD | 2 | 7100 |
-| $EC02 | 2 | 7101 |
-| $ED1E | 2 | 7002 |
-| $ED29 | 2 | 986 |
-| $ED42 | 5 | 917 |
-| $ED48 | 2 | 7247 |
-| $ED9D | 156 | 875 |
-| $EE3A | 108 | 343 |
-| $EEC0 | 12 | 678 |
-| $EED0 | 518 | 465 |
-| $F0EB | 88 | 473 |
-| $F150 | 2 | 7098 |
-| $F158 | 2 | 1046 |
-| $F160 | 3 | 5276 |
-| $F16C | 2 | 7309 |
-| $F171 | 11 | 7269 |
-| $F400 | 2887 | 883 |
+| $A5D6 | 4 | 1861 |
+| $A6BE | 1 | 7077 |
+| $A6C1 | 1 | 7087 |
+| $A6D3 | 1 | 7078 |
+| $B00E | 4 | 1871 |
+| $B10A | 8 | 1880 |
+| $B20A | 8 | 1879 |
+| $B30A | 8 | 1878 |
+| $B40A | 8 | 1877 |
+| $B50A | 8 | 1876 |
+| $B60A | 8 | 1875 |
+| $B70A | 8 | 1874 |
+| $B80A | 8 | 1873 |
+| $B90A | 8 | 1872 |
+| $C372 | 3 | 4483 |
+| $C378 | 3 | 4492 |
+| $C87E | 3 | 3914 |
+| $CBE3 | 4 | 969 |
+| $CBEB | 4 | 964 |
+| $CC5E | 3 | 6486 |
+| $CDF2 | 3 | 7222 |
+| $CE0F | 3 | 7222 |
+| $CE72 | 3 | 7222 |
+| $CE8B | 3 | 7222 |
+| $D30D | 4 | 5110 |
+| $D316 | 3 | 5075 |
+| $D31C | 4 | 5168 |
+| $D324 | 4 | 4909 |
+| $D32D | 6 | 5041 |
+| $D422 | 3 | 4562 |
+| $D4BC | 4 | 4909 |
+| $D58D | 6 | 5009 |
+| $D6A9 | 4 | 4988 |
+| $D70A | 6 | 5191 |
+| $D713 | 6 | 1748 |
+| $D71F | 3 | 2357 |
+| $D7BE | 3 | 2357 |
+| $D81B | 2 | 7053 |
+| $D848 | 3 | 958 |
+| $D8BC | 3 | 7261 |
+| $D8C5 | 3 | 2357 |
+| $D8D7 | 1 | 7063 |
+| $DA92 | 2 | 7055 |
+| $DB55 | 6 | 5033 |
+| $DF5A | 3 | 4429 |
+| $DFDA | 3 | 4454 |
+| $E3CD | 3 | 2944 |
+| $E4B7 | 5 | 3896 |
+| $E59D | 5 | 4048 |
+| $E5E8 | 5 | 3902 |
+| $E617 | 4 | 3908 |
+| $E70D | 3 | 1752 |
+| $E79C | 3 | 6463 |
+| $E8E6 | 3 | 5384 |
+| $E8F8 | 2 | 7183 |
+| $E90E | 2 | 7183 |
+| $E935 | 2 | 7183 |
+| $E9BE | 4 | 648 |
+| $EA2C | 1 | 891 |
+| $EBFD | 2 | 7197 |
+| $EC02 | 2 | 7198 |
+| $ED1E | 2 | 7099 |
+| $ED29 | 2 | 1053 |
+| $ED42 | 5 | 984 |
+| $ED48 | 2 | 7357 |
+| $ED9D | 156 | 942 |
+| $EE3A | 108 | 364 |
+| $EEC0 | 12 | 699 |
+| $EED0 | 518 | 486 |
+| $F0EB | 88 | 494 |
+| $F150 | 2 | 7195 |
+| $F158 | 2 | 1113 |
+| $F160 | 3 | 5368 |
+| $F16C | 2 | 7419 |
+| $F171 | 11 | 7379 |
+| $F400 | 2884 | 950 |

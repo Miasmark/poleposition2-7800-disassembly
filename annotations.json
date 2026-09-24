@@ -132,7 +132,7 @@
   "rom:C9AD": "ObjectTick",
   "rom:E286": "BuildObjectList",
   "rom:E709": "ObjectRebuild",
-  "rom:E6D7": "EmitObjectLists",
+  "rom:E6D7": "ParkObjectSlots",
   "rom:E729": "ObjectEmitter",
   "rom:E3CD": "ZToRowFromBumper",
   "rom:CE3E": "ZToRowFromHorizon",
@@ -144,7 +144,9 @@
   "rom:F171": "BootCopyZoneList",
   "rom:DC4F": "BuildDecorLists",
   "rom:DBDF": "AdvanceHeading",
-  "rom:DD0B": "DecorX"
+  "rom:DD0B": "DecorX",
+  "rom:E320": "ParkObjectSlotsHigh",
+  "rom:E70D": "RebuildObjectLists"
  },
  "ram": {
   "1B00": "RowCurveXStaged",
@@ -234,7 +236,11 @@
   "1AE8": "ListX",
   "1BEA": "ListPW"
  },
- "comments": {},
+ "comments": {
+  "rom:E6D7": "parks slots 0-5 (+4..+24) of all 13 bands: width $1F, x $A1. Places nothing -- the name EmitObjectLists it had misled the split-screen work into copying the top halves here, before any object existed",
+  "rom:E710": "then slots 6-7 (+28, +32; sub_E320)",
+  "rom:E713": "the emission proper: every object of this tick into its bands, from here on (writes at rom:E7AC-E7C2)"
+ },
  "headers": {},
  "blocks": [
   {

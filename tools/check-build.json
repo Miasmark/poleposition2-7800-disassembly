@@ -1,7 +1,7 @@
 {
   "_what": "The regression set for a split-screen build, for the toolkit's tools/regress.py. See tools/check-build.sh for what each check means and what a healthy build says.",
   "vars": {"out": "build/regress", "frames": "12000", "toolkit": "../a7800-toolkit"},
-  "vars_cmd": "python tools/check-vars.py build/regress",
+  "vars_cmd": "python tools/check-vars.py {out}",
   "cart": "{rom}",
   "jobs": [
     {"name": "health {r}",

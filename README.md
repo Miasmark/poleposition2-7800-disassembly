@@ -134,7 +134,7 @@ What it does carry:
 
 Rebuilding a bundle gives the same file, byte for byte. With the toolkit at
 `e44dca9`, `pp2-vs.abp` is SHA-256
-`a631bace13c0598cfa6271e998f28e4a4459fb13945596d634ea2e7aaecf073e` and
+`3fe2203536ed4f60e6f79a2a93b1852a356729089d3176e7f46df51840c3cca0` and
 `pp2-graphics-hack.abp` is
 `96585a15328115c5240009be3606d535ca99b5f625ef7d7be9cc11bf5f2f1b07`.
 
@@ -169,8 +169,8 @@ dump:
 
 | | unsigned | signed |
 |---|---|---|
-| VS (checkpoint 89) | `0c5b64882c03ecf6e3390e805a44647e460c2211dc182759895771784fb90dc8` | `8eb5dab853a19174794772860545385c595c519a43deb1dac28a9e616cd540d1` |
-| VS, higher-detail car | `1dde56ea0fc864d52fc2e3500decd72d05139dcbbb2bda022da03d59d21ab660` | `7990630e12dba759673718cf1307d097ef775d94342b0a5a85b4fcbe887b21a5` |
+| VS (checkpoint 90) | `45ca22aa4653a4a2de343ae145cf55968f302d5e149e531f047db9898fc1c844` | `b2ce96ea3bd028fa6c90fe120c7f7e4bc7ef62064372c2d02982a2afa527f8dc` |
+| VS, higher-detail car | `07a28034a3d22c0c65306dc20eb60146763bd5c921188a1b0d5ee8eb7b472cc1` | `825fee1285d518735efa4298d3114b4685fdecb5f465096d4bf39d655ba72e71` |
 
 (A headerless dump gives a headerless 49,152-byte image with the same body.)
 

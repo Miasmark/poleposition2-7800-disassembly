@@ -7651,3 +7651,149 @@ II went into [a7800-toolkit](https://github.com/Miasmark/a7800-toolkit)
 - *MAME's palette.* `palette.py` gained MAME's own table: every colour in
   four MAME screenshots is in it. `$17` is (145,126,9), the gold chosen for
   player 2's highlights, where the old approximation gave olive.
+
+## Checkpoint 90: player 2's sky, and player 1's far objects in blinds
+
+Reported in play:
+1. The top of player 2's skybox was mostly cut off.
+2. Objects in player 1's view were drawn partly, "with blinds or broken
+   up". The user named one: "that's a flying tire", from player 1's crash.
+
+Both were reproduced from the user's recording (`test-pp2-vs-0924-1733.inp`,
+made against a checkpoint-88 build) by replaying it on that exact cartridge.
+
+### The sky: the horizon zone was given two lines of ten
+
+Checkpoint 77 gave player 2 a 2-line horizon zone, "the horizon's bottom
+two lines (the tops of the tallest decor, as zone 18 carries them for player
+1)". Player 1's horizon zone has all ten lines, and it carries the tall
+features, such as Fuji's peak, from its top line down. The checkpoint-77
+check compared the two skies by each row's dominant colours, over rows
+player 2 actually had. So player 2's view drew only Fuji's lowest rows: a
+flat-topped sliver under 11 rows of empty sky.
+
+The lines were there to take. Mapping a screenshot to the zone list gives
+row = zone line − 9: the picture starts at line 9. The frame's first 20
+lines are blank zones, and lines 9-19 were on screen as plain sky.
+
+**Fix.** Zone 0 goes from 16 lines to 8, and player 2's horizon zone from 2
+to 10. Everything from line 22 down is where it was:
+- player 2's decor, road and horizon line;
+- the divider;
+- player 1's half.
+
+The DLI on zone 0 (index 7, the sky's palettes) fires eight lines earlier.
+Zone 1, the 4 blank lines it writes the palettes during, is unchanged. The
+horizon zone's list is player 2's own copy of the stock one, and it now
+reads the object's ten pages exactly as player 1's zone does.
+
+### The objects: TopCopy1 copied before the game had placed anything
+
+Since checkpoint 87, each far band (1-7) is two 3-line zones. The top half
+has its own list, and `TopCopy1` fills it from the band's main list once a
+tick. An object missing from the top list draws in the band's bottom three
+lines only, three lines on and three off down the object, which is the
+blinds.
+
+A list dump during player 1's crash showed the tire and car pieces
+(palette 6) in the main lists, with the top lists parked or holding stale
+copies. A write trap on band 4 gave the order within a tick:
+
+1. rom:E6D7 parks slots 0-5 of every band.
+2. `TopCopy1` copies.
+3. rom:E320 parks slots 6-7.
+4. Only then, from rom:E713, does the game emit this tick's objects
+   (writes at rom:E7AC-E7C2).
+
+`P2ObjCommit`, hooked at rom:E70D, had run `TopCopy1` straight after
+rom:E6D7. The annotations named rom:E6D7 `EmitObjectLists`, and it emits
+nothing: it only parks. So `TopCopy1` never saw a rival or a sign in slots
+0-5, because they were always parked when it ran. The debris in slots 6-7
+it copied from the previous tick, six frames stale. Every object in player
+1's far bands had drawn in blinds since checkpoint 87. The known limit in
+SPLITSCREEN ("a far band's third object... draws in the band's bottom half
+only (rare)") was this bug, and it was not rare at all.
+
+Player 2's view was never affected. `TopCopy2` runs after player 2's own
+emitter, `P2Emit`.
+
+**Fix.**
+- `P2ObjCommit` ends in the game's slot parking.
+- The rebuild's three callers go through two wrappers that make the same
+  call, then run `TopCopy1`:
+  - rom:D71F (`JSR ObjectRebuild`) and rom:D7BE (`JMP ObjectRebuild`) go to
+    `RbAfter`;
+  - rom:D8C5 (`JSR sub_E70D`) goes to `RbAfterE70D`.
+- The copy now runs after rom:E713's emission, on the same tick, still ahead
+  of the beam reaching player 1's half.
+
+It costs 12 bytes of the code area, which now ends at `$63B6` (73 bytes
+spare). No work was added, so the tick rate is unaffected.
+
+Annotations: rom:E6D7 is now `ParkObjectSlots`, rom:E320
+`ParkObjectSlotsHigh`, and rom:E70D `RebuildObjectLists`, with comments on
+where emission really starts.
+
+**Checked.**
+- *Screenshots from the user's recording.* Player 2's Fuji has its peak and
+  matches player 1's. Through the crash (frames 7400-7480), the flying tire
+  is solid where the old build drew it in stripes.
+- *Player 1's far rivals.* At frames 17040-17160 of the same recording,
+  the current build draws them in stripes and the fixed build draws them
+  solid. The two builds stay in step frame for frame.
+
+### Fuji's top portion misaligned: a second bug in player 2's sky
+
+With the whole horizon zone showing, the user saw Fuji's top drawn off its
+base in player 2's view. Zoomed, the top eight lines of player 2's decor
+sat to the left of its last two.
+
+`P2Sky` builds three lists: the horizon object's, the decor's, and a copy of
+the decor's for its top eight lines. The copy is needed because MARIA counts
+a zone's page down from its height, and this zone is 8 lines where the list
+serves 10. Stock rom:DC60 gives:
+- the base object an x from the heading (`$1D3E`);
+- the horizon object that x plus `($A8C6 - $A8CA) * 4` (`$18FD`).
+
+`P2Sky` stored the horizon's x into the horizon list and also into the
+decor copy, where the base object's own x belongs. So since checkpoint 77,
+the decor's top eight lines were shifted by the per-track offset against
+its bottom two. The flat sliver the old 2-line zone left was offset the
+same way.
+
+**Fix:** the copy takes the base object's x, as `P2_DECOR_DL` does. At frame
+1200, player 2's Fuji is now identical to player 1's, pixel for pixel.
+
+### Regression
+
+The regression set (`tools/check-build.json` with the toolkit's
+`regress.py`) was run on the checkpoint-89 build as the baseline, and on
+checkpoint 90. 17 of 19 verdicts were identical:
+- health on all four recordings, so the game state is the same frame by
+  frame;
+- integrity 0 on four;
+- no wild fetch;
+- tick rate 100 on all six starts.
+
+The two that changed are the `ZRowUp` check, still with 0 differences but
+with fewer searches in its 12,000-frame window: 18,030 → 18,016 and
+13,793 → 13,769. Split by fix (the old sky zones patched back into a copy
+of the build), the object fix alone accounts for 6 and 4 of those, and the
+sky change for the rest. That is the main loop fitting a few fewer object
+passes into the window, not a change in what the game does.
+
+*Wrong turn in the harness, first run:* the integrity probes found no header
+file on either build. `regress.py` filled in `vars_cmd` before `--var`, so
+`check-vars.py` wrote the headers to the default `build/regress` while the
+jobs, given `--var out=...`, looked elsewhere. `regress.py` now applies
+`--var` before `vars_cmd` as well as after, and `check-build.json` passes
+`{out}` to `check-vars.py`.
+
+| checkpoint 90 | unsigned | signed |
+|---|---|---|
+| VS | `45ca22aa...` | `b2ce96ea...` |
+| higher-detail car | `07a28034...` | `825fee12...` |
+
+`dist/pp2-vs.abp` was regenerated (`3fe22035...`). Both options apply to
+their signed builds, and to each other stacked. `pp2-graphics-hack.abp`
+came out byte-identical.

@@ -1796,8 +1796,13 @@ def p2_tick_src():
         "    JSR P2Emit",
     ] + (["    JMP $E6D7"] if os.getenv("PP2_NO_TOPCOPY") else [   # test hook
         "    JSR TopCopy2",                    # player 2's top halves
-        "    JSR $E6D7",                       # then the game's own rebuild
-        "    JMP TopCopy1",                    #   and player 1's top halves
+        # then the game's rebuild carries on: rom:E6D7 parks slots 0-5,
+        # rom:E320 slots 6-7, and only the loop from rom:E713 places this
+        # tick's objects. TopCopy1 runs after all of it, from the rebuild's
+        # callers (RbAfter, RbAfterE70D): run here, it copied parked slots
+        # and the last tick's debris, and player 1's far objects drew in
+        # their bands' bottom halves only -- blinds.
+        "    JMP $E6D7",
     ]) + [
     ]
 
@@ -2292,7 +2297,8 @@ def top_half_src():
     searched.
     """
     if not SPLIT_BANDS:
-        return ["TopCopy1:", "TopCopy2:", "P2TopStage:", "    RTS"]
+        return ["RbAfter:", "    JMP $E709", "RbAfterE70D:", "    JMP $E70D",
+                "TopCopy1:", "TopCopy2:", "P2TopStage:", "    RTS"]
     lay = p2_band_layout()
     import io as _io
     _rom = bytearray(_io.open(load_source()[0], "rb").read())
@@ -2348,6 +2354,11 @@ def top_half_src():
                 "    LDA $%02X03,Y" % pg, "    STA $2503,X",
                 "    INX", "    INX", "    INX", "    INX",
                 "    RTS"]
+    # The object rebuild's callers come here (rom:D71F, rom:D7BE, rom:D8C5),
+    # so TopCopy1 sees this tick's objects: the rebuild places them only in
+    # its last part (rom:E713 on), after every hook it has.
+    out += ["RbAfter:", "    JSR $E709", "    JMP TopCopy1",
+            "RbAfterE70D:", "    JSR $E70D", "    JMP TopCopy1"]
     out += ["TopCopy1:"]
     for b in SPLIT_BANDS:
         src0 = ALL_ROAD_BANDS[b] + 4
@@ -5823,13 +5834,17 @@ def vbl_src():
         "    LDA $A8CA,Y", "    STA $00F0",
         "    LDA $A8D2,Y", "    STA $00F1",
         "    JSR $DD0B",
+        # the base object's x, in both decor lists: the top-8-lines copy is
+        # the same object. It used to get the horizon object's x instead,
+        # which put the decor's top eight lines (A8C6-A8CA)*4 pixels off its
+        # last two -- Fuji's upper body sat off its base in player 2's view.
         "    STA $%04X" % (P2_DECOR_DL + 3),
+        "    STA $%04X" % (P2_DECOR_TOP + 3),
         "    SEC",
         "    LDA $A8C6,Y", "    SBC $A8CA,Y",
         "    ASL A", "    ASL A",
         "    CLC", "    ADC $%04X" % (P2_DECOR_DL + 3),
         "    STA $%04X" % (P2_HOR_DL + 3),
-        "    STA $%04X" % (P2_DECOR_TOP + 3),
         "    LDX #$02",                        # their graphics: player 1's
         "PsHdr:",
         "    LDA $1D3B,X", "    STA $%04X,X" % P2_DECOR_DL, "    STA $%04X,X" % P2_DECOR_TOP,
@@ -6886,17 +6901,18 @@ MIRROR_PLAN_LEN = None       # filled on first use by dll_template()
 def dll_template():
     """The new zone list. Replaces the stock 35-zone boot template entirely."""
     plan = mirror_plan()
-    z = [[0x8F, 0x24, 0xF6],                          # 0: 16 blank, DLI idx7
+    z = [[0x87, 0x24, 0xF6],                          # 0:  8 blank, DLI idx7
          [0x03, 0x24, 0xF6],                          # 1:  4 blank, must stay blank
-         # player 2's sky: the horizon's bottom two lines (the tops of the
-         # tallest decor, as zone 18 carries them for player 1), then the
-         # decor in two zones -- its top 8 lines from a copy of the list two
+         # player 2's sky: the horizon zone, all ten lines as player 1's (it
+         # carries the tall decor's tops -- Fuji's peak -- not only in its
+         # last two, as checkpoint 77 assumed; the eight came from zone 0,
+         # blank lines at the top of the picture), then the decor in two zones -- its top 8 lines from a copy of the list two
          # graphics pages up (MARIA counts a zone's offset down from its
          # height), its last 2 from the list itself. The DLI on those two
          # (index 13, P2SkyEnd) lands on the horizon line without waiting:
          # on one 10-line zone it spent nine lines in WSYNC, and with P2Sky
          # that cost the race a quarter of its ticks (74 of 100).
-         [0x01, P2_HOR_DL >> 8, P2_HOR_DL & 0xFF],
+         [0x09, P2_HOR_DL >> 8, P2_HOR_DL & 0xFF],
          [0x07, P2_DECOR_TOP >> 8, P2_DECOR_TOP & 0xFF],
          [0x81, P2_DECOR_DL >> 8, P2_DECOR_DL & 0xFF]]
     # Index 8 sits partway down the mirror. Its home was expressed in fine
@@ -7253,6 +7269,16 @@ def fix_mirror_split(p):
     # begun. P2ObjCommit writes both views' other-car entries, then jumps on.
     p.put(0xE70D, [0x20, p2_commit_addr & 0xFF, p2_commit_addr >> 8],
           expect=[0x20, 0xD7, 0xE6])
+    # The rebuild's three callers go through RbAfter/RbAfterE70D, which make
+    # the same call and then copy player 1's top halves from what it placed.
+    if not os.getenv("PP2_NO_TOPCOPY"):
+        _xs = _ext()[1]
+        p.put(0xD71F, [0x20, _xs["RbAfter"] & 0xFF, _xs["RbAfter"] >> 8],
+              expect=[0x20, 0x09, 0xE7])
+        p.put(0xD7BE, [0x4C, _xs["RbAfter"] & 0xFF, _xs["RbAfter"] >> 8],
+              expect=[0x4C, 0x09, 0xE7])
+        p.put(0xD8C5, [0x20, _xs["RbAfterE70D"] & 0xFF, _xs["RbAfterE70D"] >> 8],
+              expect=[0x20, 0x0D, 0xE7])
     # rom:CC5E -- `STA $E7 / STY $E6`, the torn pair (see E6E7Safe), becomes a
     # jump to a version that clears $E6 first. $CC23 was reached by a JMP, so
     # E6E7Safe's RTS returns where the original RTS at $CC62 would have.
