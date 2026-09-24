@@ -1,154 +1,70 @@
 #!/usr/bin/env python3
 """
-Pole Position II split-screen: build a patched cartridge and an .abp bundle.
+Pole Position II VS: a two-player split-screen build from the retail cartridge.
 
-    python patches/splitscreen.py --list
-    python patches/splitscreen.py --build -o pp2-split.a78     (playable, for testing)
-    python patches/splitscreen.py --bundle                     (writes dist/pp2-splitscreen.abp)
+    python patches/splitscreen.py --build -o pp2-vs.a78          (unsigned: for MAME/recordings)
+    python patches/splitscreen.py --build --sign -o pp2-vs.a78   (signed: for real hardware)
+
+## What you need
+
+* The retail dump, NTSC: 32,768-byte body, CRC32 A85FB962, SHA-256
+  b852432108a86d003c2c7d393455b5a52eafc474209a6e7e5ed11f99366b8d5e, with or
+  without its 128-byte .a78 header. Found as PP2_ROM, or beside this repo
+  named "Pole Position II (NTSC) (Atari) (1987) (A85FB962).a78". Any other
+  file is refused before anything is written.
+* Python 3 (built and tested with 3.10).
+* The a7800 toolkit's tools directory -- asm.py and m6502.py for every
+  build, sign7800.py for --sign. Looked for at ../a7800-toolkit-local/tools
+  (tested at commit 59a55e9), or wherever PP2_TOOLKIT points.
+
+The build is deterministic: the same dump gives the same bytes, and the
+SHA-256 printed at the end can be compared with README.md's.
 
 Every edit is checked against the bytes it expects to find, so building
-against the wrong dump fails by name instead of producing a corrupt ROM.
+against the wrong dump -- or a change that assumes the wrong bytes -- fails
+by name instead of producing a corrupt ROM. Nothing from the cartridge is
+stored here: the new graphics (player 2's highlights, the sheared road
+slices, the VS in the logo) are generated from the dump's own pixels at
+build time.
 
-## What this is
+## What it builds
 
-Rearranges the display list into a two-viewport layout -- player 2's view on
-top, the HUD relocated to the centre as a divider, player 1's road below,
-untouched:
+A 48K cartridge ($4000-$FFFF; the retail is 32K). Player 2's view on top,
+the HUD as a divider in the middle, player 1's view below; two independent
+cars, cameras, laps, clocks, scores and results. The current design --
+screen layout, RAM and ROM maps, where each piece runs and every patch site
+-- is summarised in docs/SPLITSCREEN.md; docs/FINDINGS.md is the full,
+chronological record (checkpoints 1-88), wrong turns included.
 
-    zone  0        16 lines   blank top margin        DLI index 7
-    zone  1         4         blank gap  (must stay blank -- a road band here
-                                          hangs the machine; see below)
-    zones 2-13     72         player 2's view -- twelve road bands
-                                                      DLI index 8 on zone 7
-    zone  14        6         blank, and the landing pad for
-                                                      DLI index 9
-    zones 15-17    21         HUD, three rows -- the centre divider
-                                                      DLI index 10 on zone 17
-    zone  18       10         horizon decoration ($18FA, stock)
-    zone  19       10         decoration              DLI index 11
-    zones 20-32    78         player 1's road (unmoved)
-    zones 33-34    32         blank
+The names MirrorStage, MirrorInit, MirrorPalette and mirror_plan are
+historical: the top view began as a mirror of player 1's road lists, and
+the names stayed when it became player 2's own view. The fine-zone
+machinery (FINE_BAND_LAST, mini display lists) is from that stage and is
+inactive (FINE_BAND_LAST = 0).
 
-Zones 0-19 total exactly 139 lines in every state the divider can be in --
-HUD showing, start light showing, or per-lap banner showing. They have to:
-a mismatch there shifts everything below the divider for the mismatch's
-duration, which is what used to make the whole screen bump up for a lap
-message and drop back when it cleared.
+## Build switches (environment variables)
 
-Zone 14 is blank on purpose. MARIA raises a zone's display interrupt about
-four scanlines before that zone has finished displaying, and palette writes
-take effect immediately, so index 9's handler -- which swaps the road's
-palette for the divider's -- used to repaint the bottom four lines of the
-last mirror band while they were still on screen. Giving index 9 a blank zone
-of its own puts that early write somewhere harmless. It costs the mirror its
-farthest band, because zones 1-14 hold exactly fourteen selectors and zone 1
-cannot be the one given up.
+Features, all on by default:
 
-Player 2's view is currently a *mirror*: its bands point at the same RAM
-sub-lists player 1's road uses, so it tracks the same curve and the same
-stripe animation for free, at the cost of stair-stepping where the real road
-is smooth. That last part is not a temporary limitation: the smoothness comes
-from DLI_InjectRowCurveX, which is beam-synchronised -- one WSYNC per road
-scanline, rewriting each band's x mid-zone -- so a second copy for the mirror
-would cost another ~78 scanlines of stalled main loop. Measured headroom is
-four to five scanlines (docs/FINDINGS.md, "What a second view cannot have").
-See
-"Phase 1" in docs/FINDINGS.md for the full trail -- including two things this
-patch had to fix that are not obvious from the zone table alone: CTRL's read
-mode has to follow the layout (character mode for the HUD, the road's mode
-everywhere else), and BACKGRND has to carry the road's ground colour into
-player 2's view or every transparent pixel in the road graphics shows sky.
+    PP2_NO_SMOOTH=1   far bands 1-5 without the sheared road slices (ck 86)
+    PP2_NO_SPLIT=1    far bands 1-7 as single 6-line zones (ck 87)
+    PP2_NO_OVL=1      player 2's car without its highlights (ck 83)
+    PP2_NO_VS=1       the title logo keeps its II (ck 85)
+    PP2_P2PAL=n       player 2's car in palette n (default 6, the gold car)
 
-It mirrors twelve of player 1's thirteen road zones -- all but the farthest,
-which pays for zone 14 -- so the top view is 72 lines of road against the 78
-below it, with the missing band being the most distant and least detailed. Earlier versions managed only ten, and
-two separate rounds of investigation blamed that on the wrong thing -- first
-on which zone the mirror sat next to, then on a supposed ten-zone ceiling.
-Both were wrong, and docs/FINDINGS.md keeps them on the record next to what
-actually turned out to be true: the start light was erasing display-interrupt
-bits, and the interrupts' *positions*, not the mirror's size, are what the
-6502's frame budget is sensitive to.
+Test hooks, for measuring and bisecting (not for play): PP2_LINEAR_CE3E,
+PP2_LINEAR_ZROW, PP2_NO_TOPCOPY, PP2_NO_OVL_P1, PP2_KEEP_INJECTION,
+PP2_NO_OTHERCAR, PP2_NO_P2RIVAL, PP2_NO_P2SKY, PP2_FULL_E8AC, PP2_CARCAP,
+PP2_BURN, PP2_FORCE_LEAN and the layout overrides (PP2_SAMPLE, PP2_IDX8,
+PP2_HOOKAT, ...). Each is described where it is read.
 
-## Why .abp and not a single BPS or a bare byte-patcher
+## Why not an .abp bundle any more
 
-A BPS is a delta between two *whole* files, with a CRC32 of the whole source
-and the whole target -- exactly right for "here is my hack" and wrong for
-"here is a set of options, and here is how to check whether a dump can even
-take them." The .abp format (`docs/patchset-format.md` in the toolkit) checks
-a named byte range at a time instead, which is what lets an option apply
-cleanly to a dump that already has *another* option on it, and what lets
-`tools/patchset.py list`/`check`/`apply` reason about this patch the same way
-they already reason about Karateka's.
-
-It also means this file ships less of the ROM than a naive "expected bytes"
-check would: a section's identity in the bundle is a CRC32 of its pre-image,
-never the pre-image itself. The one exception is real: `bps.create()` below
-necessarily encodes the *new* bytes an edit writes, because those bytes are
-this project's own work, not a copy of anything.
-
-## HudReassert: the one piece of new code this patch needs
-
-Everything above is a pure data edit -- existing bytes, replaced. The HUD's
-divider (zones 12-14) is different: those three zones are not in the boot
-template at all. They are rewritten at *run time*, from two ROM tables
-(`dat_A6BB`, `dat_A6CD`), by the stock routines that drive the start light
-and the "POLE POSITION! ####" qualifying banner -- whichever ran last wins,
-and both happen during a normal race. That sharing is stock behaviour, not
-something this patch introduced; the ORIGINAL always-on HUD lives at zones
-2/4/6, untouched by any of it. This patch's mirror needs zones 2-11 for the
-ten road bands, which is where that original HUD used to live, so the HUD
-has to move to the one place already wired to be a shared, overwritable
-divider: zones 12-14.
-
-Sharing it, though, means something has to give the HUD back once the light
-or the banner is done showing -- stock never needs to, because stock's real
-HUD lives elsewhere. Nothing else ever will on its own (confirmed live: the
-light's and banner's zone-selector writes are one-shot, and once the second
-light finishes, zones 12-14 sit on its leftover graphic for the rest of the
-race). So a tiny new routine (`hud_reassert_src` below) writes the HUD's
-three zone-selectors back in -- hooked in at *two* places, not one, which
-took counting to find: the obvious spot (rom:D848, in sub_D83D, reached
-whenever driving resumes after a per-lap event) turned out to only be one
-of two places the game enters normal driving from. The other, reached right
-as the start light itself finishes, is a completely different routine
-(rom:CBEB, a periodic state check unrelated to sub_D83D). Hooking only the
-first left the HUD not returning after the start light specifically --
-confirmed by having the new code count its own calls into a spare RAM byte
-across a full recording and comparing against exactly when zones 12-14
-changed. See docs/FINDINGS.md, "The mirror was missing the car, and the divider was missing the light".
-dat_A6BB and dat_A6CD themselves are NOT touched -- the light and the
-banner still display exactly as they always have; this only adds the "and
-now put the HUD back" step stock never needed.
-
-An earlier version of this patch instead overwrote dat_A6BB/dat_A6CD's own
-bytes to force the HUD into zones 12-14 permanently -- simpler, no new code,
-but it meant the light and the banner could never display again. That
-tradeoff turned out not to be worth it once asked to reconsider it; this is
-the fix. A second earlier version fixed that by also *relocating* zones
-12-14's role to zones 15-17 and moving the pair of DLI (display-interrupt)
-bits that switch character mode on and off to match -- which renders fine,
-but measurably desyncs an existing recording (see docs/FINDINGS.md, "The
-mirror was missing the car, and the divider was missing the light"): moving
-either of those two specific DLI bits shifts something in the frame's
-timing that a recorded race is
-sensitive to, even though the two zones the bits move *to* render correctly
-in isolation. HudReassert exists because it gets the same visible behaviour
-(HUD normally, light and banner over it at their moments) without moving
-either bit.
-
-Two more mistakes surfaced getting the CBEB hook right, both caught live
-rather than assumed correct: the first version called the shared HudWrite
-subroutine and then reloaded `A` with `#$03` *before* the call instead of
-after, so the value HudWrite left in `A` (a HUD byte, not 3) is what ended
-up in `ram_009D` -- a wrong-but-plausible race state that happened to look
-like a second start-light sequence on screen, which is what gave it away.
-Fixed by writing first and reloading `#$03` right before the jump back.
-The second: even fixed, a JSR to the shared subroutine plus its loop
-was enough alone to desync the recording from that point on -- rom:CBEB has
-far less cycle budget to spare than rom:D848 did. `_unrolled_hud_write()`
-replaces the loop with nine straight `LDA #imm`/`STA abs` pairs and drops
-the JSR, for this one call site only; rom:D848 still uses the shared,
-looped HudWrite, since that one was never the problem.
+--bundle writes the toolkit's anchored-bundle format, which patches fixed
+extents of the source body and cannot grow it; the 48K build cannot be
+expressed as one, so --bundle refuses. The generated graphics are also
+derived from the dump, which is one more reason the build runs against the
+user's own copy rather than shipping bytes.
 
 ## Signing this and testing against a recording are two different needs
 
@@ -184,7 +100,7 @@ import zlib
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
-TOOLKIT_TOOLS = os.path.join(ROOT, "..", "a7800-toolkit-local", "tools")
+TOOLKIT_TOOLS = os.environ.get("PP2_TOOLKIT") or os.path.join(ROOT, "..", "a7800-toolkit-local", "tools")
 sys.path.insert(0, TOOLKIT_TOOLS)
 
 HDR = 128
@@ -205,6 +121,8 @@ EXT_END = 0x69FF                 # $6A00-$6FFF: sheared road slices;
                                  #   $70-$7B) and the HUD row lists ($7FE0)
 
 ROM_NAME = "Pole Position II (NTSC) (Atari) (1987) (A85FB962).a78"
+# the retail NTSC body (headerless): CRC32 A85FB962
+RETAIL_SHA256 = "b852432108a86d003c2c7d393455b5a52eafc474209a6e7e5ed11f99366b8d5e"
 SOURCES = [
     os.environ.get("PP2_ROM", ""),
     os.path.join(ROOT, ROM_NAME),
@@ -795,15 +713,16 @@ BAND_SLOT1 = [None] * 8 + [(0x47, 0x80), (0x69, 0x80), (0x8D, 0x80),
                            (0xB5, 0x80), (0xE1, 0x80)]
 
 # Slot +1C of player 1's near bands is the player's car: palette 6, 8 bytes
-# wide, and -- in 5999 of the 6700 frames sampled -- x = 64. It spans bands 8
-# to 11, one graphics page per band, and the page is the base plus a lean
-# offset of 0, 8, $10, $18 or $20, with $10 upright.
+# wide, and -- in 5999 of the 6700 frames sampled -- x = 64. It spans bands 7
+# to 11 (band 7 is the roll hoop and helmet, found at checkpoint 82), one
+# graphics page per band, and the page is the base plus a lean offset of 0, 8,
+# $10, $18 or $20, with $10 upright.
 #
 # x = 64 is not a compromise for player 2, it is the right answer: the car is
 # centred and the ROAD moves under it, and player 2's road already moves with
-# player 2's steering. So width and x are baked into the template and only the
-# graphics page is copied each frame. The lean therefore still follows player
-# 1's steering, which is the one part of this that is scaffolding.
+# player 2's steering. Player 2's car is drawn from its own state (p2_car_src):
+# its lean from its own stick. Band 11's slot here is read only to know
+# whether a car is on screen at all.
 P1_CAR_SLOT = [0x244C + 0x1C, 0x246E + 0x1C, 0x2490 + 0x1C, 0x24B2 + 0x1C]
 P2_CAR_BANDS = [7, 8, 9, 10, 11]     # band 7: the car's top (roll hoop), as
                                      #   player 1's own top slice sits there
@@ -1402,7 +1321,9 @@ def road_stage_src():
 
 
 def _unrolled_mirror_stage():
-    """Each fine mirror zone's road width and x, written straight rather than
+    """Inactive: FINE_ZONES is 0, so this emits nothing (the mirror stage).
+
+    Each fine mirror zone's road width and x, written straight rather than
     looped. Every fine zone belongs to a far band, so they all read the same
     two per-scanline arrays; the near bands keep the road's own lists and need
     no update at all. Mirror zone k stands for road scanline 6 + FINE_LINES*k.
@@ -2235,9 +2156,10 @@ def p2_car_src():
     so player 2's is parked off-screen at x = $A1 -- the same idiom the stock
     lists use for an empty object slot -- rather than drawn over a menu.
 
-    Player 2 therefore never shows a crash animation, because player 2 has no
-    crash of its own yet. Not crashing is the right failure here: sympathetic
-    crashing was the bug.
+    While player 2 crashes (P2_CRASH) or is out of the race these headers are
+    parked too; P2CrashDraw draws its crash frames as list entries instead.
+    Band 7 (the top, $A3) was added at checkpoint 82; the highlights (bands 8
+    and 9, P2_OVL_BANDS) follow the same lean.
     """
     lines = ["    LDA $%04X" % P2_CRASH, "    BNE P2CarPark",      # P2CrashDraw has it
              "    LDA $%04X" % P2_PARK, "    CMP #$02", "    BEQ P2CarPark",   # out
@@ -6590,7 +6512,12 @@ def stripe_src(row):
 
 
 def mirror_plan():
-    """The mirror, band by band, as (lines, dl_address, mini_index).
+    """Player 1's road zones, band by band, as (lines, dl_address, mini_index).
+
+    Now: far bands 1-7 as two 3-line zones each (the top half from P1_TOP,
+    checkpoint 87), near bands 8-12 as one 6-line zone on the band's own list.
+    The name and the fine-zone branch below are from the mirror stage and
+    inactive (FINE_BAND_LAST = 0). What follows is that stage's reasoning:
 
     Hybrid on purpose. The far bands get FINE_LINES-tall zones with short
     display lists of their own, which is what makes their road edge smooth --
@@ -7126,10 +7053,10 @@ def fix_mirror_split(p):
 
 
 FIXES = [
-    {"id": "mirror-split", "fn": fix_mirror_split,
-     "title": "Split screen: player 2's view mirrors player 1's road",
-     "note": "Experimental. Player 2's view is a mirror of player 1's road, "
-             "not yet an independent camera -- see docs/FINDINGS.md."},
+    {"id": "vs-split", "fn": fix_mirror_split,
+     "title": "Pole Position II VS: two-player split screen",
+     "note": "Player 2's view on top, the HUD as a divider, player 1's view "
+             "below -- see docs/SPLITSCREEN.md."},
 ]
 
 
@@ -7138,12 +7065,23 @@ FIXES = [
 def load_source():
     for c in SOURCES:
         if not c or not os.path.isfile(c):
+            if c and c == os.environ.get("PP2_ROM"):
+                raise SystemExit("PP2_ROM=%s: no such file" % c)
             continue
         blob = open(c, "rb").read()
         header = len(blob) - ROM_SIZE
         if header not in (0, HDR):
+            if c == os.environ.get("PP2_ROM"):
+                raise SystemExit("PP2_ROM=%s: %d bytes, not a 32K Pole Position II "
+                                 "dump (32,768, or 32,896 with its .a78 header)" % (c, len(blob)))
             continue
-        return c, header, bytearray(blob[header:])
+        body = blob[header:]
+        if hashlib.sha256(body).hexdigest() != RETAIL_SHA256:
+            raise SystemExit(
+                "%s is not the retail NTSC dump this build expects\n"
+                "  (body SHA-256 %s, want %s;\n  CRC32 of the body should be A85FB962)"
+                % (c, hashlib.sha256(body).hexdigest(), RETAIL_SHA256))
+        return c, header, bytearray(body)
     raise SystemExit(
         "Pole Position II ROM not found. Set PP2_ROM, or drop a copy named\n"
         "  %s\nbeside this script." % ROM_NAME)
@@ -7198,6 +7136,11 @@ def build(out_path, sign=False):
     """Apply the fix directly. Unsigned by default -- see the docstring above
     on why: a recording made against the pristine ROM depends on the
     signature block's *exact bytes*, not merely on whether they verify."""
+    need = ["asm.py", "m6502.py"] + (["sign7800.py"] if sign else [])
+    missing = [n for n in need if not os.path.isfile(os.path.join(TOOLKIT_TOOLS, n))]
+    if missing:
+        raise SystemExit("the a7800 toolkit's tools were not found at %s (missing %s);\n"
+                         "set PP2_TOOLKIT to its tools directory" % (TOOLKIT_TOOLS, ", ".join(missing)))
     src, header, rom = load_source()
     p = Patcher(bytes(rom))
     for fix in FIXES:
@@ -7219,6 +7162,7 @@ def build(out_path, sign=False):
     io.open(out_path, "wb").write(out)
     print("wrote %s (%d bytes changed)%s"
           % (out_path, len(p.writes), "" if sign else " -- unsigned"))
+    print("  SHA-256 %s" % hashlib.sha256(out).hexdigest())
     return 0
 
 
@@ -7261,10 +7205,10 @@ def build_bundle(out_path=None):
         before += rom[at - BASE:at - BASE + n]
         after += p.rom[at - BASE:at - BASE + n]
 
-    member = "p/mirror-split.bps"
+    member = "p/vs-split.bps"
     files = {member: bps.create(bytes(before), bytes(after))}
     option = {
-        "id": "mirror-split",
+        "id": "vs-split",
         "title": FIXES[0]["title"],
         "note": FIXES[0]["note"],
         "patches": [{"sections": touched_ids, "bps": member,
@@ -7273,14 +7217,9 @@ def build_bundle(out_path=None):
 
     manifest = {
         "format": patchset.FORMAT,
-        "name": "Pole Position II split-screen (experimental)",
-        "what": "Two-viewport layout: player 2's view (a mirror of player "
-                "1's road, not yet an independent camera) on top, the HUD "
-                "relocated to the centre as a divider, player 1's road "
-                "unmoved below. The start light and the qualifying banner "
-                "still display at that same divider, as stock; a small new "
-                "routine (HudReassert) brings the HUD back once each one "
-                "finishes.",
+        "name": "Pole Position II VS (two-player split screen)",
+        "what": "Two-player split screen (unused: the 48K build cannot be "
+                "expressed as a bundle; see the docstring).",
         "target": {
             "what": os.path.basename(src),
             "body_size": len(rom),
@@ -7305,7 +7244,7 @@ def build_bundle(out_path=None):
     print("")
     print("  python ../a7800-toolkit-local/tools/patchset.py list %s" % out_path)
     print("  python ../a7800-toolkit-local/tools/patchset.py apply %s "
-          "--rom \"%s\" --with mirror-split --out pp2-split.a78" % (out_path, ROM_NAME))
+          "--rom \"%s\" --with vs-split --out pp2-vs.a78" % (out_path, ROM_NAME))
     return 0
 
 
