@@ -6143,3 +6143,58 @@ plays slowly. The drop arrived with player 2's world objects and collisions
 
 **Not yet:** player 2 has no cars-passed tally (`$08` counts player 1's
 only). "Player 1 does not qualify, player 2 races alone" is next.
+
+## Player 1 does not qualify, player 2 does: player 2 races alone
+
+Checkpoint 71.
+
+**Stock:** the qualifying clock runs out in state `$02` (rom:D305). Once player
+1 has stopped (rom:D30D, `LDA CrashTimer / ORA Speed`), rom:D316 ends the
+game. The race setup that follows a qualifier's stop (rom:D422-D476, then
+states `$12 $0E $07 $05 $11 $03`) depends on `$A6` throughout: the object count
+(rom:D0D9), the parity adjustment on track 0 (rom:D102), the grid (rom:D1AD),
+the lane (rom:D1E9), and the blinking digit in the message (rom:DA03). So
+player 1 gets a real grid position rather than an invented 9th.
+
+**Built:**
+- `QualOut` at rom:D30D: if player 1 has stopped and player 2 qualified, set
+  `P1_OUT` and go on as rom:D422-D476 would, using player 2's position. That
+  gives the pole message, or QUALIFYING POSITION with player 2's place
+  blinking. Player 2 gets its `dat_A6C4` bonus; player 1 gets none
+  (TallyValueHi 0); then state `$12`. `$A6` is player 2's position, so player
+  1's grid slot is player 2's own and no rival is displaced for it.
+- `P1OutRace` at rom:D31C (`LDA RaceClockHi / BNE`), in state `$03` only:
+  player 1 stays on the stopped path (rom:D6EB, held at 0; its clock does not
+  run there) until player 2 is done. Then it takes the end of a stopped
+  player 1's race (rom:D32D: the cars tally if any, then game over).
+- `P1Coll` at rom:D70A (`JSR sub_C866`): no contacts for player 1 while it
+  sits out. `PvpCrash` and the players' contact box skip too, since the two
+  cars start on the same spot.
+- `P1_OUT` ($2736) is cleared with the rest at a new session (`$10`).
+
+### Wrong turn
+
+- **The banner never ended.** rom:D31C is the handler for state `$11` as well
+  as `$03`. Held there, the start countdown never finished, while player 2,
+  its race flag set, drove off and ran out its clock under the banner (seen:
+  `$11` from f5971 to game over). The hold is now for `$03` only.
+- **Probe:** it forced player 1's speed whenever player 1's clock was not 0.
+  A sitting-out player 1's clock stays at 72, so the probe drove it round to
+  a lap crossing. The probe now leaves player 1 alone once `P1_OUT` is set
+  (and with `FREECLK=2` leaves the qualifying clock alone too).
+
+### Checked (scripted, track 3)
+
+    p1 100, p2 215   p2 4th, p1 out at f5220: message with 4 blinking, tally
+                     0000, race at f6182; p1 held at 0 on p2's slot, no
+                     contacts; p2 out of time on lap 3; game over
+    p1 100, p2 240   p2 laps 1..5 alone, finishes with 28 s (+5,600); game over
+    p1 100, p2 100   neither qualifies: game over as stock
+    p1 215, p2 210   both qualify: the checkpoint 70 race, unchanged
+
+Health identical to checkpoint 70 on four recordings (run-02: 7 single-frame
+`PlayerX` samples differ, same values a frame apart). Integrity 0 on four.
+
+**Seen, for cleanup:** while player 1 sits out, 1UP shows its frozen clock,
+and its view shows its car standing on the grid. One car-tally point (50)
+was credited to player 1 at the end of a race it sat out.

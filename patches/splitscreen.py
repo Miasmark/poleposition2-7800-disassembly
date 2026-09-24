@@ -678,6 +678,7 @@ P2_CPH = 0x2732              # the clock's tick phase 0..5
 P2_LAPN = 0x2733             # laps completed, as $A7 (the race is $C3 + 1)
 P2_RST = 0x2734              # 0 racing, 1 finished, 2 out of time
 P2_RACE = 0x2735             # nonzero: player 2 is in this race
+P1_OUT = 0x2736              # nonzero: player 1 did not qualify and sits the race out
 HUD_BUF1 = 0x27C2            # the 1UP line, 31 characters
 HUD_BUF2 = 0x27E1            # the 2UP line, 31 characters, to $27FF
 HUD_X = 0x12                 # both lines' x: (160 - 31*4) / 2
@@ -1322,7 +1323,7 @@ def _check_p2_ram():
         ("P2_HIT", P2_HIT, 2),
         ("P2_HUD", P2_HUD_DL, 12),
         ("P2_QUAL", P2_QST, 6),
-        ("P2_RACE", P2_CLOCK, 6),
+        ("P2_RACE", P2_CLOCK, 7),
         ("HUD_BUFS", HUD_BUF1, 62),
     ]
     regions.sort(key=lambda r: r[1])
@@ -2145,6 +2146,8 @@ def p2_collide_src():
     return [
         # a rear-end first: the car behind crashes (PvpCrash)
         "    JSR PvpCrash",
+        "    LDA $%04X" % P1_OUT,
+        "    BNE P2NoHitN",                    # player 1 sitting out
         # |gap| < COLLIDE_Z, with the gap signed 16-bit
         "    LDA $%04X" % GAP_HI,
         "    BEQ P2HitZPos",
@@ -2314,7 +2317,7 @@ def p2_race_init_src():
         "    BNE P2RiRace",
         "    LDA #$00",                        # a new qualifying session
         "    STA $%04X" % P2_QST, "    STA $%04X" % P2_QPOS, "    STA $%04X" % P2_PARK,
-        "    STA $%04X" % P2_RACE,
+        "    STA $%04X" % P2_RACE, "    STA $%04X" % P1_OUT,
         "    JMP P2GridSym",
         "P2RiRace:",
         "    JMP P2RaceSlot",                  # its grid slot, or sitting out
@@ -3096,6 +3099,8 @@ def p2_hazard_src():
         # CrashStart, handed slot 15 -- no car -- with a sign's type there, so
         # rom:D037 leaves the object list alone when the crash ends.
         "PvpCrash:",
+        "    LDA $%04X" % P1_OUT,
+        "    BNE PvOut",
         "    LDA $%04X" % P2_PARK,
         "    CMP #$02",
         "    BEQ PvOut",
@@ -3971,6 +3976,92 @@ def qual_src():
         "RwFree:",
         "    LDA #$00",
         "RwDone:",
+        "    RTS",
+
+        # --- rom:D30D, `LDA CrashTimer / ORA Speed` once the qualifying clock
+        # is out: stopped, player 1 has not qualified -- game over (rom:D316)
+        # unless player 2 has. Then player 1 sits the race out (P1_OUT) and
+        # the game goes on as rom:D422-D476 would for a qualifier, with
+        # player 2's position: its message (pole, or QUALIFYING POSITION with
+        # its place blinking, rom:DA03), its bonus, no bonus for player 1.
+        # Player 1's grid slot is player 2's own: the grid is built from $A6.
+        "QualOut:",
+        "    LDA $00D4",
+        "    ORA $00CE",
+        "    BNE QoRet",
+        "    LDA $%04X" % P2_QST,
+        "    CMP #$01",
+        "    BEQ QoAlone",
+        "    LDA #$00",
+        "QoRet:",
+        "    RTS",
+        "QoAlone:",
+        "    PLA", "    PLA",
+        "    LDA #$01", "    STA $%04X" % P1_OUT,
+        "    LDY $%04X" % P2_QPOS,
+        "    SED",
+        "    CLC",
+        "    LDA $%04X" % (P2_SCORE + 1), "    ADC $A6C4,Y", "    STA $%04X" % (P2_SCORE + 1),
+        "    LDA $%04X" % P2_SCORE, "    ADC #$00", "    STA $%04X" % P2_SCORE,
+        "    CLD",
+        "    STY $00A6",
+        "    JSR $D802",
+        "    LDA $00A6",
+        "    CMP #$01",
+        "    BNE QoQual",
+        "    LDX #$22",                        # rom:D42C: POLE POSITION
+        "QoPole:",
+        "    LDA #$AB",
+        "    CPX #$0A", "    BCC QoPs",
+        "    CPX #$18", "    BCS QoPs",
+        "    LDA $B2E8,X",
+        "QoPs:",
+        "    STA $1FC8,X",
+        "    DEX",
+        "    BPL QoPole",
+        "    BMI QoTail",
+        "QoQual:",
+        "    LDY #$22",                        # rom:D446: QUALIFYING POSITION
+        "QoQl:",
+        "    LDA $BED6,Y", "    STA $1FC8,Y",
+        "    DEY",
+        "    BPL QoQl",
+        "QoTail:",
+        "    LDA #$00", "    STA $00AB",       # no bonus for player 1
+        "    JSR $DEC8",                       # rom:D458 on
+        "    LDA #$13", "    JSR $DEF3",
+        "    LDA #$01", "    JSR $DB83",
+        "    JSR $DB7C",
+        "    STA $00CE", "    STA $00D0", "    STA $00DF", "    STA $00DE", "    STA $00AD",
+        "    LDA #$12", "    STA $009D",
+        "    JMP $D253",
+        # --- rom:D31C, the race's `LDA RaceClockHi / BNE`: player 1 sitting
+        # out stays on the stopped path (rom:D6EB, held at 0) until player 2
+        # is done, then the end of the race as a stopped player 1's (rom:D32D)
+        "P1OutRace:",                          # (state $11 too: the banner
+        "    LDA $%04X" % P1_OUT,              #   runs as ever, to the start)
+        "    BEQ PoIn",
+        "    LDA $%04X" % GAME_STATE,
+        "    CMP #$03",
+        "    BEQ PoOut",
+        "PoIn:",
+        "    LDA $00DE",
+        "    BEQ PoClk",
+        "    JMP $D302",
+        "PoClk:",
+        "    JMP $D320",
+        "PoOut:",
+        "    LDA $%04X" % P2_RST,
+        "    BNE PoEnd",
+        "    JMP $D6EB",
+        "PoEnd:",
+        "    JMP $D32D",
+        # --- rom:D70A, `JSR sub_C866` (player 1's contacts): none while out
+        "P1Coll:",
+        "    LDA $%04X" % P1_OUT,
+        "    BNE P1CoDone",
+        "    JMP $C866",
+        "P1CoDone:",
         "    RTS",
     ]
 
@@ -5235,6 +5326,15 @@ def fix_mirror_split(p):
     for _at in (0xD324, 0xD4BC):
         p.put(_at, [0x20, _xs["RaceWait"] & 0xFF, _xs["RaceWait"] >> 8, 0xEA],
               expect=[0xA5, 0xD4, 0x05, 0xCE])
+    # player 1 did not qualify, player 2 did: rom:D30D (the qualifying clock
+    # out, stopped) goes on to the race; rom:D31C keeps a sitting-out player
+    # 1 held; rom:D70A skips its contacts
+    p.put(0xD30D, [0x20, _xs["QualOut"] & 0xFF, _xs["QualOut"] >> 8, 0xEA],
+          expect=[0xA5, 0xD4, 0x05, 0xCE])
+    p.put(0xD31C, [0x4C, _xs["P1OutRace"] & 0xFF, _xs["P1OutRace"] >> 8, 0xEA],
+          expect=[0xA5, 0xDE, 0xD0, 0xE2])
+    p.put(0xD70A, [0x20, _xs["P1Coll"] & 0xFF, _xs["P1Coll"] >> 8],
+          expect=[0x20, 0x66, 0xC8])
     p.put(0xE617, [0x20, _xs["CrTimerX"] & 0xFF, _xs["CrTimerX"] >> 8, 0xEA],
           expect=[0xA6, 0xD4, 0xE0, 0x14])
     p.put(0xC87E, [0x20, _xs["ColZHi"] & 0xFF, _xs["ColZHi"] >> 8],

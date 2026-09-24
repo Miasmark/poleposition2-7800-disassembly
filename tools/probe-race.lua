@@ -1,4 +1,4 @@
--- probe-race.lua -- scripted two-player race (PHASES), state log; FREECLK=1 leaves player 1's clock alone
+-- probe-race.lua -- scripted two-player race (PHASES); FREECLK=1 frees player 1's race clock, FREECLK=2 the qualifying clock too
 -- coltest.lua -- both players scripted: PHASES "len:s1:s2:x1:lat2:hold;..."
 -- (speeds poked every frame; laterals set every frame when hold=1, once at the
 -- phase start when 0). Logs every contact: player 1's CrashStart (rom:C93E)
@@ -48,9 +48,9 @@ emu.register_frame_done(function()
   if os.getenv("RACEONLY") and st~=3 then return end
   local p,i=want()
   if p and (st==2 or st==3) then
-    if not (os.getenv("FREECLK") and st==3 and mem:read_u8(0xDE)==0 and mem:read_u8(0xDF)==0) then mem:write_u8(0xCE,p[2]) end; if mem:read_u8(0x2734)==0 then mem:write_u8(0x2753,p[3]) end
+    if not (os.getenv("FREECLK") and (st==3 or (os.getenv("FREECLK")=="2" and st==2)) and mem:read_u8(0xDE)==0 and mem:read_u8(0xDF)==0) then if mem:read_u8(0x2736)==0 then mem:write_u8(0xCE,p[2]) end end; if mem:read_u8(0x2734)==0 then mem:write_u8(0x2753,p[3]) end
     if p[6]==1 or i~=lastph then mem:write_u8(0xD1,p[4]&0xFF); mem:write_u8(0x2702,p[5]&0xFF) end
-    if not (os.getenv("FREECLK") and st==3) then mem:write_u8(0xDF,0x60); mem:write_u8(0xDE,0x00) end
+    if not (os.getenv("FREECLK") and (st==3 or (os.getenv("FREECLK")=="2" and st==2))) then mem:write_u8(0xDF,0x60); mem:write_u8(0xDE,0x00) end
     if i~=lastph then o:write(string.format("PHASE %d f%d\n",i,f)); lastph=i end
     if os.getenv("TRACE") then o:write(string.format("T f%d x1=%d x2=%d gap=%d cr1=%d cr2=%d\n",f,s8(mem:read_u8(0xD1)),-s8(mem:read_u8(0x2702)),s16(0x275C),mem:read_u8(0xD4),mem:read_u8(0x27B5))) end
   end
