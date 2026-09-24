@@ -990,6 +990,14 @@ def hud_reassert_src(addr):
         "RoadTail:",
         "    LDA $00FB",
         "    STA BACKGRND",
+        # and the cars' palettes, which the injection also set for the road
+        # (rom:EDC1-EDCB P7, rom:EDE2-EDEC P6). Without it player 1's car kept
+        # whatever the divider left: in $06 and $07 the start-light code there
+        # loads L_ECF8's P6/P7 for the banner, and player 1's car went green.
+        "    LDA #$0F", "    STA P7C1", "    STA P7C2", "    STA P7C3",
+        "    LDA #$2F", "    STA P6C1",
+        "    LDA #$26", "    STA P6C2",
+        "    LDA #$00", "    STA P6C3",
         "    JSR P2Frame",
         "    JMP $F143",
     ] + p2_walk_src() + [
@@ -1840,10 +1848,18 @@ def p2_drive_src():
         "    BEQ P2InitSkip",
         "    STA $%04X" % P2_PREV_STATE,
         # The banner runs during $10 and $11 with the car already rolling, so
-        # set up at the banner, not at $02.
+        # set up at the banner, not at $02 -- and before that at $06 and $07,
+        # the scenes the game draws once (rom:D994 / rom:D64E, both through
+        # rom:D8AC) for qualifying and for the race grid, so player 2's view
+        # shows its start too instead of whatever it last showed. The banner
+        # sets up again, as before.
         "    CMP #$10",
         "    BEQ P2DoInit",
         "    CMP #$11",
+        "    BEQ P2DoInit",
+        "    CMP #$06",
+        "    BEQ P2DoInit",
+        "    CMP #$07",
         "    BEQ P2DoInit",
         # $03 once more: player 1's race grid slot only exists once $03 begins.
         "    CMP #$%02X" % (0x02 if os.getenv("PP2_PLACE_ON_QUAL") else 0x03),
@@ -2335,7 +2351,10 @@ def p2_race_init_src():
         "    JSR P2ObjInit",                   # its object segment, lap, crash
         "    LDA $%04X" % GAME_STATE,
         "    CMP #$10",
+        "    BEQ P2RiQual",
+        "    CMP #$06",
         "    BNE P2RiRace",
+        "P2RiQual:",
         "    LDA #$00",                        # a new qualifying session
         "    STA $%04X" % P2_QST, "    STA $%04X" % P2_QPOS, "    STA $%04X" % P2_PARK,
         "    STA $%04X" % P2_RACE, "    STA $%04X" % P1_OUT,
@@ -2681,7 +2700,10 @@ def car_world_src():
         "    STA $%04X" % P2_LAPPH,
         "    LDA $%04X" % GAME_STATE,
         "    CMP #$10",                        # a new session: the score too
+        "    BEQ P2OiNew",
+        "    CMP #$06",                        #   (rom:D9BB clears player 1's at $06)
         "    BNE P2OiKeep",
+        "P2OiNew:",
         "    LDA #$00",
         "    STA $%04X" % P2_SCORE, "    STA $%04X" % (P2_SCORE + 1),
         "    STA $%04X" % (P2_SCORE + 2), "    STA $%04X" % P2_SCACC,
@@ -3385,6 +3407,12 @@ def hud_src():
         "    BPL HfP1b",
         "    LDA $1FC6", "    STA $%04X" % (B1 + 15),          # gear
         "    LDA $1FC7", "    STA $%04X" % (B1 + 16),
+        # player 1 sitting the race out: no clock of its own to show
+        "    LDA $%04X" % P1_OUT,
+        "    BEQ HfP1Clk",
+        "    LDA #$AB",
+        "    STA $%04X" % (B1 + 10), "    STA $%04X" % (B1 + 11), "    STA $%04X" % (B1 + 12),
+        "HfP1Clk:",
         # player 2's own clock once it is racing (hundreds blank if 0)
         "    LDA $%04X" % P2_RACE,
         "    BEQ HfClk",
@@ -4155,6 +4183,8 @@ def qual_src():
         "    BNE PoEnd",
         "    JMP $D6EB",
         "PoEnd:",
+        "    LDA #$00",                        # no cars-passed tally for a
+        "    STA $009E", "    STA $009F",      #   player 1 that sat it out
         "    JMP $D32D",
         # --- rom:D70A, `JSR sub_C866` (player 1's contacts): none while out
         "P1Coll:",
@@ -5513,6 +5543,11 @@ def fix_mirror_split(p):
 
     # rom:D713 -- the race tick's `JSR sub_E93D`, player 1's walk. P2Tick
     # makes that call and then walks player 2's track (see p2_tick_src).
+    # rom:D8BC, sub_D8AC's `JSR sub_E93D` (the scene set-up for $06, $07 and
+    # the attract race): P2Tick, which makes that call first, then player 2's
+    # own drive (its state watch sets it up for $06/$07) and geometry
+    p.put(0xD8BC, [0x20, p2_tick_addr & 0xFF, p2_tick_addr >> 8],
+          expect=[0x20, 0x3D, 0xE9])
     p.put(0xD713, [0x20, p2_tick_addr & 0xFF, p2_tick_addr >> 8],
           expect=[0x20, 0x3D, 0xE9])
     # rom:E70D -- the object rebuild's `JSR sub_E6D7`, reached once vblank has

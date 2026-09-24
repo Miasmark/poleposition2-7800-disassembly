@@ -6321,3 +6321,45 @@ each tick, so a slot off the list always starts clear.
 Checked (scripted race, both at 240): player 2 29 passes to player 1's 38
 (player 2 3,000-4,000 behind and crashing more); at its time-out the score
 rose by exactly 1,450 (29 × 50). Race tick rate unchanged at 100/600.
+
+## Cleanup: the pre-race views, player 1's car colour, sitting out
+
+Checkpoint 74. Compared frame for frame with the stock ROM through the
+pre-race states (`tools/probe-state-snaps.lua`: snapshots 2, 20 and 60 frames
+into every state):
+
+**Player 2's view before the banners.** Stock draws each scene once, on
+entering state `$06` (rom:D994, qualifying) and `$07` (rom:D64E, the race
+grid), through rom:D8AC. Player 2 was placed only at the banners (`$10`,
+`$11`), and its view is built by P2Tick on the race tick, which those states
+do not run. So through `$06`, `$07` and `$05` player 2's view showed whatever
+it last showed: a curve from the attract demo, or where it parked after
+qualifying. Now:
+- rom:D8BC, sub_D8AC's `JSR sub_E93D`, calls P2Tick, which makes that call
+  first and then runs player 2's drive and geometry;
+- the state watch sets player 2 up at `$06` (as at `$10`) and `$07` (as at
+  `$11`) as well. The banners set it up again, as before.
+
+Player 2's view now shows the start at `$06`, the two cars side by side
+through `$04`, and the race grid with its cars through `$07` and `$05`.
+Player 2's score now clears at `$06`, as rom:D9BB clears player 1's.
+
+**Player 1's car went green** in `$06` and `$07`, while the PREPARE banner
+scrolls; stock keeps it yellow. The cars' palettes (P6 `$2F $26 $00`, P7
+`$0F`) were set for the road by the injection itself (rom:EDC1-EDCB,
+rom:EDE2-EDEC). With the injection bypassed, player 1's car had been relying
+on the values MirrorPalette sets for the top view lasting all frame. The
+divider's copy of stock's start-light code (rom:ECDC-ED1A) loads L_ECF8's
+P6/P7 in `$06`/`$07`: in stock that runs every frame at the top, in the copy
+only in those two states, just above player 1's road. RoadTail, which stands
+in for the injection, now sets P6/P7 as the injection did.
+
+**Player 1 sitting out** (checkpoint 71's notes): the 1UP line shows no clock
+(it was frozen at the race-start value), and player 1's cars-passed count is
+cleared before rom:D32D, so a race player 1 sat out ends straight in game
+over with no `$08` tally (it had been credited one car, 50 points).
+
+Checked: the pre-race states against stock; the sit-out race (1UP clock
+blank, player 1's score unchanged at the end, game over without `$08`);
+health, state flow, integrity (0 on four) and race tick rate (100/600) the
+same as checkpoint 72.
