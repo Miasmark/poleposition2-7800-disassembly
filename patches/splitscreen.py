@@ -680,6 +680,11 @@ P2_RST = 0x2734              # 0 racing, 1 finished, 2 out of time
 P2_RACE = 0x2735             # nonzero: player 2 is in this race
 P1_OUT = 0x2736              # nonzero: player 1 did not qualify and sits the race out
 TICK_BUSY = 0x2737           # nonzero while P2Tick writes the curve and player 2's bands
+P2_PASSM = 0x2738            # 2: a bit per slot, the car was ahead of player 2 (0..$1FFF)
+P2_PASSN = 0x273A            # 2: cars player 2 has passed this race, BCD (lo, hi)
+P2_PASST = 0x273C            # the slot's bit, while testing it
+P2_PASSW = 0x273D            # 2: this tick's mask, being built
+P2_PASSY = 0x273F            # the list index, while testing a slot
 # MirrorStage's inputs, as last completed by P2Tick (VbTail copies them when
 # P2Tick is not mid-write). $1C38-$1C55 was RowCurveOffsetAlt's tail, written
 # only by the walk tail this build strips (rom:E9BE) and read only by
@@ -1333,6 +1338,7 @@ def _check_p2_ram():
         ("P2_QUAL", P2_QST, 6),
         ("P2_RACE", P2_CLOCK, 7),
         ("TICK_BUSY", TICK_BUSY, 1),
+        ("P2_PASS", P2_PASSM, 8),
         ("HUD_BUFS", HUD_BUF1, 62),
     ]
     regions.sort(key=lambda r: r[1])
@@ -3906,6 +3912,8 @@ def qual_src():
         "P2RaceGo:",                           # from P2RaceSlot, qualified
         "    LDA #$01", "    STA $%04X" % P2_RACE,
         "    LDA #$00",
+        "    STA $%04X" % P2_PASSM, "    STA $%04X" % (P2_PASSM + 1),   # rom:D08F
+        "    STA $%04X" % P2_PASSN, "    STA $%04X" % (P2_PASSN + 1),
         "    STA $%04X" % P2_RST, "    STA $%04X" % P2_CPH,
         "    LDA $00A7", "    STA $%04X" % P2_LAPN,         # player 1's count: 1 at
         "    LDA $00DE", "    STA $%04X" % P2_CLOCK,        #   the start, done at $C3
@@ -3921,6 +3929,7 @@ def qual_src():
         "    LDA $%04X" % GAME_STATE,
         "    CMP #$01", "    BEQ P2RtDone",
         "    CMP #$0E", "    BEQ P2RtDone",
+        "    JSR P2Pass",
         "    INC $%04X" % P2_CPH,
         "    LDA $%04X" % P2_CPH,
         "    CMP #$06",
@@ -3934,6 +3943,7 @@ def qual_src():
         "    BNE P2RtDone",
         "    LDA #$02", "    STA $%04X" % P2_RST,          # out of time
         "    LDA #$01", "    STA $%04X" % P2_PARK,
+        "    JMP P2PayCars",
         "P2RtDone:",
         "    RTS",
         # finished or out of time: once stopped, off the track -- not drawn in
@@ -3974,7 +3984,7 @@ def qual_src():
         "    DEX",
         "    BNE P2RlpBon",
         "    CLD",
-        "    RTS",
+        "    JMP P2PayCars",
         # rom:D324 / rom:D4BC, `LDA CrashTimer / ORA Speed` ahead of "stopped:
         # end of the race": still nonzero -- player 1 held at 0 in the race
         # tick (rom:D6EB) -- while player 2 is racing
@@ -3991,6 +4001,81 @@ def qual_src():
         "RwFree:",
         "    LDA #$00",
         "RwDone:",
+        "    RTS",
+
+        # --- player 2's cars passed, once a racing tick (from P2RaceTick).
+        # Player 1's rule (rom:CA25-CA86): a car -- not a sign or puddle, not
+        # the one being crashed into -- ahead by 0..$1FFF last tick and behind
+        # now is passed. In player 2's frame: its distance plus the gap. Not
+        # while the gap is pinned: it does not say where the cars are then.
+        "P2Pass:",
+        "    LDA $%04X" % GAP_HI,
+        "    CMP #$40", "    BEQ PpPin",
+        "    CMP #$C0", "    BNE PpGo",
+        "PpPin:",
+        "    LDA #$00",
+        "    STA $%04X" % P2_PASSM, "    STA $%04X" % (P2_PASSM + 1),
+        "    RTS",
+        "PpGo:",
+        # the listed slots only, as rom:C9F0 walks them: a slot off the list
+        # keeps a stale distance, which the moving gap would carry across 0
+        "    LDA #$00",
+        "    STA $%04X" % P2_PASSW, "    STA $%04X" % (P2_PASSW + 1),
+        "    LDY $00AE",
+        "    BMI PpDone",
+        "PpLoop:",
+        "    STY $%04X" % P2_PASSY,
+        "    LDX $19A4,Y",
+        "    TXA", "    AND #$07", "    TAY",
+        "    LDA PpBit,Y", "    STA $%04X" % P2_PASST,
+        "    TXA", "    LSR A", "    LSR A", "    LSR A", "    TAY",
+        "    LDA $19B4,X", "    AND #$07",
+        "    BNE PpNext",
+        "    CPX $%04X" % P2_CRSLOT,
+        "    BEQ PpNext",
+        "    CLC",
+        "    LDA $19C4,X", "    ADC $%04X" % GAP_LO,
+        "    LDA $19D4,X", "    ADC $%04X" % GAP_HI,
+        "    BMI PpBehind",
+        "    CMP #$20",
+        "    BCS PpNext",
+        "    LDA $%04X,Y" % P2_PASSW, "    ORA $%04X" % P2_PASST, "    STA $%04X,Y" % P2_PASSW,
+        "    JMP PpNext",
+        "PpBehind:",
+        "    LDA $%04X,Y" % P2_PASSM, "    AND $%04X" % P2_PASST,
+        "    BEQ PpNext",
+        "    SED",
+        "    CLC",
+        "    LDA $%04X" % P2_PASSN, "    ADC #$01", "    STA $%04X" % P2_PASSN,
+        "    LDA $%04X" % (P2_PASSN + 1), "    ADC #$00", "    STA $%04X" % (P2_PASSN + 1),
+        "    CLD",
+        "PpNext:",
+        "    LDY $%04X" % P2_PASSY,
+        "    DEY",
+        "    BPL PpLoop",
+        "PpDone:",
+        "    LDA $%04X" % P2_PASSW, "    STA $%04X" % P2_PASSM,
+        "    LDA $%04X" % (P2_PASSW + 1), "    STA $%04X" % (P2_PASSM + 1),
+        "    RTS",
+        "PpBit:",
+        "    .byte $01,$02,$04,$08,$10,$20,$40,$80",
+        # at player 2's finish or time-out: 50 a car, as the $08 tally pays
+        "P2PayCars:",
+        "    SED",
+        "PcLoop:",
+        "    LDA $%04X" % P2_PASSN,
+        "    ORA $%04X" % (P2_PASSN + 1),
+        "    BEQ PcDone",
+        "    SEC",
+        "    LDA $%04X" % P2_PASSN, "    SBC #$01", "    STA $%04X" % P2_PASSN,
+        "    LDA $%04X" % (P2_PASSN + 1), "    SBC #$00", "    STA $%04X" % (P2_PASSN + 1),
+        "    CLC",
+        "    LDA $%04X" % (P2_SCORE + 2), "    ADC #$50", "    STA $%04X" % (P2_SCORE + 2),
+        "    LDA $%04X" % (P2_SCORE + 1), "    ADC #$00", "    STA $%04X" % (P2_SCORE + 1),
+        "    LDA $%04X" % P2_SCORE, "    ADC #$00", "    STA $%04X" % P2_SCORE,
+        "    JMP PcLoop",
+        "PcDone:",
+        "    CLD",
         "    RTS",
 
         # --- rom:D30D, `LDA CrashTimer / ORA Speed` once the qualifying clock

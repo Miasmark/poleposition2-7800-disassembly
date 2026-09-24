@@ -6293,3 +6293,31 @@ is reclaimable time, and the main loop was missing its six-frame slot
 Still on the table for speed: `sub_E8AC` stages all 78 rows of
 `RowCurveYStaged` in the interrupt (~8% of samples) where this build reads a
 few, and the stock object pass (rom:CE40, 8.5%).
+
+## Player 2's cars-passed bonus
+
+Checkpoint 73.
+
+**Stock** (rom:C9F0-CA90, once a tick in the object move): a rival car (type 0),
+not the crash slot, whose distance was `$0000-$1FFF` ahead before the move
+and is negative after, adds one (BCD) to `$9E/$9F`. rom:D08F clears the count
+at race start. At the end of the race, rom:D32D/DB40 tally 50 points a car
+(state `$08`), after a clock-out as well as after the finish.
+
+**Player 2** (`P2Pass`, from `P2RaceTick`, once a racing tick): the same
+rule in player 2's frame, a car's distance plus the gap. A 16-bit mask holds
+"ahead within `$2000`" per slot; a car whose bit was set and is now behind
+counts. Not while the gap is pinned (it no longer says where the cars are),
+and not player 2's own crash car. At its finish or time-out (`P2PayCars`),
+50 a car goes straight onto its score, as its time bonus does. The count and
+mask are cleared in `P2RaceGo`, as rom:D08F clears player 1's.
+
+*Wrong turn:* C1 walked all 16 slots. Unused slots keep stale distances, and
+since player 2's distance includes the gap, a stale slot drifts across 0 as
+the gap moves: a false pass (seen: mask bits for slots 9-14 set all race).
+C2 walks the object list from `$AE`, as rom:C9F0 does, and rebuilds the mask
+each tick, so a slot off the list always starts clear.
+
+Checked (scripted race, both at 240): player 2 29 passes to player 1's 38
+(player 2 3,000-4,000 behind and crashing more); at its time-out the score
+rose by exactly 1,450 (29 × 50). Race tick rate unchanged at 100/600.
