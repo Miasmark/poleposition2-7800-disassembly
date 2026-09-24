@@ -1,3 +1,9 @@
+"""Summarise the scripted-race probes' V lines (tools/probe-race*.lua) from
+frame 5400: one line each time the state, the park/finish flags, the clock
+reaching 0 or either lap count changes.
+
+    python tools/race-summary.py out.txt [...]
+"""
 import re,sys
 for fn in sys.argv[1:]:
     print("==",fn.split("/")[-1]); last=None

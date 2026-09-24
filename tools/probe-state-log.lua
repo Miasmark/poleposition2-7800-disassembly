@@ -1,3 +1,5 @@
+-- probe-state-log.lua -- one line per game-state change: frame, state, player 1's
+-- clock and speed, player 2's speed, lap count. 12000 frames. Env: O.
 local M=(type(manager.machine)=="function") and manager:machine() or manager.machine
 local mem=M.devices[":maincpu"].spaces["program"]
 local f,last=0,-1; local o=io.open(os.getenv("O"),"w")

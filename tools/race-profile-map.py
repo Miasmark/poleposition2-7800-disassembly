@@ -1,5 +1,13 @@
+"""Map a race profile (tools/probe-race-profile.lua: pc,sp,count lines) to
+routine names -- the ROM's from src/rom.asm (regenerate it first; README,
+"Reproducing it"), plus the split-screen build's own symbols when a second
+argument is given. Prints the share of samples by routine, and main loop vs
+interrupt by SP.
+
+    python tools/race-profile-map.py profile.csv [patched]
+"""
 import sys, re, os, collections
-os.chdir(r"C:\Users\thuco\Documents\Atari 7800\Pole Position II")
+os.chdir(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 sys.path.insert(0, "patches")
 syms = []
 cur = None

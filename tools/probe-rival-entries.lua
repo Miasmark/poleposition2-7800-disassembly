@@ -1,3 +1,7 @@
+-- probe-rival-entries.lua -- at each rom:D719 (after the object list is built,
+-- states $02/$03), dump zero page $40-$FF, $1900-$1BFF (track and object
+-- tables) and $2700-$27FF (player 2's RAM block): up to 800 lines, 7000 frames.
+-- Input to tools/rival-car-model.py / rival-entries-check.py. Env: O.
 local M=(type(manager.machine)=="function") and manager:machine() or manager.machine
 local cpu=M.devices[":maincpu"]
 local mem=cpu.spaces["program"]

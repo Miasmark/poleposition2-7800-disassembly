@@ -1,3 +1,7 @@
+-- probe-hang.lua -- snapshots of where a stuck machine is: at each frame in AT
+-- (space-separated), PC, SP, 10 stack bytes, game state, DLI index, $E5, $B8 and
+-- the NMI count so far. Env: O, AT, FR. For "the clock froze"; a jump into
+-- data is tools/probe-wild-fetch.lua.
 local M=(type(manager.machine)=="function") and manager:machine() or manager.machine
 local cpu=M.devices[":maincpu"]; local mem=cpu.spaces["program"]
 local f=0; local o=io.open(os.getenv("O"),"w"); local nmi=0
