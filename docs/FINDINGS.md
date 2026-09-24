@@ -7100,3 +7100,64 @@ Options, none built:
 - **Palette cycling proper.** Kerb classes as colour indices, with the
   palette registers rotated each frame. There are not enough spare colours:
   palettes 2-5 are the road pieces, rivals and signs.
+
+## The far bands split in two, for the stripes
+
+Checkpoint 87. The user's suggestion, after the stripe finding above: cycle
+each far band separately, with one or two splits more.
+
+*What the log showed first:* player 1's far bands did cycle separately
+(patterns like `RRwwRwR`, `wRRwwRR`). But at speed the texture phase
+(`$CD`) moves about 6 a frame, and band 1 spans about 33 texture steps
+against a period of 30. One sample per band strobes, which reads as the far
+road flipping as a block.
+
+**Built.** Far bands 1-7 in both views are two 3-line zones:
+- **The halves.** The bottom half is the band's own list: MARIA counts a
+  3-line zone's page from +2 down, so it draws the band's lines 3-5 as
+  before. The top half has a 14-byte list of its own (road header, two
+  object slots, end) whose pages are 3 higher. Player 1's are at
+  `$2599-$25FA`, after the zone list, which is now 51 zones and 153 bytes.
+  Player 2's are at `$2200`, `$220E`, `$221C`, `$210F`, `$211D`, `$212B`
+  and `$1BCA`.
+- **Stripes.** Each half takes its own stripe, from row 6b+1 (top) and
+  6b+3 (bottom). Player 1's top rows are extra rows in `E8Lite`, so the
+  start line's palette-7 override covers them too. Player 2's are sampled
+  in `P2TopStage` at its own phase.
+- **The road slice.** Width field, x and the sheared slice are shared:
+  `SmApply` writes the slice into both headers, the top one 3 pages up.
+- **Objects.** At each object rebuild (10 Hz), `TopCopy2` (after `P2Emit`)
+  and `TopCopy1` (after the game's rebuild at rom:E6D7) copy the band's
+  first two objects into its top list with their page raised by 3. Unused
+  slots are parked as the game parks them (x `$A1`, width 1; a wide object
+  parked at 161 would wrap onto the left edge). Player 2's emitter fills
+  in order. Player 1's objects sit in fixed slots by kind, so the copy
+  searches the slots each band was seen to use: +4/+8 cars, +24 signs,
+  +28/+32 others, and +20 in band 7, player 1's own car's top. Measured
+  over three recordings, a far band never held more than three objects,
+  and rarely more than two. A third object, or one in an unexpected slot,
+  draws in the band's bottom half only.
+- **Layout.** Display interrupt index 8 was placed by zone count (clamped
+  to the view's last zone); it is now pinned to the last zone. The zone
+  list's boot template grew 42 bytes, so `P2_TEMPLATE` moved to `$EE3A`.
+
+*The cost, measured* (race tick rate, six starts, both cars at 240 in
+traffic):
+
+    no split (checkpoint 86)          98-100
+    split, pointer search, all slots  83-95
+    split, copies off (test hook)     93-100
+    split, unrolled copies (kept)     94-100
+
+The first copy was a generic loop through a zero-page pointer over all
+eight slots, and it cost about 9 ticks. Unrolled over each band's known
+slots, with player 2's empty slots just parked, it costs about 2-3.
+`TopInit`, first unrolled at about 980 bytes, overran the code area; it is
+a template table and a loop now. The code area ends at `$6942`, against
+`$69FF`.
+
+*Checked:* on screen, the far kerbs alternate red and white within each band
+and the centre dashes reach the far road, in both views. The far car draws
+whole across the seam. List integrity is 0 on four recordings, and health
+has the normal shape. `PP2_NO_SPLIT=1` builds without it.
+`PP2_NO_TOPCOPY` (test hook) leaves the top halves without objects.

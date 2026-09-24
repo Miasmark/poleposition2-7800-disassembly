@@ -333,7 +333,13 @@ FINE_LINES = int(os.environ.get("PP2_FINE_LINES", "2"))   # scanlines per mirror
 FINE_BAND_LAST = int(os.environ.get("PP2_FINE_LAST", "0"))
 SUBS_PER_BAND = 6 // FINE_LINES
 FINE_ZONES = FINE_BAND_LAST * SUBS_PER_BAND
-MIRROR_ZONES = FINE_ZONES + (12 - FINE_BAND_LAST)
+# Far bands drawn as two 3-line zones (checkpoint 87), so each half takes
+# its own stripe palette: the top half from a short list of its own (the road,
+# two object slots, the end), the bottom half from the band's list.
+SPLIT_BANDS = [] if os.getenv("PP2_NO_SPLIT") else [1, 2, 3, 4, 5, 6, 7]
+TOP_K = 2                    # object slots in a top-half list
+TOP_SIZE = 4 + 4 * TOP_K + 2
+MIRROR_ZONES = FINE_ZONES + (12 - FINE_BAND_LAST) + len(SPLIT_BANDS)
 # Both views are built from the same plan now, so the zone list is two of them
 # plus the fixed furniture: the top margin and gap, the carrier, three divider
 # rows, the horizon, the decor strip and two bottom margin zones.
@@ -415,7 +421,7 @@ def p2_dl_bytes():
     n = lay[12]["addr"] + lay[12]["obj"] + 4 * P2_BAND_SLOTS[12] + 2 - P2_DL_BASE
     assert n <= 256, "player 2's lists are %d bytes; offsets reach 256" % n
     return n
-P2_TEMPLATE = 0xEE10
+P2_TEMPLATE = 0xEE3A         # after DLL_TEMPLATE, 153 bytes with the split
 
 # A constant added to player 2's road x. Zero makes the two views identical
 # again, which is the regression check; anything else drives the viewports
@@ -707,13 +713,13 @@ P2_PASSY = 0x273F            # the list index, while testing a slot
 # all four tracks and 0923-0205 the attract demo). "untouched": never written
 # either. Free for new work; claim a range by moving it out of this list.
 FREE_RAM = [
-    (0x0092, 0x009B, "zero page: injection colour rows and the dead curve copy (patched out)"),
+    (0x0097, 0x009B, "zero page: injection colour rows and the dead curve copy (patched out)"),
     (0x1B36, 0x1B4D, "RowCurveXStaged's tail: the dead curve copy's target (patched out)"),
-    (0x1BCA, 0x1BE9, "RowCurveXStagedSrc's tail: the stripped walk tail's output"),
+    (0x1BD8, 0x1BE9, "RowCurveXStagedSrc's tail: the stripped walk tail's output"),
     (0x202E, 0x203F, "untouched"),
-    (0x210F, 0x213F, "untouched (below the stack's reach)"),
-    (0x2200, 0x2233, "stock race DLL, replaced by DLL_BASE; untouched"),
-    (0x256F, 0x25FF, "past the end of DLL_BASE's 37 zones; untouched"),
+    (0x2139, 0x213F, "untouched (below the stack's reach)"),
+    (0x222A, 0x2233, "stock race DLL, replaced by DLL_BASE; untouched"),
+    (0x25FB, 0x25FF, "past the end of DLL_BASE's 51 zones and the top-half lists"),
 ]
 # Player 2's skybox (checkpoint 77): its heading, as $C9/$CA/$CB are player
 # 1's (rom:DBDF), and its two display lists, built as rom:DC60/DC89 build
@@ -835,6 +841,12 @@ SM_DX1 = 0x0079              # 7:   and x adjustment
 SM_W2 = 0x0080               # 7: player 2's
 SM_DX2 = 0x0087              # 7
 SM_T = 0x008E                # 4: SmSelect's scratch
+TC_Z = 0x0092                # 5: TopCopy's pointer (2), band, dest, count
+# the top-half lists: player 1's in the free page after the zone list,
+# player 2's in the free pieces elsewhere (TOP_SIZE each)
+P1_TOP = {b: 0x2599 + TOP_SIZE * i for i, b in enumerate([1, 2, 3, 4, 5, 6, 7])}
+P2_TOP = dict(zip([1, 2, 3, 4, 5, 6, 7],
+                  [0x2200, 0x220E, 0x221C, 0x210F, 0x211D, 0x212B, 0x1BCA]))
 OVL_COL = 0x7000             # 16 pages: 5 blank, the overlay's 6, 5 blank --
 OVL_HI = 0x75                #   blank so any band's six lines read zero past
 OVL_LINE0 = 14               #   the overlay. Low bytes $00-$27 only (5 x 8).
@@ -1139,6 +1151,7 @@ def hud_reassert_src(addr):
         "    BNE MiLoop1",
         "    JSR P2HudInit",
         "    JSR SmInit",
+        "    JSR TopInit",
     ] + ([] if os.getenv("PP2_NO_MINI_COPY") else _mini_copy_src()) + [
         "    JMP P2BuildLists",                 # in the helpers, for room
         # Once per frame, straight after the game stages the per-scanline road
@@ -1155,7 +1168,7 @@ def hud_reassert_src(addr):
         [] if os.getenv("PP2_KEEP_INJECTION") else road_stage_src()
     ) + p2_stage_src() + p2_car_src() + [
         "    RTS",
-    ] + p2_stage_tables() + p2_slot_tables() + ["P2Emit = $%04X" % _ext()[1]["P2Emit"], "SmSelect = $%04X" % _ext()[1]["SmSelect"], "SmInit = $%04X" % _ext()[1]["SmInit"], "VbTail = $%04X" % _ext()[1]["VbTail"], "P2ObjSeg = $%04X" % _ext()[1]["P2ObjSeg"], "P2ObjInit = $%04X" % _ext()[1]["P2ObjInit"], "P2Collide = $%04X" % _ext()[1]["P2Collide"], "P2Clear = $%04X" % _ext()[1]["P2Clear"], "HudTick = $%04X" % _ext()[1]["HudTick"], "PvpCrash = $%04X" % _ext()[1]["PvpCrash"], "P2RaceSlot = $%04X" % _ext()[1]["P2RaceSlot"], "P2RaceLane = $%04X" % _ext()[1]["P2RaceLane"], "P2Ctl = $%04X" % _ext()[1]["P2Ctl"], "HudFill = $%04X" % _ext()[1]["HudFill"], "P2CrashTick = $%04X" % _ext()[1]["P2CrashTick"], "P2BuildLists = $%04X" % _rival_helpers()[1]["P2BuildLists"]] + [
+    ] + p2_stage_tables() + p2_slot_tables() + ["P2Emit = $%04X" % _ext()[1]["P2Emit"], "SmSelect = $%04X" % _ext()[1]["SmSelect"], "TopInit = $%04X" % _ext()[1]["TopInit"], "TopCopy1 = $%04X" % _ext()[1]["TopCopy1"], "TopCopy2 = $%04X" % _ext()[1]["TopCopy2"], "P2TopStage = $%04X" % _ext()[1]["P2TopStage"], "SmInit = $%04X" % _ext()[1]["SmInit"], "VbTail = $%04X" % _ext()[1]["VbTail"], "P2ObjSeg = $%04X" % _ext()[1]["P2ObjSeg"], "P2ObjInit = $%04X" % _ext()[1]["P2ObjInit"], "P2Collide = $%04X" % _ext()[1]["P2Collide"], "P2Clear = $%04X" % _ext()[1]["P2Clear"], "HudTick = $%04X" % _ext()[1]["HudTick"], "PvpCrash = $%04X" % _ext()[1]["PvpCrash"], "P2RaceSlot = $%04X" % _ext()[1]["P2RaceSlot"], "P2RaceLane = $%04X" % _ext()[1]["P2RaceLane"], "P2Ctl = $%04X" % _ext()[1]["P2Ctl"], "HudFill = $%04X" % _ext()[1]["HudFill"], "P2CrashTick = $%04X" % _ext()[1]["P2CrashTick"], "P2BuildLists = $%04X" % _rival_helpers()[1]["P2BuildLists"]] + [
 
         "WrapSlot0:",
         "    CMP #$A0",
@@ -1345,12 +1358,17 @@ def road_stage_src():
             sm = b in SMOOTH                      # a sheared slice: its own
             lines += ["    LDA $%04X" % (ROW_CURVE_Y + i)] + (   # width and x adjustment
                 ["    AND #$E0", "    ORA $%02X" % (SM_W1 + b - 1)] if sm else []) + [
-                      "    STA $%04X" % (band + 1),
-                      "    LDA $%04X" % (STG_ROFF + b),   # RowCurveOffset[i], staged
+                      "    STA $%04X" % (band + 1)]
+            if b in SPLIT_BANDS:                  # the top half: its own stripe
+                lines += ["    LDA $%04X" % (ROW_CURVE_Y + 6 * b + 1)] + (
+                    ["    AND #$E0", "    ORA $%02X" % (SM_W1 + b - 1)] if sm else []) + [
+                    "    STA $%04X" % (P1_TOP[b] + 1)]
+            lines += ["    LDA $%04X" % (STG_ROFF + b),   # RowCurveOffset[i], staged
                       "    CLC",
                       "    ADC #$%02X" % band_base(i)] + (
                 ["    CLC", "    ADC $%02X" % (SM_DX1 + b - 1)] if sm else []) + [
-                      "    STA $%04X" % (band + 3)]
+                      "    STA $%04X" % (band + 3)] + (
+                ["    STA $%04X" % (P1_TOP[b] + 3)] if b in SPLIT_BANDS else [])
         else:
             # Both of the near band's halves are rebuilt here. Neither of the
             # arrays the stock injection reads survives the walk-tail strip:
@@ -1486,6 +1504,9 @@ def _check_p2_ram():
         ("P2_QUAL", P2_QST, 6),
         ("P2_TBS", P2_TBS, 1),
         ("SM", SM_IX, 0x2B),
+        ("TC", TC_Z, 5),
+    ] + [("P1_TOP%d" % b, P1_TOP[b], TOP_SIZE) for b in SPLIT_BANDS] + [
+        ("P2_TOP%d" % b, P2_TOP[b], TOP_SIZE) for b in SPLIT_BANDS] + [
         ("P2_RACE", P2_CLOCK, 7),
         ("TICK_BUSY", TICK_BUSY, 1),
         ("P2_PASS", P2_PASSM, 8),
@@ -1754,7 +1775,11 @@ def p2_tick_src():
         "    DEX",
         "    BPL P2OcClear",
         "    JSR P2Emit",
-        "    JMP $E6D7",                       # then the game's own rebuild
+    ] + (["    JMP $E6D7"] if os.getenv("PP2_NO_TOPCOPY") else [   # test hook
+        "    JSR TopCopy2",                    # player 2's top halves
+        "    JSR $E6D7",                       # then the game's own rebuild
+        "    JMP TopCopy1",                    #   and player 1's top halves
+    ]) + [
     ]
 
 
@@ -1762,7 +1787,13 @@ def p2_plan():
     """Player 2's viewport: the same zone shape as player 1's, but every zone
     pointed at player 2's own display list rather than the shared road."""
     lay = p2_band_layout()
-    return [(6, lay[b]["addr"], None) for b in range(1, 13)]
+    out = []
+    for b in range(1, 13):
+        if b in SPLIT_BANDS:
+            out += [(3, P2_TOP[b], None), (3, lay[b]["addr"], None)]
+        else:
+            out.append((6, lay[b]["addr"], None))
+    return out
 
 
 def p2_dl_template():
@@ -1972,9 +2003,12 @@ def smooth_far_src():
     for view, L, W, DX in (("P1", {b: ALL_ROAD_BANDS[b] for b in bands}, SM_W1, SM_DX1),
                            ("P2", {b: lay[b]["addr"] for b in bands}, SM_W2, SM_DX2)):
         for b in bands:
+            top = (P1_TOP if view == "P1" else P2_TOP).get(b) if b in SPLIT_BANDS else None
             out += ["    LDY $%02X" % (SM_IX + k),
-                    "    LDA SmLo,Y", "    STA $%04X" % L[b],
-                    "    LDA SmHi,Y", "    STA $%04X" % (L[b] + 2),
+                    "    LDA SmLo,Y", "    STA $%04X" % L[b]] + (
+                   ["    STA $%04X" % top] if top else []) + [
+                    "    LDA SmHi,Y", "    STA $%04X" % (L[b] + 2)] + (
+                   ["    CLC", "    ADC #$03", "    STA $%04X" % (top + 2)] if top else []) + [
                     "    LDA SmW,Y", "    STA $%02X" % (W + b - 1),
                     "    LDA SmDx,Y", "    STA $%02X" % (DX + b - 1)]
             k += 1
@@ -1997,6 +2031,108 @@ def smooth_far_src():
                          for i in range(0, 256, 16)]
     for key, lab in (("lo", "SmLo"), ("hi", "SmHi"), ("w", "SmW"), ("dx", "SmDx")):
         out += ["%s:" % lab, "    .byte " + ",".join("$%02X" % v for v in tab[key])]
+    return out
+
+
+def top_half_src():
+    """The far bands' top-half lists (checkpoint 87).
+
+    TopInit, at boot: each list is the band's road header two pages... three
+    pages up (MARIA counts a zone's graphics page down from its height, so a
+    3-line zone reads pages +2..+0 and the band's top lines are +5..+3),
+    parked object slots and the end. TopCopy2 / TopCopy1, after each object
+    rebuild (10 Hz): the band's first TOP_K objects, pages +3, into its top
+    list; slots left over parked (x $A1, width 1 -- a wide object at 161
+    would wrap onto the left edge). Player 2's emitter fills its slots in
+    order, so its first TOP_K are copied as they are; player 1's objects sit
+    in fixed slots by kind (cars from +4, signs at +24), so its eight are
+    searched.
+    """
+    if not SPLIT_BANDS:
+        return ["TopInit:", "TopCopy1:", "TopCopy2:", "P2TopStage:", "    RTS"]
+    lay = p2_band_layout()
+    import io as _io
+    _rom = bytearray(_io.open(load_source()[0], "rb").read())
+    _rom = _rom[len(_rom) - ROM_SIZE:]
+    # player 2's top halves, every frame from p2_stage_src: their own stripe
+    # at row 6b+1, the band's width field and x (X is left alone)
+    out = ["P2TopStage:"]
+    for b in SPLIT_BANDS:
+        off = _rom[ROW_TEX_INDEX + 6 * b + 1 - BASE]
+        assert off + 29 <= 0xFF
+        out += ["    LDA $%04X" % P2_PHASE, "    CLC", "    ADC #$%02X" % off,
+                "    TAY", "    LDA $%04X,Y" % STRIPE_TEX]
+        out += (["    ORA $%02X" % (SM_W2 + b - 1)] if SMOOTH
+                else ["    ORA #$%02X" % STOCK_WIDTH_FIELD[b]])
+        out += ["    STA $%04X" % (P2_TOP[b] + 1),
+                "    LDA $%04X" % (lay[b]["addr"] + 3),
+                "    STA $%04X" % (P2_TOP[b] + 3)]
+    out += ["    RTS"]
+    # TopInit: each list from its template (the band's road header three
+    # pages up, parked slots, the end); the same template serves both views
+    out += ["TopInit:"]
+    for view, T in (("P1", P1_TOP), ("P2", P2_TOP)):
+        for i, b in enumerate(SPLIT_BANDS):
+            out += ["    LDX #$%02X" % (TOP_SIZE - 1),
+                    "Ti%s%d:" % (view, b),
+                    "    LDA TopTpl+%d,X" % (i * TOP_SIZE),
+                    "    STA $%04X,X" % T[b],
+                    "    DEX",
+                    "    BPL Ti%s%d" % (view, b)]
+    out += ["    RTS", "TopTpl:"]
+    for b in SPLIT_BANDS:
+        lo, hi = BAND_GFX[b]
+        tpl = [lo, STOCK_WIDTH_FIELD[b], hi + 3, 0xA1] + [0x00, 0x1F, 0x00, 0xA1] * TOP_K + [0, 0]
+        out += ["    .byte " + ",".join("$%02X" % v for v in tpl)]
+    # player 2: its first TOP_K slots as they are; an empty one is parked
+    out += ["TopCopy2:"]
+    for b in SPLIT_BANDS:
+        src = lay[b]["addr"] + lay[b]["obj"]
+        for k in range(TOP_K):
+            s0, d0 = src + 4 * k, P2_TOP[b] + 4 + 4 * k
+            lab = "Tc2%d%d" % (b, k)
+            out += ["    LDA $%04X" % (s0 + 3), "    STA $%04X" % (d0 + 3),
+                    "    CMP #$A1", "    BEQ %sp" % lab,
+                    "    LDA $%04X" % s0, "    STA $%04X" % d0,
+                    "    LDA $%04X" % (s0 + 1), "    STA $%04X" % (d0 + 1),
+                    "    LDA $%04X" % (s0 + 2), "    CLC", "    ADC #$03", "    STA $%04X" % (d0 + 2),
+                    "    JMP %sd" % lab,
+                    "%sp:" % lab,
+                    "    LDA #$1F", "    STA $%04X" % (d0 + 1),
+                    "%sd:" % lab]
+    out += ["    RTS"]
+    # player 1: the first TOP_K used slots, searched unrolled -- only the
+    # slots each band was seen to use (tools/probe: three recordings; +4/+8
+    # cars, +24 signs, +28/+32 others; +20 in band 7 is player 1's own car's
+    # top). An object in another slot draws in the band's bottom half only.
+    assert TOP_K == 2
+    P1_TOP_SLOTS = {1: (0, 1, 5, 6), 2: (0, 1, 5, 6), 3: (0, 1, 5, 6, 7), 4: (0, 1, 5, 6, 7),
+                    5: (0, 1, 5, 6, 7), 6: (0, 1, 5, 6, 7), 7: (0, 1, 2, 4, 5, 6, 7)}
+    out += ["TopCopy1:"]
+    for b in SPLIT_BANDS:
+        src0 = ALL_ROAD_BANDS[b] + 4
+        d = P1_TOP[b] + 4
+        out += ["    LDX #$00"]
+        for sl in P1_TOP_SLOTS[b]:
+            sa = src0 + 4 * sl
+            lab = "Tc1%d%d" % (b, sl)
+            out += ["    LDA $%04X" % (sa + 3), "    CMP #$A1", "    BEQ %s" % lab,
+                    "    STA $%04X,X" % (d + 3),
+                    "    LDA $%04X" % (sa + 2), "    CLC", "    ADC #$03", "    STA $%04X,X" % (d + 2),
+                    "    LDA $%04X" % (sa + 1), "    STA $%04X,X" % (d + 1),
+                    "    LDA $%04X" % sa, "    STA $%04X,X" % d,
+                    "    CPX #$04", "    BNE %sn" % lab,
+                    "    JMP Tc1%dz" % b,               # the second: done
+                    "%sn:" % lab,
+                    "    LDX #$04",
+                    "%s:" % lab]
+        out += ["    LDA #$1F", "    STA $%04X,X" % (d + 1),     # park from X on
+                "    LDA #$A1", "    STA $%04X,X" % (d + 3),
+                "    CPX #$04", "    BEQ Tc1%dz" % b,
+                "    LDA #$1F", "    STA $%04X" % (d + 5),
+                "    LDA #$A1", "    STA $%04X" % (d + 7),
+                "Tc1%dz:" % b]
+    out += ["    RTS"]
     return out
 
 
@@ -4873,7 +5009,7 @@ def _ext():
         lines = ([".org $%04X" % EXT_ADDR] + fast_zrow_src() + rival_car_src()
                  + ["P2Emit:"] + p2_emit_src() + ["    RTS"] + p2_slot_tables()
                  + car_world_src() + p2_hazard_src() + hud_src() + audio_src()
-                 + qual_src() + vbl_src() + smooth_far_src())
+                 + qual_src() + vbl_src() + smooth_far_src() + top_half_src())
         _EXT.append(_assemble(lines))
     return _EXT[0]
 
@@ -4913,7 +5049,7 @@ def vbl_src():
         # down the screen, ORed with $1F3C[row]; then $E0 into those rows
         # between $E6 and $E7 (rom:E927, the sign stripe).
         "E8Lite:",
-        "    LDX #$0C",
+        "    LDX #$%02X" % (12 + len(SPLIT_BANDS)),
         "ElRow:",
         "    STX $%04X" % E8L_T,
         "    LDA ElRows,X",
@@ -4948,6 +5084,8 @@ def vbl_src():
         "    RTS",
         "ElRows:",
         "    .byte " + ",".join("$%02X" % (6 * b + BAND_SAMPLE) for b in range(13)),
+    ] + (["    .byte " + ",".join("$%02X" % (6 * b + 1) for b in SPLIT_BANDS)]
+         if SPLIT_BANDS else []) + [
         "QMsg:",
         "    LDA $009D",
         "    CMP #$12", "    BEQ QmOn",
@@ -6319,6 +6457,10 @@ def p2_stage_src():
         "    BNE P2StFar",
     ]
 
+    # --- the far bands' top halves (checkpoint 87), in the $4000 area
+    if SPLIT_BANDS:
+        lines += ["    JSR P2TopStage"]
+
     # --- near bands: two road objects, slot0 a fixed $3C to the left ------
     lines += ["P2StNear:"]
     lines += stripe()
@@ -6392,6 +6534,8 @@ def mirror_plan():
             for _ in range(SUBS_PER_BAND):
                 plan.append((FINE_LINES, MINI_DL_BASE + k * MINI_DL_SIZE, k))
                 k += 1
+        elif b in SPLIT_BANDS:
+            plan += [(3, P1_TOP[b], None), (3, ALL_ROAD_BANDS[b], None)]
         else:
             plan.append((6, ALL_ROAD_BANDS[b], None))
     return plan
@@ -6421,7 +6565,8 @@ def dll_template():
     # chain link that no zone carries simply never fires, taking every
     # interrupt after it with it. Clamped, so the count can change freely.
     top = p2_plan()                                   # player 2's viewport
-    idx8_at = min(IDX8_SUB, len(top) - 1)
+    # its zone: the view's last (the split added zones, so a count would move it)
+    idx8_at = min(IDX8_SUB, len(top) - 1) if os.getenv("PP2_IDX8") else len(top) - 1
     for n, (lines, dl, mini) in enumerate(top):
         dli = 0x80 if n == idx8_at else 0x00
         z.append([(lines - 1) | dli, dl >> 8, dl & 0xFF])
