@@ -7025,3 +7025,78 @@ build in 68 bytes, all in pages `$A5` and `$B0-$B9`.
 held in a Lua local that nothing referenced after set-up, so they were
 garbage-collected. Keep tap handles in a global, as
 `tools/probe-rom-coverage.lua` does.
+
+## Far-band smoothing: sheared road slices, bands 1-5
+
+Checkpoint 86. The user's call: the far bands looked worst ("outright
+disconnected" on sharp turns), and their slices are narrow, so start there.
+
+**What each band draws.** Band b's six lines are pages `hi+5` (top) to `hi`
+at `BAND_GFX[b]`. Its width field is constant per band in `$1F3C` (`$18
+$14 $10 $0C $0A $06 $02` for bands 1-7: 8, 12, 16, 20, 22, 26, 30 bytes),
+ORed with the stripe texture (`$00`/`$20`, palette 0 or 1). Its x is the
+curve at the sample row plus a fixed perspective base, which is the same in
+both views (`band_base` = `OC_BASE` by band).
+
+**The slices.** `smooth_art()` builds, for each band and each shear s, a
+copy whose line k moves s*(k-3) px, so the sample row stays put. Each copy
+is trimmed to its content, and its start (dx) is kept for x. The taper
+helps: a +/-1 shear of band 7 is 29 bytes, narrower than stock. The ranges
+cover each band's measured worst slope: +/-5, 4, 4, 3, 3 px a line for bands
+1-5. That is 38 copies, 630 bytes a line, first-fit packed into three
+6-page columns: `$70-$75` and `$76-$7B` at low bytes `$28-$FF` (beside the
+highlight art), and `$6A-$6F`. `EXT_END` is now `$69FF`.
+
+**Choosing and applying.**
+- `SmSelect`, at the end of each tick (`P2Tick`, main loop, 10 Hz), picks
+  each band's slice. The slope is the curve's change over twelve rows,
+  either side of the band. For player 1 that is `RowCurveOffset` at the
+  neighbouring sample rows. For player 2 it is `P2_BANDX` less the bases,
+  plus the camera's lateral term (12 x step, signed as the camera signs it).
+  `SmDiv` divides by 12 and rounds, and each band's range clamps it.
+- `SmApply`, in `VbTail` once the tick's values are whole (both views
+  drawn), writes the slice's address into the header, and its width field
+  and dx into zero page (`SM_W1/SM_DX1`, `SM_W2/SM_DX2`; `$67-$91`).
+- Every frame, the stage code ORs the width field into the band's width byte
+  and adds dx to its x. Player 2's far loop got shorter: `ORA zp,X` replaces
+  a two-table lookup.
+
+*Wrong turn, measured:* the first form chose and applied every frame at the
+end of `MirrorStage`, about 60 cycles a band for ten bands. That cost the
+race 69-99 ticks in 100 over six starts (97-100 without). Split as above:
+98-100.
+
+*Checked:* on screen, a hard bend's far road goes from disconnected slabs to
+one continuous edge, with lane marks and kerb edges following it, in both
+views. List integrity is 0 on four recordings. Health has the same shape;
+the timing shift moves the recorded inputs a little (run-03's qualifying
+message ends 380 frames earlier). `PP2_NO_SMOOTH=1` builds without it.
+Bands 6-7 are still stepped where they meet band 5.
+
+### The far stripes are per band, and always have been since checkpoint 6
+
+Raised by the user: "the palette cycling is not reaching the far bands".
+The kerb stripes and the centre dashes are the stripe texture choosing each
+road line's palette: 0 (`$0F` white kerb, `P0C2` dash) or 1 (`$34` red kerb,
+dash the road's `$04`). The stock injection set it line by line. Since the
+injection was dropped (checkpoint 6), each band has one palette for all six
+lines. `dat_C07E` falls about 6 a row in band 1 and 2 a row in band 7,
+against a texture half-period of 15. So a far stripe is 2.5-7.5 rows long,
+shorter than a band. The stock game shows fine red/white kerbs and dashes
+to the horizon; this build shows each far band in one colour, and a band on
+palette 1 has no centre dash. It is aliasing from the band sample. The
+smoothing did not cause it; with the edges now continuous it is easier to
+see.
+
+Options, none built:
+- **A mid-band change by display interrupt.** Split each far band into two
+  3-line zones sharing one list, with an interrupt between them rewriting
+  the page and palette of every header in the band (road and objects). It
+  needs no `WSYNC`, but costs about 14 interrupts a frame plus one write per
+  object, and the interrupt chain is where the budget is tight.
+- **Stripe patterns baked into the slices.** A band's six-line pattern
+  depends on the texture phase (up to about 30 patterns a band) and would
+  multiply the sheared copies. It needs far more ROM than there is.
+- **Palette cycling proper.** Kerb classes as colour indices, with the
+  palette registers rotated each frame. There are not enough spare colours:
+  palettes 2-5 are the road pieces, rivals and signs.

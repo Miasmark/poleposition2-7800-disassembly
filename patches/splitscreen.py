@@ -199,8 +199,10 @@ ROM_SIZE = 32768                 # the SOURCE ROM, as dumped
 OUT_BASE = 0x4000
 OUT_SIZE = 49152
 EXT_ADDR = 0x4000                # the object code's own area
-EXT_END = 0x6FFF                 # $7000-$7FFF: the highlight column (low
-                                 #   bytes $00-$27) and the HUD row lists ($7FE0)
+EXT_END = 0x69FF                 # $6A00-$6FFF: sheared road slices;
+                                 # $7000-$7FFF: the highlight column (low
+                                 #   bytes $00-$27), more slices ($28-$FF of
+                                 #   $70-$7B) and the HUD row lists ($7FE0)
 
 ROM_NAME = "Pole Position II (NTSC) (Atari) (1987) (A85FB962).a78"
 SOURCES = [
@@ -705,7 +707,7 @@ P2_PASSY = 0x273F            # the list index, while testing a slot
 # all four tracks and 0923-0205 the attract demo). "untouched": never written
 # either. Free for new work; claim a range by moving it out of this list.
 FREE_RAM = [
-    (0x0067, 0x009B, "zero page: injection colour rows and the dead curve copy (patched out)"),
+    (0x0092, 0x009B, "zero page: injection colour rows and the dead curve copy (patched out)"),
     (0x1B36, 0x1B4D, "RowCurveXStaged's tail: the dead curve copy's target (patched out)"),
     (0x1BCA, 0x1BE9, "RowCurveXStagedSrc's tail: the stripped walk tail's output"),
     (0x202E, 0x203F, "untouched"),
@@ -782,6 +784,7 @@ BAND_GFX = [(0x00, 0x80), (0x06, 0x80), (0x0E, 0x80), (0x00, 0xAA),
 # width and x change per frame but NOT per scanline (the injection never
 # touches this slot), so all three sub-zones of a band share one value.
 # None is a band whose second slot stays empty.
+STOCK_WIDTH_FIELD = {1: 0x18, 2: 0x14, 3: 0x10, 4: 0x0C, 5: 0x0A, 6: 0x06, 7: 0x02}
 BAND_SLOT1 = [None] * 8 + [(0x47, 0x80), (0x69, 0x80), (0x8D, 0x80),
                            (0xB5, 0x80), (0xE1, 0x80)]
 
@@ -817,6 +820,21 @@ P2_BAND_SLOTS = {b: (3 if b <= 8 else 2) for b in range(1, 13)}   # P2BuildLists
 # 30-page column $8B-$A8, six pages a band), which is band 9's top four lines
 # and band 8's bottom two.
 P2_OVL = not os.getenv("PP2_NO_OVL")
+# Far-band smoothing (checkpoint 86): each far band draws from a copy of its
+# road slice whose six lines are already offset by s px a line, s the band's
+# slope rounded; x and width are adjusted for the copy's padding. Band ->
+# the largest |s| kept (its measured worst slope, docs/FINDINGS.md "Curve
+# smoothing, re-evaluated").
+SMOOTH = {} if os.getenv("PP2_NO_SMOOTH") else {1: 5, 2: 4, 3: 4, 4: 3, 5: 3}
+SMOOTH_COLS = [(0x70, 0x28), (0x76, 0x28), (0x6A, 0x00)]   # 6-page columns:
+                                                           #   first page, first low byte
+SM_IX = 0x0067               # 10: each smoothed band's slice index, P1's then P2's
+SM_NEW = 0x0071              # set by SmSelect, cleared by SmApply
+SM_W1 = 0x0072               # 7: player 1's far bands 1-7, width field
+SM_DX1 = 0x0079              # 7:   and x adjustment
+SM_W2 = 0x0080               # 7: player 2's
+SM_DX2 = 0x0087              # 7
+SM_T = 0x008E                # 4: SmSelect's scratch
 OVL_COL = 0x7000             # 16 pages: 5 blank, the overlay's 6, 5 blank --
 OVL_HI = 0x75                #   blank so any band's six lines read zero past
 OVL_LINE0 = 14               #   the overlay. Low bytes $00-$27 only (5 x 8).
@@ -1120,6 +1138,7 @@ def hud_reassert_src(addr):
         "    CPX #$%02X" % (DLL_ZONES * 3),
         "    BNE MiLoop1",
         "    JSR P2HudInit",
+        "    JSR SmInit",
     ] + ([] if os.getenv("PP2_NO_MINI_COPY") else _mini_copy_src()) + [
         "    JMP P2BuildLists",                 # in the helpers, for room
         # Once per frame, straight after the game stages the per-scanline road
@@ -1136,7 +1155,7 @@ def hud_reassert_src(addr):
         [] if os.getenv("PP2_KEEP_INJECTION") else road_stage_src()
     ) + p2_stage_src() + p2_car_src() + [
         "    RTS",
-    ] + p2_stage_tables() + p2_slot_tables() + ["P2Emit = $%04X" % _ext()[1]["P2Emit"], "VbTail = $%04X" % _ext()[1]["VbTail"], "P2ObjSeg = $%04X" % _ext()[1]["P2ObjSeg"], "P2ObjInit = $%04X" % _ext()[1]["P2ObjInit"], "P2Collide = $%04X" % _ext()[1]["P2Collide"], "P2Clear = $%04X" % _ext()[1]["P2Clear"], "HudTick = $%04X" % _ext()[1]["HudTick"], "PvpCrash = $%04X" % _ext()[1]["PvpCrash"], "P2RaceSlot = $%04X" % _ext()[1]["P2RaceSlot"], "P2RaceLane = $%04X" % _ext()[1]["P2RaceLane"], "P2Ctl = $%04X" % _ext()[1]["P2Ctl"], "HudFill = $%04X" % _ext()[1]["HudFill"], "P2CrashTick = $%04X" % _ext()[1]["P2CrashTick"], "P2BuildLists = $%04X" % _rival_helpers()[1]["P2BuildLists"]] + [
+    ] + p2_stage_tables() + p2_slot_tables() + ["P2Emit = $%04X" % _ext()[1]["P2Emit"], "SmSelect = $%04X" % _ext()[1]["SmSelect"], "SmInit = $%04X" % _ext()[1]["SmInit"], "VbTail = $%04X" % _ext()[1]["VbTail"], "P2ObjSeg = $%04X" % _ext()[1]["P2ObjSeg"], "P2ObjInit = $%04X" % _ext()[1]["P2ObjInit"], "P2Collide = $%04X" % _ext()[1]["P2Collide"], "P2Clear = $%04X" % _ext()[1]["P2Clear"], "HudTick = $%04X" % _ext()[1]["HudTick"], "PvpCrash = $%04X" % _ext()[1]["PvpCrash"], "P2RaceSlot = $%04X" % _ext()[1]["P2RaceSlot"], "P2RaceLane = $%04X" % _ext()[1]["P2RaceLane"], "P2Ctl = $%04X" % _ext()[1]["P2Ctl"], "HudFill = $%04X" % _ext()[1]["HudFill"], "P2CrashTick = $%04X" % _ext()[1]["P2CrashTick"], "P2BuildLists = $%04X" % _rival_helpers()[1]["P2BuildLists"]] + [
 
         "WrapSlot0:",
         "    CMP #$A0",
@@ -1323,10 +1342,14 @@ def road_stage_src():
             # the engine used to compute per row at rom:E9D0 -- doing it here,
             # for the 13 rows anything actually reads, lets the whole tail of
             # its walk be stripped.
-            lines += ["    LDA $%04X" % (ROW_CURVE_Y + i), "    STA $%04X" % (band + 1),
+            sm = b in SMOOTH                      # a sheared slice: its own
+            lines += ["    LDA $%04X" % (ROW_CURVE_Y + i)] + (   # width and x adjustment
+                ["    AND #$E0", "    ORA $%02X" % (SM_W1 + b - 1)] if sm else []) + [
+                      "    STA $%04X" % (band + 1),
                       "    LDA $%04X" % (STG_ROFF + b),   # RowCurveOffset[i], staged
                       "    CLC",
-                      "    ADC #$%02X" % band_base(i),
+                      "    ADC #$%02X" % band_base(i)] + (
+                ["    CLC", "    ADC $%02X" % (SM_DX1 + b - 1)] if sm else []) + [
                       "    STA $%04X" % (band + 3)]
         else:
             # Both of the near band's halves are rebuilt here. Neither of the
@@ -1462,6 +1485,7 @@ def _check_p2_ram():
         ("P2_HUD", P2_HUD_DL, 12),
         ("P2_QUAL", P2_QST, 6),
         ("P2_TBS", P2_TBS, 1),
+        ("SM", SM_IX, 0x2B),
         ("P2_RACE", P2_CLOCK, 7),
         ("TICK_BUSY", TICK_BUSY, 1),
         ("P2_PASS", P2_PASSM, 8),
@@ -1710,6 +1734,7 @@ def p2_tick_src():
         "    LDA #$00", "    STA $%04X" % P2_HALF,
         "    JSR P2Geom",
         "    JSR P2Geom",
+        "    JSR SmSelect",                    # the far bands' slices
         "    LDA #$00", "    STA $%04X" % TICK_BUSY,
         "    RTS",
         "P2ObjCommit:",
@@ -1799,6 +1824,180 @@ TITLE_VS = [
     (0xB20A, [0x15, 0x55, 0x54, 0x00], [0x29, 0xAF, 0xE8, 0x00]),
     (0xB10A, [0x15, 0x55, 0x54, 0x00], [0x2A, 0xBF, 0xA8, 0x00]),
 ]
+
+
+def smooth_art():
+    """The sheared far-band slices: ({address: byte}, tables).
+
+    A band's six lines are pages hi+5 (top) down to hi at its low byte
+    (BAND_GFX). Line k moves s*(k - BAND_SAMPLE) px, so the sample row, the
+    one x is taken from, stays put. Each copy is trimmed to its content and
+    padded to whole bytes; dx is where it starts relative to the stock slice.
+    Copies are packed first-fit into SMOOTH_COLS. Tables are indexed by
+    SmBase[band] + s + range: low, high, width field, dx; s = 0 is stock.
+    """
+    rom = load_source()[2]
+    assert BAND_SAMPLE == 3
+    art, need = {}, []
+    tab = {"lo": [], "hi": [], "w": [], "dx": []}
+    base = {}
+    for b in sorted(SMOOTH):
+        lo0, hi0 = BAND_GFX[b]
+        w0 = 32 - STOCK_WIDTH_FIELD[b]
+        L = [[(rom[(((hi0 + 5 - k) << 8) + lo0 + i) - BASE] >> (6 - 2 * j)) & 3
+              for i in range(w0) for j in range(4)] for k in range(6)]
+        r = SMOOTH[b]
+        base[b] = len(tab["lo"])
+        for sh in range(-r, r + 1):
+            if sh == 0:
+                tab["lo"].append(lo0); tab["hi"].append(hi0)
+                tab["w"].append(32 - w0); tab["dx"].append(0)
+                continue
+            pts = [(k, c + sh * (k - BAND_SAMPLE), v)
+                   for k in range(6) for c, v in enumerate(L[k]) if v]
+            first = min(c for _, c, _ in pts)
+            first = first // 4 * 4                  # floor, to a byte
+            wb = (max(c for _, c, _ in pts) - first) // 4 + 1
+            assert wb <= 31, "band %d shear %d is %d bytes" % (b, sh, wb)
+            rows = [[0] * (wb * 4) for _ in range(6)]
+            for k, c, v in pts:
+                rows[k][c - first] = v
+            by = [[sum(row[i * 4 + j] << (6 - 2 * j) for j in range(4)) for i in range(wb)]
+                  for row in rows]
+            need.append((wb, len(tab["lo"]), by))
+            tab["lo"].append(None); tab["hi"].append(None)
+            tab["w"].append(32 - wb); tab["dx"].append(first & 0xFF)
+    free = [lo for _, lo in SMOOTH_COLS]
+    for wb, ix, by in sorted(need, key=lambda t: -t[0]):
+        for ci, (page, _) in enumerate(SMOOTH_COLS):
+            if free[ci] + wb <= 0x100:
+                lo = free[ci]
+                free[ci] += wb
+                break
+        else:
+            raise SystemExit("sheared slices do not fit SMOOTH_COLS")
+        tab["lo"][ix], tab["hi"][ix] = lo, page
+        for k in range(6):
+            for i in range(wb):
+                art[((page + 5 - k) << 8) + lo + i] = by[k][i]
+    return art, tab, base
+
+
+def smooth_far_src():
+    """The far bands' sheared slices, in three parts (checkpoint 86).
+
+    SmSelect, at the end of each tick (P2Tick, main loop, 10 Hz), picks each
+    smoothed band's slice from its slope: x'(b+1) - x'(b-1), twelve rows,
+    where x' is the position less the band's perspective base -- player 1's
+    RowCurveOffset at the sample rows as it stands, player 2's walk
+    (P2_BANDX less the same bases) plus its camera's lateral term, which adds
+    step*6 a band, so 12*step over the two. SmDiv rounds d/12 to px a line;
+    the band's range clamps it.
+    SmApply, in VbTail (both views drawn) once a new choice is ready and the
+    tick is not mid-write, puts the slice's address into the band's header
+    and its width field and x adjustment into SM_W/SM_DX.
+    The stage code then ORs SM_W into each width byte and adds SM_DX to x,
+    every frame, for a few cycles a band.
+
+    Choosing every frame inside MirrorStage cost the race 9 ticks in 100
+    (69-99 over six starts); that is the first form of this, not kept.
+    """
+    if not SMOOTH:
+        return ["SmSelect:", "SmApply:", "SmInit:", "    RTS"]
+    _, tab, vb = smooth_art()
+    bb = lambda b: band_base(6 * b + 3)
+    lay = p2_band_layout()
+    bands = sorted(SMOOTH)
+    T = SM_T
+    out = ["SmSelect:"]
+
+    def pick(k, b, lab):
+        r = SMOOTH[b]
+        return ["    TAY",
+                "    LDA SmDiv,Y",
+                "    CLC", "    ADC #$%02X" % r,
+                "    BPL %sa" % lab,
+                "    LDA #$00",
+                "%sa:" % lab,
+                "    CMP #$%02X" % (2 * r + 1),
+                "    BCC %sb" % lab,
+                "    LDA #$%02X" % (2 * r),
+                "%sb:" % lab,
+                "    CLC", "    ADC #$%02X" % vb[b],
+                "    STA $%02X" % (SM_IX + k)]
+
+    k = 0
+    for b in bands:
+        out += ["    LDA $%04X" % (ROW_CURVE_OFFSET + 6 * (b + 1) + BAND_SAMPLE),
+                "    SEC",
+                "    SBC $%04X" % (ROW_CURVE_OFFSET + 6 * (b - 1) + BAND_SAMPLE)]
+        out += pick(k, b, "SsA%d" % b)
+        k += 1
+    # player 2's lateral term: hi(12 * step), signed as the camera signs it
+    out += ["    LDA $%04X" % P2_LATERAL,
+            "    BPL SsPos",
+            "    EOR #$FF", "    CLC", "    ADC #$01",
+            "SsPos:",
+            "    TAX",
+            "    LDA $%04X,X" % LATERAL_RAMP, "    ASL A", "    STA $%02X" % T,
+            "    LDA $%04X,X" % LATERAL_RAMP_HI, "    ROL A", "    STA $%02X" % (T + 1),
+            "    ASL $%02X" % T, "    ROL $%02X" % (T + 1),          # 4 * step
+            "    LDA $%02X" % T, "    ASL A", "    STA $%02X" % (T + 2),
+            "    LDA $%02X" % (T + 1), "    ROL A",                  # 8 * step, high
+            "    TAX",
+            "    LDA $%02X" % (T + 2), "    CLC", "    ADC $%02X" % T,
+            "    TXA", "    ADC $%02X" % (T + 1),                    # 12 * step, high
+            "    LDX $%04X" % P2_LATERAL,
+            "    BPL SsPos2",
+            "    EOR #$FF", "    CLC", "    ADC #$01",
+            "SsPos2:",
+            "    STA $%02X" % (T + 3)]
+    for b in bands:
+        out += ["    LDA $%04X" % (P2_BANDX + b + 1),
+                "    SEC", "    SBC $%04X" % (P2_BANDX + b - 1),
+                "    SEC", "    SBC #$%02X" % ((bb(b + 1) - bb(b - 1)) & 0xFF),
+                "    CLC", "    ADC $%02X" % (T + 3)]
+        out += pick(k, b, "SsB%d" % b)
+        k += 1
+    out += ["    LDA #$01", "    STA $%02X" % SM_NEW, "    RTS"]
+
+    # --- SmApply, from VbTail once the tick's values are whole
+    out += ["SmApply:",
+            "    LDA $%02X" % SM_NEW,
+            "    BNE SaGo",
+            "    RTS",
+            "SaGo:",
+            "    LDA #$00", "    STA $%02X" % SM_NEW]
+    k = 0
+    for view, L, W, DX in (("P1", {b: ALL_ROAD_BANDS[b] for b in bands}, SM_W1, SM_DX1),
+                           ("P2", {b: lay[b]["addr"] for b in bands}, SM_W2, SM_DX2)):
+        for b in bands:
+            out += ["    LDY $%02X" % (SM_IX + k),
+                    "    LDA SmLo,Y", "    STA $%04X" % L[b],
+                    "    LDA SmHi,Y", "    STA $%04X" % (L[b] + 2),
+                    "    LDA SmW,Y", "    STA $%02X" % (W + b - 1),
+                    "    LDA SmDx,Y", "    STA $%02X" % (DX + b - 1)]
+            k += 1
+    out += ["    RTS"]
+
+    # --- SmInit, at boot: stock widths, no adjustment, nothing pending
+    out += ["SmInit:", "    LDX #$06", "SiL:",
+            "    LDA SmStockW,X", "    STA $%02X,X" % SM_W1, "    STA $%02X,X" % SM_W2,
+            "    LDA #$00", "    STA $%02X,X" % SM_DX1, "    STA $%02X,X" % SM_DX2,
+            "    DEX", "    BPL SiL",
+            "    STA $%02X" % SM_NEW,
+            "    RTS",
+            "SmStockW:", "    .byte " + ",".join("$%02X" % STOCK_WIDTH_FIELD[b] for b in range(1, 8))]
+    div = []
+    for i in range(256):
+        v = i - 256 if i >= 128 else i
+        q = int(round(v / 12.0)) if v >= 0 else -int(round(-v / 12.0))
+        div.append(max(-6, min(6, q)) & 0xFF)
+    out += ["SmDiv:"] + ["    .byte " + ",".join("$%02X" % v for v in div[i:i + 16])
+                         for i in range(0, 256, 16)]
+    for key, lab in (("lo", "SmLo"), ("hi", "SmHi"), ("w", "SmW"), ("dx", "SmDx")):
+        out += ["%s:" % lab, "    .byte " + ",".join("$%02X" % v for v in tab[key])]
+    return out
 
 
 def p2_overlay_art():
@@ -4674,7 +4873,7 @@ def _ext():
         lines = ([".org $%04X" % EXT_ADDR] + fast_zrow_src() + rival_car_src()
                  + ["P2Emit:"] + p2_emit_src() + ["    RTS"] + p2_slot_tables()
                  + car_world_src() + p2_hazard_src() + hud_src() + audio_src()
-                 + qual_src() + vbl_src())
+                 + qual_src() + vbl_src() + smooth_far_src())
         _EXT.append(_assemble(lines))
     return _EXT[0]
 
@@ -5230,6 +5429,7 @@ def vbl_src():
         "    LDA $%04X,X" % P2_BANDX, "    STA $%04X,X" % STG_BANDX,
         "    DEX",
         "    BPL VtBx",
+        "    JSR SmApply",                     # the far bands' slices, if new
         "VtStale:",
         "    JMP $F163",                       # the stock tail, hooks and all
                                                #   (rom:F16B calls MirrorStage)
@@ -6101,12 +6301,17 @@ def p2_stage_src():
     # --- far bands: one road object -------------------------------------
     lines += ["    LDX #$00", "P2StFar:"]
     lines += stripe()
-    lines += [
+    lines += ([
+        "    ORA $%02X,X" % SM_W2,                  # the slice's width (checkpoint 86)
+    ] if SMOOTH else [
         "    LDY P2StWid,X",
         "    ORA $%04X,Y" % STRIPE_TEX,
+    ]) + [
         "    LDY P2StDst,X",
         "    STA $%04X,Y" % (P2_DL_BASE + 1),
-    ] + advance() + band_x() + [
+    ] + advance() + band_x() + ([
+        "    CLC", "    ADC $%02X,X" % SM_DX2,          # and its x adjustment
+    ] if SMOOTH else []) + [
         "    LDY P2StDst,X",
         "    STA $%04X,Y" % (P2_DL_BASE + 3),
         "    INX",
@@ -6519,6 +6724,10 @@ def fix_mirror_split(p):
         p.put(_at, [0x4C, _v & 0xFF, _v >> 8] + [0xEA] * (len(_exp) - 3), expect=_exp)
     _v = _ts["TallyFlush"]
     p.put(0xD316, [0x20, _v & 0xFF, _v >> 8], expect=[0x20, 0x1C, 0xDA])
+    if SMOOTH:
+        _sa = smooth_art()[0]
+        for _a in sorted(_sa):
+            p.put(_a, [_sa[_a]], expect=[0xFF])
     if not os.getenv("PP2_NO_VS"):
         for _a, _old, _new in TITLE_VS:
             p.put(_a, _new, expect=_old)
