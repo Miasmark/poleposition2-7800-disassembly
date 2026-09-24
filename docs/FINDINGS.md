@@ -7797,3 +7797,31 @@ jobs, given `--var out=...`, looked elsewhere. `regress.py` now applies
 `dist/pp2-vs.abp` was regenerated (`3fe22035...`). Both options apply to
 their signed builds, and to each other stacked. `pp2-graphics-hack.abp`
 came out byte-identical.
+
+## 7800OpenBIOS, and what the BIOS hands this game
+
+The user asked for a look at
+[7800OpenBIOS](https://github.com/7800-devtools/7800OpenBIOS) against Atari's
+NTSC BIOS. The general comparison is in the toolkit's `docs/bios.md`; here
+is what matters for this game.
+
+- **VS runs under OpenBIOS,** signed or unsigned. It takes over at frame 322
+  after OpenBIOS's fixed-length Fuji screen, against frame 204 on Atari's
+  BIOS (the signed build). OpenBIOS does not check signatures at all.
+- **The unsigned builds we test with boot through the 2600-mode path on
+  Atari's BIOS.** Their signature fails, the BIOS copies the 2600 bootstrap
+  to `$0480`, and that jumps to rom:D205. MAME does not emulate 2600 mode,
+  so the game plays. This is part of why recordings made unsigned desync on
+  a signed build: a different path, arriving five frames later (209 against
+  204).
+- **The start state differs by path and by BIOS:**
+  - Atari's 7800 path leaves SP `$16`, decimal mode set, and hash bytes in
+    `$40-$48`;
+  - the 2600 path and OpenBIOS leave SP `$FF` and decimal clear.
+
+  None of it reaches this game. Its reset code, at rom:D205, locks
+  INPTCTRL, then `SEI`, `CLD`, and `LDX #$FF / TXS`, before anything reads
+  state.
+
+Measured with the toolkit's `probes/handover.lua`, which records the frame,
+registers and RAM at the first instruction of rom:D205.
