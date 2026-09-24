@@ -660,6 +660,9 @@ P2_SCACC = 0x2773            # distance toward the next 10 points, as $AD
 P2_LAPS = 0x2774             # lap seconds BCD, as $BD
 P2_LAPH = 0x2775             # lap hundreds of seconds BCD, as $BE
 P2_LAPRUN = 0x2776           # nonzero once player 2 has crossed the start line
+P2_EPITCH = 0x2777           # player 2's engine note, as $210D
+P2_ERATE = 0x2778            #   its rate, as $210C
+P2_EVOL = 0x2779             #   its volume, as $210B (pulsed on the verge)
 HUD_BUF1 = 0x27C2            # the 1UP line, 31 characters
 HUD_BUF2 = 0x27E1            # the 2UP line, 31 characters, to $27FF
 HUD_X = 0x12                 # both lines' x: (160 - 31*4) / 2
@@ -3202,6 +3205,7 @@ def hud_src():
         # else it isn't excluded gave player 2 a thousand points in the
         # intermission after qualifying.
         "HudTick:",
+        "    JSR P2Engine",                    # player 2's engine sound
         "    LDA $%04X" % GAME_STATE,
         "    CMP #$02", "    BEQ HtScore",
         "    CMP #$03", "    BNE HtNoScore",
@@ -3370,6 +3374,130 @@ def hud_src():
     ]
 
 
+def audio_src():
+    """Player 2's engine: one engine per voice.
+
+    The engine is sound $0F: rom:DF5A gives the voice EnginePitch ($210D), and
+    rom:DFCF-DFF7 its volume ($210B, pulsed on the verge) and rate ($210C);
+    EngineNote (rom:C38D) sets pitch and rate from Speed and Gear. Stock
+    starts it on whichever voice is free (voice 1 first) and stops it with
+    SoundStop($0F), which would silence every voice playing it.
+
+    Here voice 0 is player 1's engine and voice 1 player 2's, whenever an
+    effect is not using it -- effects still take a voice by the game's own
+    priorities, the engine's being the lowest. The pitch, volume and rate a
+    voice plays come from its owner (EngPitchX, EngVolRate); player 1's start
+    and stop touch voice 0 only (P1EngStart, P1EngStop); P2Engine does player
+    2's, once a tick, with EngineNote's own arithmetic on player 2's speed and
+    gear.
+    """
+    return [
+        # rom:DF5A, `LDA EnginePitch` -- the voice's owner's
+        "EngPitchX:",
+        "    CPX #$01",
+        "    BNE EpP1",
+        "    LDA $%04X" % P2_EPITCH,
+        "    RTS",
+        "EpP1:",
+        "    LDA $210D",
+        "    RTS",
+
+        # rom:DFDA-DFF9 (the $0F case of sub_DFCF): volume, the verge pulse,
+        # and the rate, then on to rom:E020 as the original does
+        "EngVolRate:",
+        "    CPX #$01",
+        "    BEQ EvP2",
+        "    LDA $%04X" % PLAYER_X,
+        "    BPL EvP1Abs",
+        "    EOR #$FF", "    CLC", "    ADC #$01",
+        "EvP1Abs:",
+        "    CMP #$3B",
+        "    BCC EvP1Vol",
+        "    LDA $210B", "    EOR #$08", "    STA $210B",
+        "EvP1Vol:",
+        "    LDA $210B", "    STA $19,X",
+        "    LDA $210C", "    STA $2100,X",
+        "    JMP $E020",
+        "EvP2:",
+        "    LDA $%04X" % P2_LATERAL,
+        "    BPL EvP2Abs",
+        "    EOR #$FF", "    CLC", "    ADC #$01",
+        "EvP2Abs:",
+        "    CMP #$3B",
+        "    BCC EvP2Vol",
+        "    LDA $%04X" % P2_EVOL, "    EOR #$08", "    STA $%04X" % P2_EVOL,
+        "EvP2Vol:",
+        "    LDA $%04X" % P2_EVOL, "    STA $19,X",
+        "    LDA $%04X" % P2_ERATE, "    STA $2100,X",
+        "    JMP $E020",
+
+        # rom:C372, `JSR SoundStop` with $0F (player 1 stopped): voice 0 only
+        "P1EngStop:",
+        "    LDA $2102",
+        "    CMP #$0F",
+        "    BNE P1EsDone",
+        "    LDA #$FF", "    STA $2102",
+        "    LDA #$00", "    STA $19",
+        "P1EsDone:",
+        "    RTS",
+        # rom:C378: player 1 moving -- its engine on voice 0 if it is free,
+        # then EngineNote as the original goes on to
+        "P1EngStart:",
+        "    LDA $2102",
+        "    BPL P1EnNote",                    # voice 0 busy (an effect, or it)
+        "    LDX #$00",
+        "    JSR EngOn",
+        "P1EnNote:",
+        "    JMP $C38D",
+        # start sound $0F on voice X, as rom:DF26-DF35 starts one on a free voice
+        "EngOn:",
+        "    LDA #$FF",
+        "    STA $2104,X", "    STA $2106,X", "    STA $2108,X",
+        "    LDA #$01", "    STA $2100,X",
+        "    LDA #$0F", "    STA $2102,X",
+        "    RTS",
+
+        # once a tick: player 2's engine note (rom:C38D on player 2's values),
+        # its on-road volume (rom:C260), and its voice
+        "P2Engine:",
+        "    LDA $%04X" % P2_SPEED,
+        "    LSR A", "    LSR A", "    LSR A", "    LSR A",
+        "    STA $%04X" % CL_T,
+        "    EOR #$0F", "    CLC", "    ADC #$0F",
+        "    LDX $%04X" % P2_GEAR,
+        "    BNE P2EnHi",
+        "    SEC", "    SBC #$03",
+        "P2EnHi:",
+        "    STA $%04X" % P2_EPITCH,
+        "    LDA $%04X" % CL_T,
+        "    LSR A", "    EOR #$07", "    CLC", "    ADC #$01",
+        "    STA $%04X" % P2_ERATE,
+        "    LDA $%04X" % P2_LATERAL,
+        "    BPL P2EnAbs",
+        "    EOR #$FF", "    CLC", "    ADC #$01",
+        "P2EnAbs:",
+        "    CMP #$3B",
+        "    BCS P2EnVerge",
+        "    LDA #$08", "    STA $%04X" % P2_EVOL,
+        "P2EnVerge:",
+        "    LDA $%04X" % P2_SPEED,
+        "    BNE P2EnGo",
+        "    LDA $2103",                       # stopped: its engine off
+        "    CMP #$0F",
+        "    BNE P2EnDone",
+        "    LDA #$FF", "    STA $2103",
+        "    LDA #$00", "    STA $1A",
+        "    RTS",
+        "P2EnGo:",
+        "    LDA $2103",
+        "    BPL P2EnDone",                    # playing: its engine, or an effect
+        "    LDX #$01",
+        "    JMP EngOn",
+        "P2EnDone:",
+        "    RTS",
+    ]
+
+
 _EXT = []
 
 
@@ -3444,7 +3572,7 @@ def _ext():
     if not _EXT:
         lines = ([".org $%04X" % EXT_ADDR] + fast_zrow_src() + rival_car_src()
                  + ["P2Emit:"] + p2_emit_src() + ["    RTS"] + p2_slot_tables()
-                 + car_world_src() + p2_hazard_src() + hud_src())
+                 + car_world_src() + p2_hazard_src() + hud_src() + audio_src())
         _EXT.append(_assemble(lines))
     return _EXT[0]
 
@@ -4589,6 +4717,18 @@ def fix_mirror_split(p):
     # hit. rom:C87E, ObjectCollision's first look at a slot's distance, lets
     # player 1 pass through a wreck that is hidden, as its own is.
     _xs = _ext()[1]
+    # Sound: voice 0 player 1's engine, voice 1 player 2's (audio_src).
+    # rom:DF5A `LDA EnginePitch`; rom:DFDA the engine's volume and rate;
+    # rom:C372 player 1's `JSR SoundStop` ($0F); rom:C378 player 1's start.
+    if not os.getenv("PP2_STOCK_AUDIO"):
+        p.put(0xDF5A, [0x20, _xs["EngPitchX"] & 0xFF, _xs["EngPitchX"] >> 8],
+              expect=[0xAD, 0x0D, 0x21])
+        p.put(0xDFDA, [0x4C, _xs["EngVolRate"] & 0xFF, _xs["EngVolRate"] >> 8],
+              expect=[0xA5, 0xD1, 0x10])
+        p.put(0xC372, [0x20, _xs["P1EngStop"] & 0xFF, _xs["P1EngStop"] >> 8],
+              expect=[0x20, 0xD6, 0xDE])
+        p.put(0xC378, [0x4C, _xs["P1EngStart"] & 0xFF, _xs["P1EngStart"] >> 8],
+              expect=[0xA2, 0x00, 0xBD])
     for _at, _fn, _old in ((0xE4B7, "CrFrameA", [0xA6, 0xD4, 0xBD, 0xA1, 0xA7]),
                            (0xE59D, "CrFrameA", [0xA6, 0xD4, 0xBD, 0xA1, 0xA7]),
                            (0xE5E8, "CrFrameY", [0xA6, 0xD4, 0xBC, 0xA1, 0xA7])):

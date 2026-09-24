@@ -5926,3 +5926,34 @@ behind, through slot 15, with the explosion in its view and player 2's car
 driving on ahead of it. Integrity, rival-car model, health unchanged.
 
 The far-edge 26 of rom:C8EA (for 75..77) is not reproduced -- 30 throughout.
+
+## Player 2's engine: one voice each
+
+Checkpoint 68. The TIA has two voices, and the game shares them between the
+engine (sound `$0F`, priority 0 -- the lowest) and its effects.
+
+**How the engine sound works** (rom:C36C-C3B1, rom:DF3D-E03B): EngineNote sets
+`EnginePitch` ($210D) = 30 - Speed/16 (3 lower in LO) and `EngineRate` ($210C);
+SoundUpdate gives the voice playing `$0F` that pitch on AUDF, the volume
+`$210B` (8, toggled by 8 each update on the verge, the off-road pulse), and
+the rate as its duration. It is started on a free voice -- SoundStart takes
+voice 1 first -- when no voice is playing it, and stopped with SoundStop($0F),
+which would silence every voice playing it.
+
+**Built:** voice 0 is player 1's engine and voice 1 player 2's, whenever an
+effect is not using it; effects still take a voice by the game's priorities
+(SoundStart unchanged, so they take voice 1 first). Four hooks:
+- rom:DF5A `LDA EnginePitch` -> `EngPitchX`, the voice's owner's pitch;
+- rom:DFDA, the engine's volume and rate -> `EngVolRate` (player 2's verge
+  pulse on its own lateral and volume byte);
+- rom:C372 player 1's `SoundStop($0F)` -> voice 0 only;
+- rom:C378 player 1's start -> voice 0 when free.
+
+`P2Engine`, once a race tick, computes player 2's note with EngineNote's own
+arithmetic and starts or stops $0F on voice 1. `PP2_STOCK_AUDIO=1` builds without.
+
+Checked from the TIA registers (`tools/probe-engine-voices.lua`), players at
+200 and 120: voice 0 AUDF 15, voice 1 AUDF 20 -- EngineNote's values for each --
+swapping when the speeds swap; both volume 8; after player 2's crash voice 1
+briefly carried an effect and then its engine again. Health unchanged. A
+recording of the run (a1.wav) was kept for listening.
