@@ -6363,3 +6363,32 @@ Checked: the pre-race states against stock; the sit-out race (1UP clock
 blank, player 1's score unchanged at the end, game over without `$08`);
 health, state flow, integrity (0 on four) and race tick rate (100/600) the
 same as checkpoint 72.
+
+## Headroom, after checkpoint 74
+
+**CPU** (race profile, both cars at 240 with traffic, two windows): the main
+loop spends about 20% of its visible-frame samples waiting, at rom:EA28 (the
+six-frame slot, 9-14%) and rom:E709 (the rebuild's `$E5`, 5-10%). A tick
+finishes with roughly a frame of its six to spare. The biggest real costs:
+
+| where | share | what |
+|---|---|---|
+| rom:CE40 | 15-18% | stock object pass (inside rom:C9AD) |
+| rom:E8AC (E8E6, E8FF, E915) | ~8% | stripe staging, all 78 rows of `RowCurveYStaged`, in the interrupt; this build reads only the sampled rows |
+| P2Geom (P2GSteps) | ~5% | player 2's road walk |
+| rom:E93D (E9A2, E9E6, ...) | ~7% | player 1's road walk |
+| rom:EA2C | ~1.5% | the stock curve copy, now pure waste (below) |
+
+**ROM:** the new code area (`$4000-$7FDF`) has 11,060 bytes free (5,292
+used); the `$F400` blob has 359 free; the reclaimed injection (`$EDA0-$F142`)
+holds the templates.
+
+**RAM:** the mod's own area (`$2600-$27FF`) is full to the byte. What can be
+had:
+- `$1B00-$1B4D` (`RowCurveXStaged`, 78 bytes), `$1B9C-$1BE9`
+  (`RowCurveXStagedSrc`, 78) and zero page `$60-$7D` (30). Their only users are
+  now the walk tail this build strips (rom:E9D3), the stock copy rom:EA2C-EA3C
+  (which copies the never-written source into the other two), and the dead
+  injection. Retiring the copy frees all three and its CPU.
+- `$1C53-$1C55`, the rest of the stripped `RowCurveOffsetAlt` tail past the
+  staging copies.
