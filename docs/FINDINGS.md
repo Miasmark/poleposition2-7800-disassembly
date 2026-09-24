@@ -5903,3 +5903,26 @@ seconds at every sample, both starting on the frame of the line.
   position, no lap bonus yet.
 - Player 2's lap clock already restarts at each crossing, so its lap times --
   the input to a qualifying position -- are there to be used.
+
+## Player against player: a rear-end is a crash, alongside is a bump
+
+Checkpoint 67. The two players now meet by the game's rule for a rival car
+(rom:C86E: in reach ahead, within 30 across -- the laterals are on one scale):
+
+- **the other car 31..77 ahead and within 30 across: the car behind crashes.**
+  Player 2's is its own crash; player 1's is the game's CrashStart (rom:C93E),
+  handed slot 15 -- the spare slot player 2's signs are drawn through -- with a
+  sign's type put there first, so the crash has no car to wreck and rom:D037
+  returns at once when it ends (it leaves a sign's slot alone);
+- **nearer than 31 (alongside): the bump**, both shoved apart and a speed
+  penalty once per contact, as before.
+
+The car in front is not wrecked (unlike a rival, which becomes the crash kind):
+it is a player, and it drives on.
+
+Checked (scripted, qualifying lap): player 2 driven into player 1's lane from
+behind crashed at 76 and 69 behind; player 1 driven into player 2 crashed at 72
+behind, through slot 15, with the explosion in its view and player 2's car
+driving on ahead of it. Integrity, rival-car model, health unchanged.
+
+The far-edge 26 of rom:C8EA (for 75..77) is not reproduced -- 30 throughout.

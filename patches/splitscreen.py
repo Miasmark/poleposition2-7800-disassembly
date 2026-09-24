@@ -516,6 +516,8 @@ OCR_T = 0x27BF               # OcCrash: the other player's crash count
 P2_CRSLOT = 0x27C0           # the slot player 2 crashed into, as CrashSlot; $FF none
 CR_SAVEX = 0x27C1            # ColZHi's slot
 COLLIDE_PUSH = 4             # each car's sideways shove a tick, in contact
+PVP_SIDE = 30                # the other player nearer than this is alongside
+                             #   (a bump); 31..77 ahead is a rear-end (a crash)
 # the game's object slots and track object data (rom:CF47, rom:C4CB)
 OBJ_TYPE, OBJ_Z_LO, OBJ_Z_HI, OBJ_LATERAL = 0x19B4, 0x19C4, 0x19D4, 0x1A00
 OBJ_SEG_DESC, OBJ_SEG_LEN_LO, OBJ_SEG_LEN_HI = 0x18B4, 0x18D7, 0x195A
@@ -991,7 +993,7 @@ def hud_reassert_src(addr):
         [] if os.getenv("PP2_KEEP_INJECTION") else road_stage_src()
     ) + p2_stage_src() + p2_car_src() + [
         "    RTS",
-    ] + p2_stage_tables() + p2_slot_tables() + ["P2Emit = $%04X" % _ext()[1]["P2Emit"], "P2ObjSeg = $%04X" % _ext()[1]["P2ObjSeg"], "P2ObjInit = $%04X" % _ext()[1]["P2ObjInit"], "P2Collide = $%04X" % _ext()[1]["P2Collide"], "P2Clear = $%04X" % _ext()[1]["P2Clear"], "HudTick = $%04X" % _ext()[1]["HudTick"], "HudFill = $%04X" % _ext()[1]["HudFill"], "P2CrashTick = $%04X" % _ext()[1]["P2CrashTick"], "P2BuildLists = $%04X" % _rival_helpers()[1]["P2BuildLists"]] + [
+    ] + p2_stage_tables() + p2_slot_tables() + ["P2Emit = $%04X" % _ext()[1]["P2Emit"], "P2ObjSeg = $%04X" % _ext()[1]["P2ObjSeg"], "P2ObjInit = $%04X" % _ext()[1]["P2ObjInit"], "P2Collide = $%04X" % _ext()[1]["P2Collide"], "P2Clear = $%04X" % _ext()[1]["P2Clear"], "HudTick = $%04X" % _ext()[1]["HudTick"], "PvpCrash = $%04X" % _ext()[1]["PvpCrash"], "HudFill = $%04X" % _ext()[1]["HudFill"], "P2CrashTick = $%04X" % _ext()[1]["P2CrashTick"], "P2BuildLists = $%04X" % _rival_helpers()[1]["P2BuildLists"]] + [
 
         "WrapSlot0:",
         "    CMP #$A0",
@@ -2115,6 +2117,8 @@ def p2_collide_src():
     if os.getenv("PP2_NO_COLLIDE"):
         return []
     return [
+        # a rear-end first: the car behind crashes (PvpCrash)
+        "    JSR PvpCrash",
         # |gap| < COLLIDE_Z, with the gap signed 16-bit
         "    LDA $%04X" % GAP_HI,
         "    BEQ P2HitZPos",
@@ -3005,6 +3009,55 @@ def p2_hazard_src():
         "    BMI P2CrDone",
         "    JMP P2CrLoop",
         "P2CrDone:",
+        "    RTS",
+
+        # --- the two players, by the rule for a rival car: the car behind
+        # crashes when the other is 31..77 ahead of it and within 30 across
+        # (rom:C86E's reach ahead and its lateral test, the players' laterals
+        # being on one scale). Nearer than that the two are alongside, and it
+        # stays the bump (p2_collide_src). Player 1's crash is the game's own
+        # CrashStart, handed slot 15 -- no car -- with a sign's type there, so
+        # rom:D037 leaves the object list alone when the crash ends.
+        "PvpCrash:",
+        "    LDA $%04X" % GAP_HI,
+        "    BEQ PvP2Behind",                  # gap >= 0: player 1 ahead
+        "    CMP #$FF",
+        "    BNE PvOut",
+        "    LDA $%04X" % GAP_LO,
+        "    CMP #$%02X" % (0x100 - 77),
+        "    BCC PvOut",
+        "    CMP #$%02X" % (0x100 - PVP_SIDE),
+        "    BCS PvOut",
+        "    JSR PvpDx",
+        "    BCS PvOut",
+        "    LDA $00D4",                       # player 1 ran into player 2
+        "    BNE PvOut",
+        "    LDA #$01", "    STA $%04X" % (OBJ_TYPE + 15),
+        "    LDX #$0F",
+        "    JMP $C93E",
+        "PvP2Behind:",
+        "    LDA $%04X" % GAP_LO,
+        "    CMP #$4E",                        # 78
+        "    BCS PvOut",
+        "    CMP #$%02X" % (PVP_SIDE + 1),
+        "    BCC PvOut",
+        "    JSR PvpDx",
+        "    BCS PvOut",
+        "    LDA $%04X" % P2_CRASH,            # player 2 ran into player 1
+        "    BNE PvOut",
+        "    JMP P2CrashStart",
+        "PvOut:",
+        "    RTS",
+        # carry clear if the two are within 30 across: x1 - x2 = PlayerX +
+        # P2_LATERAL (player 2's x is -P2_LATERAL; |sum| <= 208, so a wrap
+        # can never read as near)
+        "PvpDx:",
+        "    LDA $%04X" % PLAYER_X,
+        "    CLC", "    ADC $%04X" % P2_LATERAL,
+        "    BPL PvDxAbs",
+        "    EOR #$FF", "    CLC", "    ADC #$01",
+        "PvDxAbs:",
+        "    CMP #$1E",
         "    RTS",
 
         # --- the other player's car while that player crashes, in this view:
