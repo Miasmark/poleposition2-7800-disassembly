@@ -698,7 +698,7 @@ FREE_RAM = [
     (0x0065, 0x009B, "zero page: injection colour rows and the dead curve copy (patched out)"),
     (0x1B36, 0x1B4D, "RowCurveXStaged's tail: the dead curve copy's target (patched out)"),
     (0x1BCA, 0x1BE9, "RowCurveXStagedSrc's tail: the stripped walk tail's output"),
-    (0x201D, 0x203F, "untouched"),
+    (0x2021, 0x203F, "untouched"),
     (0x210F, 0x213F, "untouched (below the stack's reach)"),
     (0x2200, 0x2233, "stock race DLL, replaced by DLL_BASE; untouched"),
     (0x256F, 0x25FF, "past the end of DLL_BASE's 37 zones; untouched"),
@@ -721,6 +721,8 @@ QM_BUF = 0x1FF3              # 31 characters
 QM_DL = 0x2012               # its list: one 5-byte header and the end
 QM_SAVE = 0x2019             # 3: the row's own zone entry, put back after
 QM_ON = 0x201C               # nonzero while the row is ours
+QM_SC = 0x201D               # 3: a score being written (BCD), for the result line
+QM_Z = 0x2020                # nonzero once a score digit has shown
 STG_ROFF = 0x1C38            # 13: RowCurveOffset at each band's sample row
 STG_BANDX = 0x1C45           # 13: P2_BANDX
 HUD_BUF1 = 0x27C2            # the 1UP line, 31 characters
@@ -1428,7 +1430,7 @@ def _check_p2_ram():
                                    ("P2_DECOR_DL", P2_DECOR_DL, P2_DECOR_LEN),
                                    ("P2_HOR_DL", P2_HOR_DL, P2_HOR_LEN),
                                    ("P2_DECOR_TOP", P2_DECOR_TOP, P2_DECOR_LEN),
-                                   ("QM", QM_BUF, 42),
+                                   ("QM", QM_BUF, 46),
                                    ("DLL", DLL_BASE, DLL_ZONES * 3)]:
             if a <= hi and a + sz - 1 >= lo:
                 raise SystemExit("RAM $%04X..$%04X (%s) is listed free: %s"
@@ -4388,6 +4390,11 @@ def vbl_src():
         "    LDA $009D",
         "    CMP #$12", "    BEQ QmOn",
         "    CMP #$0E", "    BEQ QmOn",
+        "    CMP #$0D", "    BEQ QmEndJ",
+        "    CMP #$0A", "    BNE QmNotEnd",
+        "QmEndJ:",
+        "    JMP QmEnd",
+        "QmNotEnd:",
         "    LDA $%04X" % QM_ON,
         "    BEQ QmRet",
         # Only if the row is still ours: the race's set-up ($07) points it at
@@ -4458,6 +4465,112 @@ def vbl_src():
         "    LDA #$06", "    STA $%04X" % (DIVIDER_ADDR + 3),   # rewrite it
         "    LDA #$%02X" % (QM_DL >> 8), "    STA $%04X" % (DIVIDER_ADDR + 4),
         "    LDA #$%02X" % (QM_DL & 0xFF), "    STA $%04X" % (DIVIDER_ADDR + 5),
+        "    RTS",
+        # --- the result at game over ($0D, $0A): both scores on the middle
+        # row, the higher one's label and score blinking (as rom:DA0B blinks
+        # a qualifying place; the font has no W for a word). A tie blinks
+        # neither. Rebuilt every frame: the tallies have just finished.
+        "QmEnd:",
+        "    LDA $%04X" % QM_ON,
+        "    BNE QmEb",
+        "    LDX #$02",
+        "QmEs:",
+        "    LDA $%04X,X" % (DIVIDER_ADDR + 3), "    STA $%04X,X" % QM_SAVE,
+        "    DEX",
+        "    BPL QmEs",
+        "    LDX #$06",
+        "QmEh:",
+        "    LDA QmHdr,X", "    STA $%04X,X" % QM_DL,
+        "    DEX",
+        "    BPL QmEh",
+        "    LDA #$01", "    STA $%04X" % QM_ON,
+        "QmEb:",
+        "    LDX #$1E",
+        "    LDA #$AB",
+        "QmEc:",
+        "    STA $%04X,X" % QM_BUF,
+        "    DEX",
+        "    BPL QmEc",
+        "    LDA #$8D", "    STA $%04X" % QM_BUF,          # 1UP
+        "    LDA #$8E", "    STA $%04X" % (QM_BUF + 21),   # 2UP
+        "    LDA #$A8", "    STA $%04X" % (QM_BUF + 1), "    STA $%04X" % (QM_BUF + 22),
+        "    LDA #$A3", "    STA $%04X" % (QM_BUF + 2), "    STA $%04X" % (QM_BUF + 23),
+        "    LDX #$02",
+        "QmE1:",
+        "    LDA $1CA5,X", "    STA $%04X,X" % QM_SC,
+        "    DEX",
+        "    BPL QmE1",
+        "    LDY #$04",
+        "    JSR QmScore",
+        "    LDX #$02",
+        "QmE2:",
+        "    LDA $%04X,X" % P2_SCORE, "    STA $%04X,X" % QM_SC,
+        "    DEX",
+        "    BPL QmE2",
+        "    LDY #$19",
+        "    JSR QmScore",
+        # the higher score, compared as BCD from the top byte
+        "    LDA $1CA5", "    CMP $%04X" % P2_SCORE, "    BNE QmCmp",
+        "    LDA $1CA6", "    CMP $%04X" % (P2_SCORE + 1), "    BNE QmCmp",
+        "    LDA $1CA7", "    CMP $%04X" % (P2_SCORE + 2), "    BNE QmCmp",
+        "    JMP QmZone",                      # a tie
+        "QmCmp:",
+        "    LDX #$00",                        # carry set: player 1's is higher
+        "    BCS QmWin",
+        "    LDX #$15",
+        "QmWin:",
+        "    LDA $00B9",
+        "    AND #$08",
+        "    BEQ QmWz",
+        "    LDY #$0A",
+        "    LDA #$AB",
+        "QmBl:",
+        "    STA $%04X,X" % QM_BUF,
+        "    INX",
+        "    DEY",
+        "    BNE QmBl",
+        "QmWz:",
+        "    JMP QmZone",
+        # six BCD digits from QM_SC into QM_BUF from cell Y, leading zeros
+        # blank but the last
+        "QmScore:",
+        "    LDA #$00", "    STA $%04X" % QM_Z,
+        "    LDX #$00",
+        "QsL:",
+        "    LDA $%04X,X" % QM_SC,
+        "    LSR A", "    LSR A", "    LSR A", "    LSR A",
+        "    JSR QsDig",
+        "    LDA $%04X,X" % QM_SC,
+        "    AND #$0F",
+        "    JSR QsDig",
+        "    INX",
+        "    CPX #$03",
+        "    BNE QsL",
+        "    LDA $%04X" % QM_Z,
+        "    BNE QsRet",
+        "    DEY",
+        "    LDA #$8C", "    STA $%04X,Y" % QM_BUF,
+        "QsRet:",
+        "    RTS",
+        "QsDig:",
+        "    BNE QsSh",
+        "    PHA",
+        "    LDA $%04X" % QM_Z,
+        "    BEQ QsBlank",
+        "    PLA",
+        "    JMP QsNum",
+        "QsBlank:",
+        "    PLA",
+        "    LDA #$AB", "    STA $%04X,Y" % QM_BUF,
+        "    INY",
+        "    RTS",
+        "QsSh:",
+        "    PHA",
+        "    LDA #$01", "    STA $%04X" % QM_Z,
+        "    PLA",
+        "QsNum:",
+        "    CLC", "    ADC #$8C", "    STA $%04X,Y" % QM_BUF,
+        "    INY",
         "    RTS",
         "QmHdr:",                              # as the HUD's lines
         "    .byte $%02X,$60,$%02X,$41,$%02X,$00,$00" % (QM_BUF & 0xFF, QM_BUF >> 8, HUD_X),

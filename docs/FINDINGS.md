@@ -6627,3 +6627,28 @@ the divider's middle row at the banner's lower half before QMsg sees the
 state change, and QMsg then put its saved blank back over it. It now restores
 the row only while the row still points at its own line. Checked against the
 build before (whole) and Q1 (top halves): Q2 shows both whole.
+
+## The two-player result at game over
+
+Checkpoint 79. At game over (`$0D`, `$0A`) the divider shows the game's
+message on its top row and nothing below (the bonus screens `$0F`/`$08` use
+the same layout: text, then an 8-cell tally row in the bold read mode). The
+middle row now carries both final scores:
+
+    1UP  75550           2UP  40110
+
+The higher score's label and digits blink, on `$B9` bit 3 as rom:DA0B blinks
+a qualifying place; a tie blinks neither. The font has no W (it has V `$B4`
+and X `$A9`), so blinking replaces a "WINS". The line is rebuilt every
+frame by `QMsg` (the same row and save/restore as the qualifying result),
+from `$1CA5-$1CA7` and `P2_SCORE`, six BCD digits each with leading zeros
+blanked. The winner is the higher final score, bonuses included.
+
+*Not a bug, recorded because it cost a run:* a test run sat in state `$13`,
+the game's pause (rom:D743: a falling edge on SWCHB bit 3), from qualifying
+to the end. Re-running the same script on six builds never paused. MAME's
+window had keyboard focus while chat was being typed. Test runs now pass
+`-keyboardprovider none`.
+
+Checked: player 1 winning (its block blinks) and player 2 winning (a race
+player 1 sat out; its block blinks), in both blink phases.
