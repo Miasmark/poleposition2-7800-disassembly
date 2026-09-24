@@ -1,3 +1,6 @@
+-- probe-far-slots.lua -- which object slots player 1's far bands (1-7) use:
+-- per band, frames each of the 8 slots is in use (x not $A1), and how many
+-- are in use at once, over states $02/$03. Env: O, END. Run with -playback.
 local M=(type(manager.machine)=="function") and manager:machine() or manager.machine
 local mem=M.devices[":maincpu"].spaces["program"]
 local B={0x2326,0x234C,0x2372,0x2398,0x23BE,0x2400,0x2426}
