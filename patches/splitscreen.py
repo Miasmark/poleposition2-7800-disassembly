@@ -635,8 +635,9 @@ RACE_CLOCK_HI = 0x00DE       # rom:C2DA knows the race has not started
 TIRE_SHEET_A_HI, TIRE_SHEET_A_LO = 0xAA, 0xD8
 TIRE_SHEET_B_HI, TIRE_SHEET_B_LO = 0x91, 0x00
 TIRE_BAND = 10
-# The other three bands' pages, constant in every driving frame measured.
-P2_CAR_BASE_HI = {8: 0x9D, 9: 0x97, 11: 0x8B}
+# The other bands' pages, constant in every driving frame measured (band 7: the
+# car's top slice, $A3 + lean, which player 1's own lists carry in band 7).
+P2_CAR_BASE_HI = {7: 0xA3, 8: 0x9D, 9: 0x97, 11: 0x8B}
 STRIPE_TEX = 0x1F00          # sub_E8AC's texture, read at phase + dat_C07E[row]
 STRIPE_WIDTH = 0x1F3C        # per-row width field, ORed into the same byte
 ROW_TEX_INDEX = 0xC07E       # dat_C07E: each row's offset into the texture
@@ -664,12 +665,12 @@ P2_EPITCH = 0x2777           # player 2's engine note, as $210D
 P2_ERATE = 0x2778            #   its rate, as $210C
 P2_EVOL = 0x2779             #   its volume, as $210B (pulsed on the verge)
 # player 2's qualifying, in the five free bytes after its display lists
-P2_QST = 0x26FC              # 0 qualifying, 1 qualified, 2 out
-P2_QPOS = 0x26FD             # its grid position, 1..8 (9: sitting out)
-P2_QSEC = 0x26FE             # the qualifying lap's seconds and hundredths,
-P2_LAPC = 0x26FF             #   for a tie on position
-P2_PARK = 0x2700             # 0 driving, 1 parked (qualified, waiting), 2 out
-P2_LAPPH = 0x2701            # player 2's lap tick phase 0..5, as $E0 is player 1's
+P2_QST = 0x2027              # 0 qualifying, 1 qualified, 2 out
+P2_QPOS = 0x2028             # its grid position, 1..8 (9: sitting out)
+P2_QSEC = 0x2029             # the qualifying lap's seconds and hundredths,
+P2_LAPC = 0x202A             #   for a tie on position
+P2_PARK = 0x202B             # 0 driving, 1 parked (qualified, waiting), 2 out
+P2_LAPPH = 0x202C            # player 2's lap tick phase 0..5, as $E0 is player 1's
 # player 2's race: its own clock (as $DE/$DF), laps, and whether it is done.
 # $A7 is 1 when the race starts and the race ends at the crossing where it
 # equals $C3 (5): four laps; player 2's count starts from $A7 too.
@@ -698,7 +699,7 @@ FREE_RAM = [
     (0x0067, 0x009B, "zero page: injection colour rows and the dead curve copy (patched out)"),
     (0x1B36, 0x1B4D, "RowCurveXStaged's tail: the dead curve copy's target (patched out)"),
     (0x1BCA, 0x1BE9, "RowCurveXStagedSrc's tail: the stripped walk tail's output"),
-    (0x2027, 0x203F, "untouched"),
+    (0x202D, 0x203F, "untouched"),
     (0x210F, 0x213F, "untouched (below the stack's reach)"),
     (0x2200, 0x2233, "stock race DLL, replaced by DLL_BASE; untouched"),
     (0x256F, 0x25FF, "past the end of DLL_BASE's 37 zones; untouched"),
@@ -786,13 +787,14 @@ BAND_SLOT1 = [None] * 8 + [(0x47, 0x80), (0x69, 0x80), (0x8D, 0x80),
 # graphics page is copied each frame. The lean therefore still follows player
 # 1's steering, which is the one part of this that is scaffolding.
 P1_CAR_SLOT = [0x244C + 0x1C, 0x246E + 0x1C, 0x2490 + 0x1C, 0x24B2 + 0x1C]
-P2_CAR_BANDS = [8, 9, 10, 11]
+P2_CAR_BANDS = [7, 8, 9, 10, 11]     # band 7: the car's top (roll hoop), as
+                                     #   player 1's own top slice sits there
 # Object slots per band in player 2's lists: the first is reserved for the other
 # player's car, the rest take world objects. Three keeps every band's list, and
 # the whole block, inside the 256 bytes the one-byte offsets from P2_DL_BASE can
 # reach, and inside the free RAM before P2_LATERAL at $2702.
 P2_OBJ_SLOTS = 3
-P2_CAR_SEED = [(0x08, 0x9D), (0x08, 0x97), (0xE0, 0xAA), (0x08, 0x8B)]
+P2_CAR_SEED = [(0x10, 0xA3), (0x08, 0x9D), (0x08, 0x97), (0xE0, 0xAA), (0x08, 0x8B)]
 P2_CAR_W = 0xD8              # palette 6, 8 bytes
 P2_CAR_X = 0x40              # 64
 P2_CAR_DELTA = 0x2754        # this frame's lean adjustment, L2 - L1

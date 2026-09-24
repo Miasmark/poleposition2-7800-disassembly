@@ -6715,3 +6715,39 @@ on four recordings; integrity 0 on four.
 
 *Test harness:* MAME now runs with `-keyboardprovider none` everywhere,
 including `run.sh` (see checkpoint 79's pause).
+
+## Player 2's car: the top slice, and a colour experiment that hit the start line
+
+Checkpoint 82. *Reported:* player 2's car was clipped at the top in its view.
+Player 1's car spans five bands: its top slice (the roll hoop and helmet,
+graphics page `$A3` + lean) sits in band 7, above the four bands (8-11)
+copied into player 2's lists. *Correction to "Player 2's car":* that
+section found the car in bands 8 to 11 by sampling slot `+1C` of the near
+bands, the slot band 7 does not use. The later section on the other
+player's car had the five pages `$A3 $9D $97 $91 $8B` across bands 7 to
+11, but player 2's own car was never revisited. Player 2's car now takes
+a slot in band 7 too (`P2_CAR_BANDS` 7-11, seed `$10`/`$A3`, base page `$A3`),
+and the lean moves it like the others. On screen the two cars now match.
+
+The extra slot pushes bands 7-12 of player 2's lists 4 bytes on, and the block
+(now `$2600-$26FF`, all 256 bytes the one-byte offsets reach) ran over player
+2's qualifying bytes at `$26FC-$2701`. Those six moved to free RAM at
+`$2027-$202C` (`FREE_RAM`'s "untouched" run now starts at `$202D`).
+
+*Wrong turn, caught by the test:* the list integrity probe first reported
+thousands of frames with a zeroed road header. Its header list was the
+old one; regenerated from `p2_band_layout()` (bands 8-12 at `$2684`,
+`$269E`, `$26B8`, `$26D2`, `$26EC`) it reports 0 on four recordings.
+Health and state flow unchanged; qualifying ties as checkpoint 80; player 2
+alone finishes; race tick rate 99-101/100.
+
+**Player colours: tried, reverted.** The idea was for each player's car to
+get its own colour. The cars use palette 6 (`$2F $26 $00`, the gold car;
+crash frames too, rom:ADB6). The experiment gave player 2's car palette 7,
+which looked free in the race. It is not: palette 7 is white (`$0F` x3) and
+draws the start/finish line and the sign stripes (sub_E8AC's `$E0` ORs the
+row to palette 7) and the crash smoke. The user saw the start line change
+with the car. No palette is spare in the road regions: 0-1 road, 2 road
+pieces and wrecks, 3-5 rivals and signs, 6 the cars, 7 white. Any per-player
+colour has to share palette 6, by view or by band (a decision for the
+user).
