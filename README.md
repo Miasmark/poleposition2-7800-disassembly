@@ -91,7 +91,7 @@ the title logo reads *POLE POSITION VS*. The build is a 48K cartridge
 
 [`docs/SPLITSCREEN.md`](docs/SPLITSCREEN.md) describes the current design:
 screen layout, what runs when, RAM and ROM maps, features and known limits.
-`docs/FINDINGS.md` is how it got there (checkpoints 1-88).
+`docs/FINDINGS.md` is how it got there (checkpoints 1-89).
 
 **Controls.** Player 1 as stock. Player 2 uses a two-button 7800 controller
 in port 2 with the same scheme: the buttons are gas and brake, left and right
@@ -120,12 +120,12 @@ python patches/splitscreen.py --build --sign -o pp2-vs.a78    # signed: real har
 ```
 
 The build is deterministic and prints the result's SHA-256. From the headered
-dump, checkpoint 88 gives:
+dump, checkpoint 89 gives:
 
 | | SHA-256 |
 |---|---|
-| unsigned | `eb488ab710bd588d0b0129d8a786ac1f8303477df31817efd1976ae959c756e4` |
-| signed | `1270180be85da05aba2472f1018a3f9714c1b0e2ac462fb97bd81b95f3f71cd2` |
+| unsigned | `0c5b64882c03ecf6e3390e805a44647e460c2211dc182759895771784fb90dc8` |
+| signed | `8eb5dab853a19174794772860545385c595c519a43deb1dac28a9e616cd540d1` |
 
 (A headerless dump gives a headerless 49,152-byte image with the same body.)
 
@@ -141,7 +141,7 @@ them back as a different race. Use the unsigned build for MAME and for
 testing, the signed one for a real console or flash cart. The full account is
 in the generator's docstring.
 
-**Switches.** `PP2_NO_SMOOTH`, `PP2_NO_SPLIT`, `PP2_NO_OVL` and `PP2_NO_VS`
+**Switches.** `PP2_NO_SMOOTH`, `PP2_NO_NEAR`, `PP2_NO_SPLIT`, `PP2_NO_OVL` and `PP2_NO_VS`
 leave out one feature each; `PP2_P2PAL=n` recolours player 2's car. They and
 the test hooks are listed in the generator's docstring.
 

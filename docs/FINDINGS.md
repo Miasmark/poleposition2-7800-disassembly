@@ -7305,3 +7305,68 @@ stale:
 
 The build's bytes did not change in any of this: SHA-256 `eb488ab7...` before
 and after.
+
+## Near-band smoothing, bands 8-11
+
+Checkpoint 89. Asked for after the speed work (checkpoint 88) gave the
+headroom back. Bands 8-11, +/-1 px a line, in both views.
+
+**The design, cheap per frame.** A near line is two objects: a 16-byte left
+piece at the right piece's x - 60 (the stage's wrap guard computes it) and a
+right piece whose width comes from the game (the stripe texture, plus `$B6`
+from row 60, ORed with the `$1F3C` width field). The texture's `$08` bit takes
+8 bytes off the right piece on some rows, for bands 10-11, whose field has bit
+3 clear.
+- **The slices.** Each line is composed as drawn (the right piece over the
+  left, clear pixels showing through), sheared, and split again: the left
+  piece still 16 bytes starting 60 px left of the right piece, the right
+  piece the rest (18-28 bytes). So the wrap guard places the left piece
+  unchanged.
+- **Width.** The right piece's width goes in as a delta subtracted from what
+  the game computed (`SEC / SBC NEAR_DB+e`), which keeps the `$08` rows
+  exact. Writing absolute fields into `$1F3C` was considered: that table is
+  written only in state `$00` (a write tap over two recordings), but a field
+  write would lose the `$08` behaviour.
+- **x.** Player 1's `ADC #base` became `ADC NEAR_NX+e`, a RAM copy of base +
+  offset. Player 2's near loop adds `NEAR_NX-3,X`. Per frame this is a few
+  cycles a band.
+- **Choosing and applying.** `SmSelect` picks 0-2 per band (`SmPick1`: the
+  slope over twelve rows, rounded and clamped) from the same differences as
+  the far bands. `SmApply` (`SnLoop`, 10 Hz) writes both headers' graphics
+  through `E8L_T`, which is free in index 12 since E8Lite runs in index 11,
+  and the delta and offset.
+
+**The ROM.** It did not fit at first (FINDINGS above, "Near-band shearing:
+sized"). Making room:
+- the smoothing's tables into the low bytes `$28-$DF` of pages `$7C`, `$7D`
+  and `$7F`, `SmDiv` shrunk to 85 entries on |d| (`SmQ`);
+- `TopCopy1`/`TopCopy2` through shared copy routines;
+- `TopInit`, `SmQ` and `SmPick1` into a separately assembled block at `$7E28`
+  (206 of 216 bytes).
+
+The code area ends at `$63AA`, so pages `$64-$69` became a fourth slice
+column. Far and near slices together needed 942 bytes a line against 944, and
+first-fit packing failed on the fragments. Band 1's range went from +/-5 to
++/-4 (its 90th-percentile slope is 2.6 px a line), freeing 28 bytes a line.
+
+*Checked:*
+- `tools/check-build.sh`: health as checkpoint 88 on four recordings,
+  integrity 0 on four, `ZRowUp` 0 differences, no wild fetch, stress tick
+  rate 100 on all six starts.
+- On screen, on bends, the near kerbs' 6-line sawtooth becomes a continuous
+  edge in both views.
+- Choices over a two-player recording: player 1's near bands mostly s = 0,
+  player 2's mostly s = -1. That looked like a bias, and it is geometry:
+  player 2 drove offset to one side. A probe comparing each choice with the
+  slope of what player 2's view actually draws agreed 2,803 times in 2,820;
+  the 17 were all d = -7, the rounding boundary, with staging a tick apart.
+  With both cars scripted to the same lateral, the two views chose alike.
+
+*Pitfalls on the way:*
+- the first composite let the right piece's clear pixels erase the left
+  piece's (MARIA does not draw clear pixels); caught reading the script;
+- a probe add-on spliced in with `awk -v` had its `\n` escapes turned into
+  line breaks: `string.char(10)` instead, as the other add-ons do.
+
+*Not covered:* band 12 (its right piece is already 31 bytes and there was no
+ROM left); +/-2 px a line on the near bands.

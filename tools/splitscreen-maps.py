@@ -81,6 +81,12 @@ def main():
               % (page, lo, page + 5, 0xFF, page, page + 5, lo))
     print("| $%04X | $%04X | player 2's highlight column: 16 pages, low bytes $00-$27 |"
           % (S.OVL_COL, S.OVL_COL + 0xF27))
+    hc = S._hi_code()[0]
+    print("| $%04X | $%04X | code kept in the $7E window (TopInit, SmQ, SmPick1), %d of 216 bytes |"
+          % (S.HI_CODE, S.HI_CODE + len(hc) - 1, len(hc)))
+    hd, ha = S.hi_data(), S.hi_data_addrs()
+    for n in sorted(ha, key=lambda k: ha[k]):
+        print("| $%04X | $%04X | table %s |" % (ha[n], ha[n] + len(hd[n]) - 1, n))
     print("| $%04X | $%04X | the divider's row lists |" % (S.HUD_DL2, S.HUD_DLB + 1))
     print("| $8000 | $FFFF | the retail 32K, changed in the ranges below |")
 

@@ -10,7 +10,7 @@
 # symbols, so the ROM must come from the current generator). Output lands in
 # build/check-<rom name>/; takes a few minutes, the MAME runs in parallel.
 #
-# What to expect from a healthy build (checkpoint 88):
+# What to expect from a healthy build (checkpoints 88-89):
 #   health       the same verdict line as the previous build on each recording
 #                ("STALLED" is normal here -- see tools/health.py)
 #   integrity    0 racing frames with a zeroed road header, on all four

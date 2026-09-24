@@ -1,6 +1,6 @@
 # Pole Position II VS -- the current design
 
-This page describes the build as it stands at **checkpoint 88**. It is the
+This page describes the build as it stands at **checkpoint 89**. It is the
 reference; `docs/FINDINGS.md` is the history (why each piece is the way it is,
 wrong turns included), and `patches/splitscreen.py` is the source, with the
 reasoning next to each edit. To build it, see the README ("Pole Position II
@@ -30,7 +30,8 @@ result; the rival traffic is shared.
 | Player 2's highlights (design: Defender_2600) | 83 | `p2_overlay_art` | `PP2_NO_OVL` |
 | Both players' bonuses tallied on screen | 84 | `TallyT`, `TallyC`, `TallyEnd`, `QmTally` | |
 | VS in the title logo | 85 | `TITLE_VS` | `PP2_NO_VS` |
-| Far bands 1-5 smoothed (pre-sheared road slices) | 86 | `smooth_art`, `SmSelect`, `SmApply` | `PP2_NO_SMOOTH` |
+| Far bands 1-5 smoothed (pre-sheared road slices; band 1 +/-4 px a line, 2-3 +/-4, 4-5 +/-3) | 86 | `smooth_art`, `SmSelect`, `SmApply` | `PP2_NO_SMOOTH` |
+| Near bands 8-11 smoothed (+/-1 px a line, the line re-split into two pieces) | 89 | `_slices_build`, `SmSelect`, `SmApply` (`SnLoop`), the stage | `PP2_NO_NEAR` |
 | Far bands 1-7 split in two, a stripe per half | 87 | `top_half_src`, `P2TopStage` | `PP2_NO_SPLIT` |
 | The object pass's row search by halving | 88 | `zrow_up_src` | `PP2_LINEAR_CE3E` (test) |
 
@@ -43,8 +44,9 @@ that runs every frame (60 Hz). The build adds to both.
 **Main loop, each tick** (rom:D701 onward, the race tick):
 - `P2Tick` (rom:D713 and rom:D8BC): player 1's track walk (rom:E93D), then
   player 2's drive (`P2Physics`) and its walk (`P2Geom`, both halves), then
-  `SmSelect` picks the far bands' road slices. `TICK_BUSY` is set throughout,
-  so the frame side never reads a half-written curve.
+  `SmSelect` picks the road slices for far bands 1-5 and near bands 8-11.
+  `TICK_BUSY` is set throughout, so the frame side never reads a
+  half-written curve.
 - `CarTick` (rom:D70D) and `RivalCars` (rom:D716): the object tick and the
   object list, with each player's car added to the other's view.
 - At the object rebuild, once vblank has begun (rom:E70D): `P2ObjCommit` --
@@ -66,7 +68,9 @@ that runs every frame (60 Hz). The build adds to both.
   `QMsg` (the divider's message rows) and `P2Sky`.
 - Zones 30-48: player 1's road.
 - Zone 49, index 12 (`VbTail`): stages the curve values for the next frame
-  (unless the tick is mid-write), applies new road slices (`SmApply`), then
+  (unless the tick is mid-write), applies new road slices (`SmApply`: the
+  headers' graphics, and for the near bands a width delta and x offset into
+  `NEAR_DB`/`NEAR_NX`), then
   the stock frame-end, whose hook (rom:F16B) runs `MirrorStage`: the decor
   lists, each band's width and x for both views (the far bands' slice
   adjustments included), player 2's car and highlights.
@@ -74,18 +78,19 @@ that runs every frame (60 Hz). The build adds to both.
 ## What is left in the budget
 
 - **Speed:** the stress scenario (both cars at 240 in traffic) runs 100 race
-  ticks per 600 frames, the stock rate, after checkpoint 88. Before that it
-  was 94-100.
-- **ROM:** the code area ends at `$697E` (limit `$69FF`); the `$6A` slice
-  column has 58 bytes a line spare; the low bytes `$28-$DF` of pages
-  `$7C-$7F` (~830 bytes) are unused but cannot hold a 6-page slice column.
-  Near-band shearing was sized and does not fit without compaction (FINDINGS,
-  "Near-band shearing: sized, and not yet built").
-- **RAM:** the "RAM still free" table below, ~90 bytes in pieces.
+  ticks per 600 frames, the stock rate, at checkpoints 88 and 89.
+- **ROM:** essentially full. The code area ends at `$63AA` (limit `$63FF`,
+  85 bytes spare); the `$7E` code block has 10 of 216 bytes spare; the four
+  slice columns are packed to within ~30 bytes a line; the table windows in
+  `$7C/$7D/$7F` have ~150 bytes left in pieces. More would mean compacting
+  code (each loop costs some speed) -- FINDINGS, checkpoint 89.
+- **RAM:** the "RAM still free" table below, about 70 bytes in pieces; zero
+  page is fully used.
 
 ## Known limits
 
-- The near bands (8-12) still step on bends.
+- Band 12, the nearest, still steps on bends (its right piece is already 31
+  bytes, and there was no ROM left for it).
 - Band 1's stripes (2.5 rows long) are still coarser than stock at half-band
   resolution.
 - A far band's third object, or one in an unexpected slot, draws in the
@@ -189,6 +194,7 @@ after changing the layout.
 | E8L_T | $0065 | $0066 | 2 |
 | SM | $0067 | $0091 | 43 |
 | ZU | $0092 | $0093 | 2 |
+| SM_NIX | $0094 | $009B | 8 |
 | P2_DECOR_DL | $1B00 | $1B2D | 46 |
 | P2_HOR_DL | $1B30 | $1B35 | 6 |
 | P2_DECOR_TOP | $1B9C | $1BC9 | 46 |
@@ -198,6 +204,7 @@ after changing the layout.
 | HUD_POS | $2021 | $2026 | 6 |
 | P2_QUAL | $2027 | $202C | 6 |
 | P2_TBS | $202D | $202D | 1 |
+| NEAR | $202E | $203F | 18 |
 | P2_TOP4 | $210F | $211C | 14 |
 | P2_TOP5 | $211D | $212A | 14 |
 | P2_TOP6 | $212B | $2138 | 14 |
@@ -249,10 +256,8 @@ after changing the layout.
 
 | from | to | note |
 |---|---|---|
-| $0094 | $009B | zero page: injection colour rows and the dead curve copy (patched out) |
 | $1B36 | $1B4D | RowCurveXStaged's tail: the dead curve copy's target (patched out) |
 | $1BD8 | $1BE9 | RowCurveXStagedSrc's tail: the stripped walk tail's output |
-| $202E | $203F | untouched |
 | $2139 | $213F | untouched (below the stack's reach) |
 | $222A | $2233 | stock race DLL, replaced by DLL_BASE; untouched |
 | $25FB | $25FF | past the end of DLL_BASE's 51 zones and the top-half lists |
@@ -261,88 +266,105 @@ after changing the layout.
 
 | from | to | what |
 |---|---|---|
-| $4000 | $697C | new code area (`_ext()`), 10621 bytes; limit $69FF |
+| $4000 | $63AA | new code area (`_ext()`), 9131 bytes; limit $63FF |
 | $7028 | $75FF | sheared road slices: pages $70-$75, low bytes $28-$FF |
 | $7628 | $7BFF | sheared road slices: pages $76-$7B, low bytes $28-$FF |
 | $6A00 | $6FFF | sheared road slices: pages $6A-$6F, low bytes $00-$FF |
+| $6400 | $69FF | sheared road slices: pages $64-$69, low bytes $00-$FF |
 | $7000 | $7F27 | player 2's highlight column: 16 pages, low bytes $00-$27 |
+| $7E28 | $7EF5 | code kept in the $7E window (TopInit, SmQ, SmPick1), 206 of 216 bytes |
+| $7C28 | $7C89 | table TopTpl |
+| $7C8A | $7CDE | table SmDiv |
+| $7CDF | $7CEA | table NAlo |
+| $7CEB | $7CF6 | table NAhi |
+| $7CF7 | $7CFE | table NLstLo |
+| $7D28 | $7D50 | table SmLo |
+| $7D51 | $7D79 | table SmHi |
+| $7D7A | $7DA2 | table SmW |
+| $7DA3 | $7DCB | table SmDx |
+| $7DCC | $7DD7 | table NBlo |
+| $7DD8 | $7DE3 | table NBhi |
+| $7DE4 | $7DEF | table NDb |
+| $7DF0 | $7DFB | table NDxb |
+| $7F28 | $7F2F | table NLstHi |
+| $7F30 | $7F37 | table NBase |
 | $7FE0 | $7FF9 | the divider's row lists |
 | $8000 | $FFFF | the retail 32K, changed in the ranges below |
 
-### Ranges changed in the retail 32K (73 ranges, 4006 bytes)
+### Ranges changed in the retail 32K (73 ranges, 4034 bytes)
 
 | from | bytes | first described at (patches/splitscreen.py line) |
 |---|---:|---|
-| $A5D6 | 4 | 1771 |
-| $A6BE | 1 | 6737 |
-| $A6C1 | 1 | 6747 |
-| $A6D3 | 1 | 6738 |
-| $B00E | 4 | 1781 |
-| $B10A | 8 | 1790 |
-| $B20A | 8 | 1789 |
-| $B30A | 8 | 1788 |
-| $B40A | 8 | 1787 |
-| $B50A | 8 | 1786 |
-| $B60A | 8 | 1785 |
-| $B70A | 8 | 1784 |
-| $B80A | 8 | 1783 |
-| $B90A | 8 | 1782 |
-| $C372 | 3 | 4154 |
-| $C378 | 3 | 4163 |
-| $C87E | 3 | 3585 |
-| $CBE3 | 4 | 891 |
-| $CBEB | 4 | 886 |
-| $CC5E | 3 | 6152 |
-| $CDF2 | 3 | 6882 |
-| $CE0F | 3 | 6882 |
-| $CE72 | 3 | 6882 |
-| $CE8B | 3 | 6882 |
-| $D30D | 4 | 4781 |
-| $D316 | 3 | 4746 |
-| $D31C | 4 | 4839 |
-| $D324 | 4 | 4580 |
-| $D32D | 6 | 4712 |
-| $D422 | 3 | 4233 |
-| $D4BC | 4 | 4580 |
-| $D58D | 6 | 4680 |
-| $D6A9 | 4 | 4659 |
-| $D70A | 6 | 4862 |
-| $D713 | 6 | 1663 |
-| $D81B | 2 | 6713 |
-| $D848 | 3 | 880 |
-| $D8BC | 3 | 6913 |
-| $D8D7 | 1 | 6723 |
-| $DA92 | 2 | 6715 |
-| $DB55 | 6 | 4704 |
-| $DF5A | 3 | 4100 |
-| $DFDA | 3 | 4125 |
-| $E3CD | 3 | 2615 |
-| $E4B7 | 5 | 3567 |
-| $E59D | 5 | 3719 |
-| $E5E8 | 5 | 3573 |
-| $E617 | 4 | 3579 |
-| $E70D | 3 | 1667 |
-| $E79C | 3 | 6129 |
-| $E8E6 | 3 | 5055 |
-| $E8F8 | 2 | 6843 |
-| $E90E | 2 | 6843 |
-| $E935 | 2 | 6843 |
+| $A5D6 | 4 | 1788 |
+| $A6BE | 1 | 6979 |
+| $A6C1 | 1 | 6989 |
+| $A6D3 | 1 | 6980 |
+| $B00E | 4 | 1798 |
+| $B10A | 8 | 1807 |
+| $B20A | 8 | 1806 |
+| $B30A | 8 | 1805 |
+| $B40A | 8 | 1804 |
+| $B50A | 8 | 1803 |
+| $B60A | 8 | 1802 |
+| $B70A | 8 | 1801 |
+| $B80A | 8 | 1800 |
+| $B90A | 8 | 1799 |
+| $C372 | 3 | 4390 |
+| $C378 | 3 | 4399 |
+| $C87E | 3 | 3821 |
+| $CBE3 | 4 | 901 |
+| $CBEB | 4 | 896 |
+| $CC5E | 3 | 6389 |
+| $CDF2 | 3 | 7124 |
+| $CE0F | 3 | 7124 |
+| $CE72 | 3 | 7124 |
+| $CE8B | 3 | 7124 |
+| $D30D | 4 | 5017 |
+| $D316 | 3 | 4982 |
+| $D31C | 4 | 5075 |
+| $D324 | 4 | 4816 |
+| $D32D | 6 | 4948 |
+| $D422 | 3 | 4469 |
+| $D4BC | 4 | 4816 |
+| $D58D | 6 | 4916 |
+| $D6A9 | 4 | 4895 |
+| $D70A | 6 | 5098 |
+| $D713 | 6 | 1680 |
+| $D81B | 2 | 6955 |
+| $D848 | 3 | 890 |
+| $D8BC | 3 | 7160 |
+| $D8D7 | 1 | 6965 |
+| $DA92 | 2 | 6957 |
+| $DB55 | 6 | 4940 |
+| $DF5A | 3 | 4336 |
+| $DFDA | 3 | 4361 |
+| $E3CD | 3 | 2851 |
+| $E4B7 | 5 | 3803 |
+| $E59D | 5 | 3955 |
+| $E5E8 | 5 | 3809 |
+| $E617 | 4 | 3815 |
+| $E70D | 3 | 1684 |
+| $E79C | 3 | 6366 |
+| $E8E6 | 3 | 5291 |
+| $E8F8 | 2 | 7085 |
+| $E90E | 2 | 7085 |
+| $E935 | 2 | 7085 |
 | $E9BE | 4 | 626 |
-| $EA2C | 1 | 813 |
-| $EBFD | 2 | 6857 |
-| $EC02 | 2 | 6858 |
-| $ED1E | 2 | 6759 |
-| $ED29 | 2 | 975 |
-| $ED42 | 5 | 906 |
-| $ED48 | 2 | 6999 |
-| $ED9D | 156 | 864 |
+| $EA2C | 1 | 823 |
+| $EBFD | 2 | 7099 |
+| $EC02 | 2 | 7100 |
+| $ED1E | 2 | 7001 |
+| $ED29 | 2 | 985 |
+| $ED42 | 5 | 916 |
+| $ED48 | 2 | 7246 |
+| $ED9D | 156 | 874 |
 | $EE3A | 108 | 342 |
-| $EEC0 | 12 | 679 |
+| $EEC0 | 12 | 677 |
 | $EED0 | 518 | 464 |
 | $F0EB | 88 | 472 |
-| $F150 | 2 | 6855 |
-| $F158 | 2 | 1035 |
-| $F160 | 3 | 5039 |
-| $F16C | 2 | 7061 |
-| $F171 | 11 | 7021 |
-| $F400 | 2859 | 872 |
+| $F150 | 2 | 7097 |
+| $F158 | 2 | 1045 |
+| $F160 | 3 | 5275 |
+| $F16C | 2 | 7308 |
+| $F171 | 11 | 7268 |
+| $F400 | 2887 | 882 |

@@ -34,7 +34,7 @@ the HUD as a divider in the middle, player 1's view below; two independent
 cars, cameras, laps, clocks, scores and results. The current design --
 screen layout, RAM and ROM maps, where each piece runs and every patch site
 -- is summarised in docs/SPLITSCREEN.md; docs/FINDINGS.md is the full,
-chronological record (checkpoints 1-88), wrong turns included.
+chronological record (checkpoints 1-89), wrong turns included.
 
 The names MirrorStage, MirrorInit, MirrorPalette and mirror_plan are
 historical: the top view began as a mirror of player 1's road lists, and
@@ -46,7 +46,8 @@ inactive (FINE_BAND_LAST = 0).
 
 Features, all on by default:
 
-    PP2_NO_SMOOTH=1   far bands 1-5 without the sheared road slices (ck 86)
+    PP2_NO_SMOOTH=1   no sheared road slices at all (ck 86, 89)
+    PP2_NO_NEAR=1     the near bands 8-11 without them (ck 89)
     PP2_NO_SPLIT=1    far bands 1-7 as single 6-line zones (ck 87)
     PP2_NO_OVL=1      player 2's car without its highlights (ck 83)
     PP2_NO_VS=1       the title logo keeps its II (ck 85)
@@ -115,7 +116,7 @@ ROM_SIZE = 32768                 # the SOURCE ROM, as dumped
 OUT_BASE = 0x4000
 OUT_SIZE = 49152
 EXT_ADDR = 0x4000                # the object code's own area
-EXT_END = 0x69FF                 # $6A00-$6FFF: sheared road slices;
+EXT_END = 0x63FF                 # $6400-$6FFF: sheared road slices;
                                  # $7000-$7FFF: the highlight column (low
                                  #   bytes $00-$27), more slices ($28-$FF of
                                  #   $70-$7B) and the HUD row lists ($7FE0)
@@ -631,10 +632,8 @@ P2_PASSY = 0x273F            # the list index, while testing a slot
 # all four tracks and 0923-0205 the attract demo). "untouched": never written
 # either. Free for new work; claim a range by moving it out of this list.
 FREE_RAM = [
-    (0x0094, 0x009B, "zero page: injection colour rows and the dead curve copy (patched out)"),
     (0x1B36, 0x1B4D, "RowCurveXStaged's tail: the dead curve copy's target (patched out)"),
     (0x1BD8, 0x1BE9, "RowCurveXStagedSrc's tail: the stripped walk tail's output"),
-    (0x202E, 0x203F, "untouched"),
     (0x2139, 0x213F, "untouched (below the stack's reach)"),
     (0x222A, 0x2233, "stock race DLL, replaced by DLL_BASE; untouched"),
     (0x25FB, 0x25FF, "past the end of DLL_BASE's 51 zones and the top-half lists"),
@@ -750,8 +749,20 @@ P2_OVL = not os.getenv("PP2_NO_OVL")
 # slope rounded; x and width are adjusted for the copy's padding. Band ->
 # the largest |s| kept (its measured worst slope, docs/FINDINGS.md "Curve
 # smoothing, re-evaluated").
-SMOOTH = {} if os.getenv("PP2_NO_SMOOTH") else {1: 5, 2: 4, 3: 4, 4: 3, 5: 3}
-SMOOTH_COLS = [(0x70, 0x28), (0x76, 0x28), (0x6A, 0x00)]   # 6-page columns:
+SMOOTH = {} if os.getenv("PP2_NO_SMOOTH") else {1: 4, 2: 4, 3: 4, 4: 3, 5: 3}   # band 1 was +/-5 until checkpoint 89
+# Tables the smoothing reads, out of the code area: the low bytes $28-$DF/$FF
+# of pages $7C-$7F, past the highlight column's padding (checkpoint 88).
+DATA_WINDOWS = [(0x7C28, 0xD8), (0x7D28, 0xD8), (0x7F28, 0xB8)]   # $7E28: HI_CODE
+# Near bands (checkpoint 89): the whole line (left piece at -60, right piece at
+# 0) sheared +/-1 px a line and split back into a 16-byte left piece and a right
+# piece; the right piece's width goes in as a delta, its x as an offset.
+NEAR_SMOOTH = [] if (os.getenv("PP2_NO_NEAR") or os.getenv("PP2_NO_SMOOTH")) else [8, 9, 10, 11]
+NEAR_W1 = {8: 19, 9: 21, 10: 25, 11: 29, 12: 31}   # the right piece, stock ($1F3C near rows)
+SM_NIX = 0x0094              # 8: near slice index, player 1's bands 8-11 then player 2's
+NEAR_DB = 0x202E             # 9: right-piece width delta, P1 b8-11, P2 b8-12 (b12 stays 0)
+NEAR_NX = 0x2037             # 9: P1: the band's x base + offset; P2: the offset
+HI_CODE = 0x7E28             # a code block in the $7E window (216 bytes): cold or shared
+SMOOTH_COLS = [(0x70, 0x28), (0x76, 0x28), (0x6A, 0x00), (0x64, 0x00)]   # 6-page columns:
                                                            #   first page, first low byte
 SM_IX = 0x0067               # 10: each smoothed band's slice index, P1's then P2's
 SM_NEW = 0x0071              # set by SmSelect, cleared by SmApply
@@ -1088,7 +1099,7 @@ def hud_reassert_src(addr):
         [] if os.getenv("PP2_KEEP_INJECTION") else road_stage_src()
     ) + p2_stage_src() + p2_car_src() + [
         "    RTS",
-    ] + p2_stage_tables() + p2_slot_tables() + ["P2Emit = $%04X" % _ext()[1]["P2Emit"], "SmSelect = $%04X" % _ext()[1]["SmSelect"], "TopInit = $%04X" % _ext()[1]["TopInit"], "TopCopy1 = $%04X" % _ext()[1]["TopCopy1"], "TopCopy2 = $%04X" % _ext()[1]["TopCopy2"], "P2TopStage = $%04X" % _ext()[1]["P2TopStage"], "SmInit = $%04X" % _ext()[1]["SmInit"], "VbTail = $%04X" % _ext()[1]["VbTail"], "P2ObjSeg = $%04X" % _ext()[1]["P2ObjSeg"], "P2ObjInit = $%04X" % _ext()[1]["P2ObjInit"], "P2Collide = $%04X" % _ext()[1]["P2Collide"], "P2Clear = $%04X" % _ext()[1]["P2Clear"], "HudTick = $%04X" % _ext()[1]["HudTick"], "PvpCrash = $%04X" % _ext()[1]["PvpCrash"], "P2RaceSlot = $%04X" % _ext()[1]["P2RaceSlot"], "P2RaceLane = $%04X" % _ext()[1]["P2RaceLane"], "P2Ctl = $%04X" % _ext()[1]["P2Ctl"], "HudFill = $%04X" % _ext()[1]["HudFill"], "P2CrashTick = $%04X" % _ext()[1]["P2CrashTick"], "P2BuildLists = $%04X" % _rival_helpers()[1]["P2BuildLists"]] + [
+    ] + p2_stage_tables() + p2_slot_tables() + ["P2Emit = $%04X" % _ext()[1]["P2Emit"], "SmSelect = $%04X" % _ext()[1]["SmSelect"], "TopInit = $%04X" % _hi_code()[1]["TopInit"], "TopCopy1 = $%04X" % _ext()[1]["TopCopy1"], "TopCopy2 = $%04X" % _ext()[1]["TopCopy2"], "P2TopStage = $%04X" % _ext()[1]["P2TopStage"], "SmInit = $%04X" % _ext()[1]["SmInit"], "VbTail = $%04X" % _ext()[1]["VbTail"], "P2ObjSeg = $%04X" % _ext()[1]["P2ObjSeg"], "P2ObjInit = $%04X" % _ext()[1]["P2ObjInit"], "P2Collide = $%04X" % _ext()[1]["P2Collide"], "P2Clear = $%04X" % _ext()[1]["P2Clear"], "HudTick = $%04X" % _ext()[1]["HudTick"], "PvpCrash = $%04X" % _ext()[1]["PvpCrash"], "P2RaceSlot = $%04X" % _ext()[1]["P2RaceSlot"], "P2RaceLane = $%04X" % _ext()[1]["P2RaceLane"], "P2Ctl = $%04X" % _ext()[1]["P2Ctl"], "HudFill = $%04X" % _ext()[1]["HudFill"], "P2CrashTick = $%04X" % _ext()[1]["P2CrashTick"], "P2BuildLists = $%04X" % _rival_helpers()[1]["P2BuildLists"]] + [
 
         "WrapSlot0:",
         "    CMP #$A0",
@@ -1310,10 +1321,15 @@ def road_stage_src():
             # by sub_E8AC and is untouched by the strip, so slot1's width is
             # still read straight out of it.
             n = i - NEAR_FIRST_ROW
-            lines += ["    LDA $%04X" % (NEAR_SLOT1_W + n), "    STA $%04X" % (band + 5),
+            nm = b in NEAR_SMOOTH                 # checkpoint 89: its slice's
+            e = b - 8                             #   width delta and x base
+            lines += ["    LDA $%04X" % (NEAR_SLOT1_W + n)] + (
+                ["    SEC", "    SBC $%04X" % (NEAR_DB + e)] if nm else []) + [
+                      "    STA $%04X" % (band + 5),
                       "    AND #$E0", "    ORA #$10", "    STA $%04X" % (band + 1),
                       "    LDA $%04X" % (STG_ROFF + b),   # RowCurveOffset[i], staged
-                      "    CLC", "    ADC #$%02X" % band_base(i),
+                      "    CLC"] + (
+                ["    ADC $%04X" % (NEAR_NX + e)] if nm else ["    ADC #$%02X" % band_base(i)]) + [
                       "    STA $%04X" % (band + 7)]
             lines += wrap_guard()
             lines += ["    STA $%04X" % (band + 3)]
@@ -1423,6 +1439,8 @@ def ram_claims():
         ("P2_TBS", P2_TBS, 1),
         ("SM", SM_IX, 0x2B),
         ("ZU", ZU_LO, 2),
+        ("SM_NIX", SM_NIX, 8),
+        ("NEAR", NEAR_DB, 18),
     ] + [("P1_TOP%d" % b, P1_TOP[b], TOP_SIZE) for b in SPLIT_BANDS] + [
         ("P2_TOP%d" % b, P2_TOP[b], TOP_SIZE) for b in SPLIT_BANDS] + [
         ("P2_RACE", P2_CLOCK, 7),
@@ -1791,7 +1809,26 @@ TITLE_VS = [
 ]
 
 
+_SLICES = []
+
+
 def smooth_art():
+    """(art, far tables, far bases): see _slices_build."""
+    if not _SLICES:
+        _SLICES.append(_slices_build())
+    return _SLICES[0][:3]
+
+
+def near_tabs():
+    """The near bands' tables (checkpoint 89): per variant (3 a band, s = -1,
+    0, +1), the left piece's low/high, the right piece's low/high, its width
+    delta and its x offset."""
+    if not _SLICES:
+        _SLICES.append(_slices_build())
+    return _SLICES[0][3]
+
+
+def _slices_build():
     """The sheared far-band slices: ({address: byte}, tables).
 
     A band's six lines are pages hi+5 (top) down to hi at its low byte
@@ -1829,9 +1866,62 @@ def smooth_art():
                 rows[k][c - first] = v
             by = [[sum(row[i * 4 + j] << (6 - 2 * j) for j in range(4)) for i in range(wb)]
                   for row in rows]
-            need.append((wb, len(tab["lo"]), by))
+            need.append((wb, ("far", len(tab["lo"])), by))
             tab["lo"].append(None); tab["hi"].append(None)
             tab["w"].append(32 - wb); tab["dx"].append(first & 0xFF)
+    # the near bands (checkpoint 89): the line as drawn -- the left piece at
+    # -60, the right piece at 0 over it -- sheared, then split again so the
+    # left piece is 16 bytes starting 60 px left of the right piece, as stock
+    # (the stage's wrap guard then places it unchanged); the right piece takes
+    # the rest. Its x offset is where it now starts; its width, a delta.
+    ntab = {k: [] for k in ("alo", "ahi", "blo", "bhi", "db", "dxb")}
+    for b in NEAR_SMOOTH:
+        lo0, hi0 = BAND_GFX[b]
+        lo1, hi1 = BAND_SLOT1[b]
+        w1 = NEAR_W1[b]
+        comp = []
+        for k in range(6):
+            row = {}
+            for i in range(16):
+                v8 = rom[(((hi0 + 5 - k) << 8) + lo0 + i) - BASE]
+                for j in range(4):
+                    v = (v8 >> (6 - 2 * j)) & 3
+                    if v:
+                        row[i * 4 + j - 60] = v
+            for i in range(w1):
+                v8 = rom[(((hi1 + 5 - k) << 8) + lo1 + i) - BASE]
+                for j in range(4):
+                    c = i * 4 + j
+                    v = (v8 >> (6 - 2 * j)) & 3
+                    if v:                   # clear pixels leave the left piece's
+                        row[c] = v
+            comp.append(row)
+        for sh in (-1, 0, 1):
+            if sh == 0:
+                for k2, v in (("alo", lo0), ("ahi", hi0), ("blo", lo1), ("bhi", hi1), ("db", 0), ("dxb", 0)):
+                    ntab[k2].append(v)
+                continue
+            pts = {}
+            for k in range(6):
+                for c, v in comp[k].items():
+                    pts[(k, c + sh * (k - BAND_SAMPLE))] = v
+            cmin = min(c for _, c in pts)
+            cmax = max(c for _, c in pts)
+            bs = cmin + 60                           # the right piece's start
+            wb = (cmax - bs) // 4 + 1
+            assert wb <= 31, "near band %d shear %d: right piece %d bytes" % (b, sh, wb)
+            assert all(c >= bs - 60 for _, c in pts)
+            abytes = [[sum(pts.get((k, bs - 60 + i * 4 + j), 0) << (6 - 2 * j) for j in range(4))
+                       for i in range(16)] for k in range(6)]
+            bbytes = [[sum(pts.get((k, bs + i * 4 + j), 0) << (6 - 2 * j) for j in range(4))
+                       for i in range(wb)] for k in range(6)]
+            ix = len(ntab["alo"])
+            for k2 in ntab:
+                ntab[k2].append(None)
+            ntab["db"][ix] = (wb - w1) & 0xFF
+            ntab["dxb"][ix] = bs & 0xFF
+            need.append((16, ("na", ix), abytes))
+            need.append((wb, ("nb", ix), bbytes))
     free = [lo for _, lo in SMOOTH_COLS]
     for wb, ix, by in sorted(need, key=lambda t: -t[0]):
         for ci, (page, _) in enumerate(SMOOTH_COLS):
@@ -1841,11 +1931,120 @@ def smooth_art():
                 break
         else:
             raise SystemExit("sheared slices do not fit SMOOTH_COLS")
-        tab["lo"][ix], tab["hi"][ix] = lo, page
+        kind, n = ix
+        if kind == "far":
+            tab["lo"][n], tab["hi"][n] = lo, page
+        elif kind == "na":
+            ntab["alo"][n], ntab["ahi"][n] = lo, page
+        else:
+            ntab["blo"][n], ntab["bhi"][n] = lo, page
         for k in range(6):
             for i in range(wb):
                 art[((page + 5 - k) << 8) + lo + i] = by[k][i]
-    return art, tab, base
+    return art, tab, base, ntab
+
+
+def hi_data():
+    """{name: bytes} for the tables kept in DATA_WINDOWS."""
+    out = {}
+    if SMOOTH:
+        _, tab, _vb = smooth_art()
+        out["SmDiv"] = [min(6, int(round(i / 12.0))) for i in range(0x55)]
+        for key, lab in (("lo", "SmLo"), ("hi", "SmHi"), ("w", "SmW"), ("dx", "SmDx")):
+            out[lab] = list(tab[key])
+    if NEAR_SMOOTH:
+        nt = near_tabs()
+        for k2, lab in (("alo", "NAlo"), ("ahi", "NAhi"), ("blo", "NBlo"), ("bhi", "NBhi"),
+                        ("db", "NDb"), ("dxb", "NDxb")):
+            out[lab] = list(nt[k2])
+        lay = p2_band_layout()
+        lists = [ALL_ROAD_BANDS[b] for b in NEAR_SMOOTH] + [lay[b]["addr"] for b in NEAR_SMOOTH]
+        out["NLstLo"] = [a & 0xFF for a in lists]
+        out["NLstHi"] = [a >> 8 for a in lists]
+        out["NBase"] = [band_base(6 * b + 3) for b in NEAR_SMOOTH] + [0] * len(NEAR_SMOOTH)
+    if SPLIT_BANDS:
+        tpl = []
+        for b in SPLIT_BANDS:
+            lo, hi = BAND_GFX[b]
+            tpl += [lo, STOCK_WIDTH_FIELD[b], hi + 3, 0xA1] + [0x00, 0x1F, 0x00, 0xA1] * TOP_K + [0, 0]
+        out["TopTpl"] = tpl
+    return out
+
+
+def hi_data_addrs():
+    """First-fit, largest first, into DATA_WINDOWS: {name: address}."""
+    d = hi_data()
+    free = [list(w) for w in DATA_WINDOWS]
+    addr = {}
+    for name in sorted(d, key=lambda n: -len(d[n])):
+        n = len(d[name])
+        for w in free:
+            if w[1] >= n:
+                addr[name] = w[0]
+                w[0] += n
+                w[1] -= n
+                break
+        else:
+            raise SystemExit("table %s (%d bytes) fits no data window" % (name, n))
+    return addr
+
+
+def hi_code_src():
+    """The code kept in the $7E window (checkpoint 89), assembled on its own:
+    what the $4000 area had no room for. TopInit runs once at boot; SmQ and
+    SmPick1 are the slope helpers SmSelect calls."""
+    out = [".org $%04X" % HI_CODE]
+    out += ["%s = $%04X" % (k, v) for k, v in sorted(hi_data_addrs().items())]
+    if SPLIT_BANDS:
+        # TopInit: each list from its template (the band's road header three
+        # pages up, parked slots, the end); the same template serves both views
+        out += ["TopInit:"]
+        for view, T in (("P1", P1_TOP), ("P2", P2_TOP)):
+            for i, b in enumerate(SPLIT_BANDS):
+                out += ["    LDX #$%02X" % (TOP_SIZE - 1),
+                        "Ti%s%d:" % (view, b),
+                        "    LDA TopTpl+%d,X" % (i * TOP_SIZE),
+                        "    STA $%04X,X" % T[b],
+                        "    DEX",
+                        "    BPL Ti%s%d" % (view, b)]
+        out += ["    RTS"]
+    else:
+        out += ["TopInit:", "    RTS"]
+    if not SMOOTH:
+        return out
+    # SmQ: A = d (signed) -> A = round(d/12), from |d| (SmDiv, 85 entries)
+    out += ["SmQ:",
+            "    BMI SqNeg",
+            "    CMP #$55", "    BCC SqP", "    LDA #$54",
+            "SqP:",
+            "    TAY", "    LDA SmDiv,Y", "    RTS",
+            "SqNeg:",
+            "    EOR #$FF", "    CLC", "    ADC #$01",
+            "    CMP #$55", "    BCC SqN", "    LDA #$54",
+            "SqN:",
+            "    TAY", "    LDA SmDiv,Y",
+            "    EOR #$FF", "    CLC", "    ADC #$01",
+            "    RTS",
+            # SmPick1: A = d -> 0, 1 or 2 (s = -1, 0, +1, clamped)
+            "SmPick1:",
+            "    JSR SmQ",
+            "    CLC", "    ADC #$01",
+            "    BPL SpA", "    LDA #$00",
+            "SpA:",
+            "    CMP #$03", "    BCC SpB", "    LDA #$02",
+            "SpB:",
+            "    RTS"]
+    return out
+
+
+_HI = []
+
+
+def _hi_code():
+    if not _HI:
+        _HI.append(_assemble(hi_code_src()))
+        assert len(_HI[0][0]) <= 0xD8, "HI_CODE is %d bytes, the window 216" % len(_HI[0][0])
+    return _HI[0]
 
 
 def smooth_far_src():
@@ -1878,8 +2077,7 @@ def smooth_far_src():
 
     def pick(k, b, lab):
         r = SMOOTH[b]
-        return ["    TAY",
-                "    LDA SmDiv,Y",
+        return ["    JSR SmQ",
                 "    CLC", "    ADC #$%02X" % r,
                 "    BPL %sa" % lab,
                 "    LDA #$00",
@@ -1924,6 +2122,22 @@ def smooth_far_src():
                 "    CLC", "    ADC $%02X" % (T + 3)]
         out += pick(k, b, "SsB%d" % b)
         k += 1
+    # the near bands: 0..2 (s = -1..+1) a band, from the same differences
+    for e, b in enumerate(NEAR_SMOOTH):
+        out += ["    LDA $%04X" % (ROW_CURVE_OFFSET + 6 * (b + 1) + BAND_SAMPLE),
+                "    SEC",
+                "    SBC $%04X" % (ROW_CURVE_OFFSET + 6 * (b - 1) + BAND_SAMPLE),
+                "    JSR SmPick1",
+                "    CLC", "    ADC #$%02X" % (3 * e),
+                "    STA $%02X" % (SM_NIX + e)]
+    for e, b in enumerate(NEAR_SMOOTH):
+        out += ["    LDA $%04X" % (P2_BANDX + b + 1),
+                "    SEC", "    SBC $%04X" % (P2_BANDX + b - 1),
+                "    SEC", "    SBC #$%02X" % ((bb(b + 1) - bb(b - 1)) & 0xFF),
+                "    CLC", "    ADC $%02X" % (T + 3),
+                "    JSR SmPick1",
+                "    CLC", "    ADC #$%02X" % (3 * e),
+                "    STA $%02X" % (SM_NIX + len(NEAR_SMOOTH) + e)]
     out += ["    LDA #$01", "    STA $%02X" % SM_NEW, "    RTS"]
 
     # --- SmApply, from VbTail once the tick's values are whole
@@ -1946,7 +2160,31 @@ def smooth_far_src():
                     "    LDA SmW,Y", "    STA $%02X" % (W + b - 1),
                     "    LDA SmDx,Y", "    STA $%02X" % (DX + b - 1)]
             k += 1
-    out += ["    RTS"]
+    if not NEAR_SMOOTH:
+        out += ["    RTS"]
+    else:
+        # the near bands (checkpoint 89): each entry's two headers through
+        # E8L_T (free here: E8Lite runs in index 11, this in index 12), and
+        # its width delta and x into NEAR_DB/NEAR_NX for the stage
+        n = 2 * len(NEAR_SMOOTH)
+        out += ["    LDX #$%02X" % (n - 1),
+                "SnLoop:",
+                "    LDY $%02X,X" % SM_NIX,          # the variant
+                "    LDA NDb,Y", "    STA $%04X,X" % NEAR_DB,
+                "    LDA NDxb,Y", "    CLC", "    ADC NBase,X", "    STA $%04X,X" % NEAR_NX,
+                "    LDA NLstLo,X", "    STA $%02X" % E8L_T,
+                "    LDA NLstHi,X", "    STA $%02X" % (E8L_T + 1),
+                "    STX $%02X" % (SM_T + 2),        # SmSelect is done with it by now
+                "    TYA", "    TAX",
+                "    LDY #$00", "    LDA NAlo,X", "    STA ($%02X),Y" % E8L_T,
+                "    LDY #$02", "    LDA NAhi,X", "    STA ($%02X),Y" % E8L_T,
+                "    LDY #$04", "    LDA NBlo,X", "    STA ($%02X),Y" % E8L_T,
+                "    LDY #$06", "    LDA NBhi,X", "    STA ($%02X),Y" % E8L_T,
+                "    LDX $%02X" % (SM_T + 2),
+                "    DEX",
+                "    BPL SnLoop",
+                "    RTS"]
+        assert n + 1 == 9 and (NEAR_DB + 9 == NEAR_NX)
 
     # --- SmInit, at boot: stock widths, no adjustment, nothing pending
     out += ["SmInit:", "    LDX #$06", "SiL:",
@@ -1954,17 +2192,21 @@ def smooth_far_src():
             "    LDA #$00", "    STA $%02X,X" % SM_DX1, "    STA $%02X,X" % SM_DX2,
             "    DEX", "    BPL SiL",
             "    STA $%02X" % SM_NEW,
+    ] + ([] if not NEAR_SMOOTH else [
+            "    LDX #$08",                      # no width delta, no offset,
+            "SiN:",                              # player 1's x base as stock
+            "    LDA SiNx,X", "    STA $%04X,X" % NEAR_NX,
+            "    LDA #$00", "    STA $%04X,X" % NEAR_DB,
+            "    DEX", "    BPL SiN",
+    ]) + [
             "    RTS",
+    ] + ([] if not NEAR_SMOOTH else [
+            "SiNx:", "    .byte " + ",".join("$%02X" % v for v in
+                                               [band_base(6 * b + 3) for b in NEAR_SMOOTH] + [0] * 5),
+    ]) + [
             "SmStockW:", "    .byte " + ",".join("$%02X" % STOCK_WIDTH_FIELD[b] for b in range(1, 8))]
-    div = []
-    for i in range(256):
-        v = i - 256 if i >= 128 else i
-        q = int(round(v / 12.0)) if v >= 0 else -int(round(-v / 12.0))
-        div.append(max(-6, min(6, q)) & 0xFF)
-    out += ["SmDiv:"] + ["    .byte " + ",".join("$%02X" % v for v in div[i:i + 16])
-                         for i in range(0, 256, 16)]
-    for key, lab in (("lo", "SmLo"), ("hi", "SmHi"), ("w", "SmW"), ("dx", "SmDx")):
-        out += ["%s:" % lab, "    .byte " + ",".join("$%02X" % v for v in tab[key])]
+    out += ["%s = $%04X" % (k, v) for k, v in sorted(hi_data_addrs().items())]
+    out += ["%s = $%04X" % (k, _hi_code()[1][k]) for k in ("SmQ", "SmPick1")]
     return out
 
 
@@ -1983,7 +2225,7 @@ def top_half_src():
     searched.
     """
     if not SPLIT_BANDS:
-        return ["TopInit:", "TopCopy1:", "TopCopy2:", "P2TopStage:", "    RTS"]
+        return ["TopCopy1:", "TopCopy2:", "P2TopStage:", "    RTS"]
     lay = p2_band_layout()
     import io as _io
     _rom = bytearray(_io.open(load_source()[0], "rb").read())
@@ -2002,38 +2244,25 @@ def top_half_src():
                 "    LDA $%04X" % (lay[b]["addr"] + 3),
                 "    STA $%04X" % (P2_TOP[b] + 3)]
     out += ["    RTS"]
-    # TopInit: each list from its template (the band's road header three
-    # pages up, parked slots, the end); the same template serves both views
-    out += ["TopInit:"]
-    for view, T in (("P1", P1_TOP), ("P2", P2_TOP)):
-        for i, b in enumerate(SPLIT_BANDS):
-            out += ["    LDX #$%02X" % (TOP_SIZE - 1),
-                    "Ti%s%d:" % (view, b),
-                    "    LDA TopTpl+%d,X" % (i * TOP_SIZE),
-                    "    STA $%04X,X" % T[b],
-                    "    DEX",
-                    "    BPL Ti%s%d" % (view, b)]
-    out += ["    RTS", "TopTpl:"]
-    for b in SPLIT_BANDS:
-        lo, hi = BAND_GFX[b]
-        tpl = [lo, STOCK_WIDTH_FIELD[b], hi + 3, 0xA1] + [0x00, 0x1F, 0x00, 0xA1] * TOP_K + [0, 0]
-        out += ["    .byte " + ",".join("$%02X" % v for v in tpl)]
-    # player 2: its first TOP_K slots as they are; an empty one is parked
+    # player 2: its first TOP_K slots as they are (a parked slot stays parked:
+    # x $A1). Shared copies by destination page: Y = the source slot's low
+    # byte in page $26, X = the destination's in its page.
+    src_pg = P2_DL_BASE >> 8
+    for pg in sorted({P2_TOP[b] >> 8 for b in SPLIT_BANDS}):
+        out += ["Tc2Cp%02X:" % pg,
+                "    LDA $%02X00,Y" % src_pg, "    STA $%02X00,X" % pg,
+                "    LDA $%02X01,Y" % src_pg, "    STA $%02X01,X" % pg,
+                "    LDA $%02X02,Y" % src_pg, "    CLC", "    ADC #$03", "    STA $%02X02,X" % pg,
+                "    LDA $%02X03,Y" % src_pg, "    STA $%02X03,X" % pg,
+                "    RTS"]
     out += ["TopCopy2:"]
     for b in SPLIT_BANDS:
         src = lay[b]["addr"] + lay[b]["obj"]
         for k in range(TOP_K):
             s0, d0 = src + 4 * k, P2_TOP[b] + 4 + 4 * k
-            lab = "Tc2%d%d" % (b, k)
-            out += ["    LDA $%04X" % (s0 + 3), "    STA $%04X" % (d0 + 3),
-                    "    CMP #$A1", "    BEQ %sp" % lab,
-                    "    LDA $%04X" % s0, "    STA $%04X" % d0,
-                    "    LDA $%04X" % (s0 + 1), "    STA $%04X" % (d0 + 1),
-                    "    LDA $%04X" % (s0 + 2), "    CLC", "    ADC #$03", "    STA $%04X" % (d0 + 2),
-                    "    JMP %sd" % lab,
-                    "%sp:" % lab,
-                    "    LDA #$1F", "    STA $%04X" % (d0 + 1),
-                    "%sd:" % lab]
+            assert s0 >> 8 == src_pg and (s0 + 3) >> 8 == src_pg and (d0 + 3) >> 8 == d0 >> 8
+            out += ["    LDY #$%02X" % (s0 & 0xFF), "    LDX #$%02X" % (d0 & 0xFF),
+                    "    JSR Tc2Cp%02X" % (d0 >> 8)]
     out += ["    RTS"]
     # player 1: the first TOP_K used slots, searched unrolled -- only the
     # slots each band was seen to use (tools/probe: three recordings; +4/+8
@@ -2042,27 +2271,35 @@ def top_half_src():
     assert TOP_K == 2
     P1_TOP_SLOTS = {1: (0, 1, 5, 6), 2: (0, 1, 5, 6), 3: (0, 1, 5, 6, 7), 4: (0, 1, 5, 6, 7),
                     5: (0, 1, 5, 6, 7), 6: (0, 1, 5, 6, 7), 7: (0, 1, 2, 4, 5, 6, 7)}
+    # the copy itself, shared: Y = the source slot's low byte in its page,
+    # X = the destination's in page $25; X moves on four
+    for pg in sorted({ALL_ROAD_BANDS[b] >> 8 for b in SPLIT_BANDS}):
+        out += ["TcCp%02X:" % pg,
+                "    LDA $%02X00,Y" % pg, "    STA $2500,X",
+                "    LDA $%02X01,Y" % pg, "    STA $2501,X",
+                "    LDA $%02X02,Y" % pg, "    CLC", "    ADC #$03", "    STA $2502,X",
+                "    LDA $%02X03,Y" % pg, "    STA $2503,X",
+                "    INX", "    INX", "    INX", "    INX",
+                "    RTS"]
     out += ["TopCopy1:"]
     for b in SPLIT_BANDS:
         src0 = ALL_ROAD_BANDS[b] + 4
         d = P1_TOP[b] + 4
-        out += ["    LDX #$00"]
+        assert all((src0 + 4 * sl) >> 8 == src0 >> 8 for sl in P1_TOP_SLOTS[b])
+        out += ["    LDX #$%02X" % (d & 0xFF)]
         for sl in P1_TOP_SLOTS[b]:
             sa = src0 + 4 * sl
             lab = "Tc1%d%d" % (b, sl)
             out += ["    LDA $%04X" % (sa + 3), "    CMP #$A1", "    BEQ %s" % lab,
-                    "    STA $%04X,X" % (d + 3),
-                    "    LDA $%04X" % (sa + 2), "    CLC", "    ADC #$03", "    STA $%04X,X" % (d + 2),
-                    "    LDA $%04X" % (sa + 1), "    STA $%04X,X" % (d + 1),
-                    "    LDA $%04X" % sa, "    STA $%04X,X" % d,
-                    "    CPX #$04", "    BNE %sn" % lab,
+                    "    LDY #$%02X" % (sa & 0xFF),
+                    "    JSR TcCp%02X" % (sa >> 8),
+                    "    CPX #$%02X" % ((d + 8) & 0xFF),
+                    "    BNE %s" % lab,
                     "    JMP Tc1%dz" % b,               # the second: done
-                    "%sn:" % lab,
-                    "    LDX #$04",
                     "%s:" % lab]
-        out += ["    LDA #$1F", "    STA $%04X,X" % (d + 1),     # park from X on
-                "    LDA #$A1", "    STA $%04X,X" % (d + 3),
-                "    CPX #$04", "    BEQ Tc1%dz" % b,
+        out += ["    LDA #$1F", "    STA $2501,X",           # park from X on
+                "    LDA #$A1", "    STA $2503,X",
+                "    CPX #$%02X" % ((d + 4) & 0xFF), "    BEQ Tc1%dz" % b,
                 "    LDA #$1F", "    STA $%04X" % (d + 5),
                 "    LDA #$A1", "    STA $%04X" % (d + 7),
                 "Tc1%dz:" % b]
@@ -6479,12 +6716,17 @@ def p2_stage_src():
         "    STA $%04X" % P2_STAGE_TMP,
         "    LDY P2StWid,X",
         "    ORA $%04X,Y" % STRIPE_TEX,
+    ] + ([] if not NEAR_SMOOTH else [
+        "    SEC", "    SBC $%04X,X" % (NEAR_DB - 3),       # checkpoint 89: X = band-1,
+    ]) + [                                                  #   entry 4 + band-8
         "    LDY P2StDst,X",
         "    STA $%04X,Y" % (P2_DL_BASE + 5),
         "    LDA $%04X" % P2_STAGE_TMP,
         "    ORA #$10",
         "    STA $%04X,Y" % (P2_DL_BASE + 1),
-    ] + advance() + band_x() + [
+    ] + advance() + band_x() + ([] if not NEAR_SMOOTH else [
+        "    CLC", "    ADC $%04X,X" % (NEAR_NX - 3),
+    ]) + [
         "    LDY P2StDst,X",
         "    STA $%04X,Y" % (P2_DL_BASE + 7),
     ] + wrap_guard() + [
@@ -6892,6 +7134,11 @@ def fix_mirror_split(p):
         p.put(_at, [0x4C, _v & 0xFF, _v >> 8] + [0xEA] * (len(_exp) - 3), expect=_exp)
     _v = _ts["TallyFlush"]
     p.put(0xD316, [0x20, _v & 0xFF, _v >> 8], expect=[0x20, 0x1C, 0xDA])
+    _hc = _hi_code()[0]
+    p.put(HI_CODE, list(_hc), expect=[0xFF] * len(_hc))
+    _hd, _ha = hi_data(), hi_data_addrs()
+    for _n in sorted(_hd):
+        p.put(_ha[_n], _hd[_n], expect=[0xFF] * len(_hd[_n]))
     if SMOOTH:
         _sa = smooth_art()[0]
         for _a in sorted(_sa):
