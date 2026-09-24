@@ -334,7 +334,7 @@ MIRROR_ZONES = FINE_ZONES + (12 - FINE_BAND_LAST)
 # Both views are built from the same plan now, so the zone list is two of them
 # plus the fixed furniture: the top margin and gap, the carrier, three divider
 # rows, the horizon, the decor strip and two bottom margin zones.
-DLL_ZONES = MIRROR_ZONES * 2 + 10
+DLL_ZONES = MIRROR_ZONES * 2 + 13       # + player 2's horizon and decor (two zones)
 IDX8_SUB = int(os.environ.get("PP2_IDX8", str(5 * SUBS_PER_BAND)))
 MINI_DL_BASE = int(os.environ.get("PP2_MINI_BASE", "0x2600"), 16)
 MINI_DL_SIZE = 6
@@ -342,7 +342,7 @@ MINI_DL_SIZE = 6
 # The blank zone index 9 lands on, between the mirror and the divider. Six
 # lines is the minimum that keeps the divider's early palette write off the
 # last mirror band; anything spare goes here as breathing room above the HUD.
-CARRIER_LINES = int(os.environ.get("PP2_CARRIER", "12"))
+CARRIER_LINES = int(os.environ.get("PP2_CARRIER", "6"))     # 6 more went to player 2's sky
 
 # ---------------------------------------------------------------------------
 # Player 2's own viewport.
@@ -569,7 +569,7 @@ ROAD_EDGE = 0x3B             # |lateral| at or past this is off the racing line,
 # six steps literally is both cheaper than those 16-bit constant multiplies
 # and exactly right, which removes the question of how much the coarse step
 # drifts from the engine's own answer.
-P2_TRACK_SEG = 0x2750        # player 2 track state; $2730 is NOT free -- see findings
+P2_TRACK_SEG = 0x2750        # player 2 track state
 P2_TRACK_LO = 0x2751
 P2_TRACK_HI = 0x2752
 # Steering temporaries for the main-loop drive. Not P2_SCRATCH: MirrorStage
@@ -695,14 +695,26 @@ P2_PASSY = 0x273F            # the list index, while testing a slot
 # all four tracks and 0923-0205 the attract demo). "untouched": never written
 # either. Free for new work; claim a range by moving it out of this list.
 FREE_RAM = [
-    (0x0060, 0x009B, "zero page: injection colour rows and the dead curve copy (patched out)"),
-    (0x1B00, 0x1B4D, "RowCurveXStaged: the dead curve copy's target (patched out)"),
-    (0x1B9C, 0x1BE9, "RowCurveXStagedSrc: the stripped walk tail's output"),
+    (0x0065, 0x009B, "zero page: injection colour rows and the dead curve copy (patched out)"),
+    (0x1B36, 0x1B4D, "RowCurveXStaged's tail: the dead curve copy's target (patched out)"),
+    (0x1BCA, 0x1BE9, "RowCurveXStagedSrc's tail: the stripped walk tail's output"),
     (0x1FF3, 0x203F, "untouched"),
     (0x210F, 0x213F, "untouched (below the stack's reach)"),
     (0x2200, 0x2233, "stock race DLL, replaced by DLL_BASE; untouched"),
-    (0x2566, 0x25FF, "past the end of DLL_BASE's 34 zones; untouched"),
+    (0x256F, 0x25FF, "past the end of DLL_BASE's 37 zones; untouched"),
 ]
+# Player 2's skybox (checkpoint 77): its heading, as $C9/$CA/$CB are player
+# 1's (rom:DBDF), and its two display lists, built as rom:DC60/DC89 build
+# player 1's zone 18 and zone 19 lists.
+P2_HEAD = 0x0060             # coarse heading 0..$77, as $C9
+P2_HEADF = 0x0061            # its fine part 0..3, as $CA
+P2_HEADA = 0x0062            # the accumulator's low byte, as $CB
+P2_SKY_T = 0x0063            # 2: player 1's $C9/$CA while player 2's are swapped in
+P2_DECOR_DL = 0x1B00         # player 2's decor list: base object, up to 10, end
+P2_DECOR_LEN = 46
+P2_HOR_DL = 0x1B30           # player 2's horizon list: one object and the end
+P2_DECOR_TOP = 0x1B9C        # the same list for the decor's top 8 lines: graphics 2 pages up
+P2_HOR_LEN = 6
 STG_ROFF = 0x1C38            # 13: RowCurveOffset at each band's sample row
 STG_BANDX = 0x1C45           # 13: P2_BANDX
 HUD_BUF1 = 0x27C2            # the 1UP line, 31 characters
@@ -819,7 +831,7 @@ PER_FRAME_HOOK = int(os.environ.get("PP2_HOOKSUB", "0xDC4F"), 16)
 # HudReassert at whatever zone happens to sit at that index -- with a coarser
 # mirror that is a road zone, and the display corrupts a few thousand frames
 # in rather than immediately.
-DIVIDER_ZONE = MIRROR_ZONES + 3
+DIVIDER_ZONE = MIRROR_ZONES + 6       # z0, z1, player 2's horizon and decor (2), the mirror, the carrier
 DIVIDER_ADDR = DLL_BASE + DIVIDER_ZONE * 3
 
 # The three-row HUD, written into the divider by HudReassert once normal
@@ -962,6 +974,30 @@ def hud_reassert_src(addr):
         # L_ECF8 overwrites it afterwards), this runs at the very end of that
         # handler and restates the same palette block DLI_ED4F installs for
         # player 1's road. Both views then draw from identical registers.
+        # rom:ED29, DLI_ECA1's closing jump: the palettes it leaves are the
+        # sky's (BACKGRND $89, the track's decor P6/P7 from L_ECF8), which is
+        # what player 2's horizon and decor need. So the road's palettes wait
+        # for index 13, at player 2's decor zone.
+        "SkyHold:",
+        "    LDA #$0D", "    STA $00FF",
+        "    JMP $EC09",
+        # Index 13: the decor zone's DLI. As stock times player 1's (DLI_ED4F's
+        # palette block, then the injection's head): the decor's last two lines
+        # in the track's horizon colour ($FA), then the road's palettes --
+        # MirrorPalette, which ends with the ground ($FB) -- and the chain back
+        # to index 8, where DLI_ECA1 had it.
+        "P2SkyEnd:",
+    ] + ["    STA WSYNC"] * int(os.environ.get("PP2_SKY_W1", "1")) + [
+        "    LDA $00FA", "    STA BACKGRND",
+    ] + ["    STA WSYNC"] * int(os.environ.get("PP2_SKY_W2", "0")) + [
+        "    LDA #$08", "    STA $00FF",
+        "    JMP MirrorPalette",
+        # the NMI's handler tables (rom:EBFC/EC01 read these): stock's twelve,
+        # VbTail (12) and P2SkyEnd (13)
+        "DliLo:",
+        "    .byte $56,$10,$57,$76,$87,$9E,$8C,$A1,$2B,$30,$4A,$4F,<VbTail,<P2SkyEnd",
+        "DliHi:",
+        "    .byte $24,$EC,$EC,$EC,$EC,$EC,$EC,$EC,$ED,$ED,$ED,$ED,>VbTail,>P2SkyEnd",
         "MirrorPalette:",
         "    LDA #$89", "    STA P2C1",
         "    LDA #$8B", "    STA P2C2",
@@ -1052,7 +1088,7 @@ def hud_reassert_src(addr):
         [] if os.getenv("PP2_KEEP_INJECTION") else road_stage_src()
     ) + p2_stage_src() + p2_car_src() + [
         "    RTS",
-    ] + p2_stage_tables() + p2_slot_tables() + ["P2Emit = $%04X" % _ext()[1]["P2Emit"], "P2ObjSeg = $%04X" % _ext()[1]["P2ObjSeg"], "P2ObjInit = $%04X" % _ext()[1]["P2ObjInit"], "P2Collide = $%04X" % _ext()[1]["P2Collide"], "P2Clear = $%04X" % _ext()[1]["P2Clear"], "HudTick = $%04X" % _ext()[1]["HudTick"], "PvpCrash = $%04X" % _ext()[1]["PvpCrash"], "P2RaceSlot = $%04X" % _ext()[1]["P2RaceSlot"], "P2RaceLane = $%04X" % _ext()[1]["P2RaceLane"], "P2Ctl = $%04X" % _ext()[1]["P2Ctl"], "HudFill = $%04X" % _ext()[1]["HudFill"], "P2CrashTick = $%04X" % _ext()[1]["P2CrashTick"], "P2BuildLists = $%04X" % _rival_helpers()[1]["P2BuildLists"]] + [
+    ] + p2_stage_tables() + p2_slot_tables() + ["P2Emit = $%04X" % _ext()[1]["P2Emit"], "VbTail = $%04X" % _ext()[1]["VbTail"], "P2ObjSeg = $%04X" % _ext()[1]["P2ObjSeg"], "P2ObjInit = $%04X" % _ext()[1]["P2ObjInit"], "P2Collide = $%04X" % _ext()[1]["P2Collide"], "P2Clear = $%04X" % _ext()[1]["P2Clear"], "HudTick = $%04X" % _ext()[1]["HudTick"], "PvpCrash = $%04X" % _ext()[1]["PvpCrash"], "P2RaceSlot = $%04X" % _ext()[1]["P2RaceSlot"], "P2RaceLane = $%04X" % _ext()[1]["P2RaceLane"], "P2Ctl = $%04X" % _ext()[1]["P2Ctl"], "HudFill = $%04X" % _ext()[1]["HudFill"], "P2CrashTick = $%04X" % _ext()[1]["P2CrashTick"], "P2BuildLists = $%04X" % _rival_helpers()[1]["P2BuildLists"]] + [
 
         "WrapSlot0:",
         "    CMP #$A0",
@@ -1382,7 +1418,11 @@ def _check_p2_ram():
                 % (n1, a1, a1 + s1 - 1, n2, a2))
     # and nothing claimed may sit in a range still listed as free
     for lo, hi, why in FREE_RAM:
-        for n, a, sz in regions + [("STG", STG_ROFF, 26)]:
+        for n, a, sz in regions + [("STG", STG_ROFF, 26), ("P2_HEAD", P2_HEAD, 5),
+                                   ("P2_DECOR_DL", P2_DECOR_DL, P2_DECOR_LEN),
+                                   ("P2_HOR_DL", P2_HOR_DL, P2_HOR_LEN),
+                                   ("P2_DECOR_TOP", P2_DECOR_TOP, P2_DECOR_LEN),
+                                   ("DLL", DLL_BASE, DLL_ZONES * 3)]:
             if a <= hi and a + sz - 1 >= lo:
                 raise SystemExit("RAM $%04X..$%04X (%s) is listed free: %s"
                                  % (a, a + sz - 1, n, why))
@@ -2729,6 +2769,9 @@ def car_world_src():
         "    LDA #$00",
         "    STA $%04X" % P2_LAPRUN, "    STA $%04X" % P2_LAPS, "    STA $%04X" % P2_LAPH,
         "    STA $%04X" % P2_LAPPH,
+        "    LDA $00C9", "    STA $%04X" % P2_HEAD,        # the same heading as
+        "    LDA $00CA", "    STA $%04X" % P2_HEADF,       #   player 1: both start
+        "    LDA $00CB", "    STA $%04X" % P2_HEADA,       #   at the same place
         "    LDA $%04X" % GAME_STATE,
         "    CMP #$10",                        # a new session: the score too
         "    BEQ P2OiNew",
@@ -4308,18 +4351,162 @@ def _ext():
 
 
 def vbl_src():
-    """The vblank wait, split (see the checkpoint 72 notes): VbSplit ends DLI
+    """The vblank wait, split (see the checkpoint 72 notes; the handler tables
+    now live in the blob, with index 13 for player 2's sky): VbSplit ends DLI
     idx11 at rom:F160 instead of spinning; VbTail, DLI index 12 on the bottom
     margin, releases $E5, stages MirrorStage's inputs and goes on into the
     stock tail at rom:F163 -- whose `JSR sub_DC4F` this build retargets to
     MirrorStage, so it must be that tail and not a copy of it. The DLI handler tables move here to hold the 13th entry."""
-    stock_lo = [0x56, 0x10, 0x57, 0x76, 0x87, 0x9E, 0x8C, 0xA1, 0x2B, 0x30, 0x4A, 0x4F]
-    stock_hi = [0x24, 0xEC, 0xEC, 0xEC, 0xEC, 0xEC, 0xEC, 0xEC, 0xED, 0xED, 0xED, 0xED]
     return [
         "VbSplit:",
         "    LDA #$00", "    STA $009C",
         "    LDA #$0C", "    STA $00FF",
+    ] + ([] if os.getenv("PP2_NO_P2SKY") else ["    JSR P2Sky"]) + [
         "    JMP $EC09",
+        # --- player 2's skybox, once a frame from VbSplit: after player 2's
+        # sky has been drawn (lines 20-31) and well before VbTail, whose stock
+        # tail (sub_DC4F) uses the same scratch ($F0-$F2) and $C9/$CA.
+        "P2Sky:",
+        "    LDA $00B9",
+        "    LSR A",
+        "    BCC PsGo",                        # every other frame, as rom:DC4F
+        "    RTS",
+        "PsGo:",
+        # Before a start (the scenes and banners, $04-$07, $10, $11) nobody
+        # drives: both are at the start, so player 2 faces as player 1 does.
+        # (rom:D8AC clears player 1's heading after player 2's set-up has
+        # copied it, which left player 2's sky turned through $07/$05.)
+        "    LDX #$05",
+        "    LDA $009D",
+        "PsSetup:",
+        "    CMP PsSetSt,X",
+        "    BEQ PsCopy",
+        "    DEX",
+        "    BPL PsSetup",
+        "    JMP PsHead",
+        "PsToBuild:",
+        "    JMP PsBuild",
+        "PsSetSt:",
+        "    .byte $04,$05,$06,$07,$10,$11",
+        "PsCopy:",
+        "    LDA $00C9", "    STA $%04X" % P2_HEAD,
+        "    LDA $00CA", "    STA $%04X" % P2_HEADF,
+        "    LDA $00CB", "    STA $%04X" % P2_HEADA,
+        "    JMP PsBuild",
+        "PsHead:",
+        # the heading, rom:DBDF with player 2's speed and segment
+        "    CMP #$13",
+        "    BEQ PsToBuild",
+        "    LDY #$00", "    STY $00F1",
+        "    LDX $%04X" % P2_TRACK_SEG,
+        "    LDA $%04X" % P2_SPEED,
+        "    LSR A",
+        "    BEQ PsToBuild",
+        "    STA $00F0",
+        "    LDA $%04X,X" % SEG_CURVE,
+        "    TAX",
+        "    BEQ PsToBuild",
+        "    BPL PsPos",
+        "    CLC",
+        "    EOR #$FF", "    TAX", "    INX",
+        "    LDA $00F0", "    EOR #$FF", "    ADC #$01", "    STA $00F0",
+        "    DEC $00F1",
+        "PsPos:",
+        "    INX", "    INX", "    INX",
+        "    STX $00F2",
+        "PsMul:",
+        "    LSR $00F2",
+        "    BCC PsNoAdd",
+        "    CLC",
+        "    LDA $00F0", "    ADC $%04X" % P2_HEADA, "    STA $%04X" % P2_HEADA,
+        "    LDA $00F1", "    ADC $%04X" % P2_HEADF, "    STA $%04X" % P2_HEADF,
+        "PsNoAdd:",
+        "    LDA $00F2",
+        "    BEQ PsFold",
+        "    ASL $00F0", "    ROL $00F1",
+        "    JMP PsMul",
+        "PsFold:",
+        "    LDA $%04X" % P2_HEADF,
+        "    TAX",
+        "    AND #$03", "    STA $%04X" % P2_HEADF,
+        "    TXA",
+        "    CLC",
+        "    AND #$FC",
+        "    BPL PsFoldP",
+        "    SEC",
+        "    ORA #$01",
+        "PsFoldP:",
+        "    ROR A", "    ROR A",
+        "    ADC $%04X" % P2_HEAD,
+        "    BPL PsNoNeg",
+        "    CLC", "    ADC #$78",
+        "    JMP PsSet",
+        "PsNoNeg:",
+        "    CMP #$78",
+        "    BMI PsSet",
+        "    SBC #$78",
+        "PsSet:",
+        "    STA $%04X" % P2_HEAD,
+        # the lists, as rom:DC60 and rom:DC89 build player 1's, with player
+        # 2's heading swapped into $C9/$CA for rom:DD0B (which reads only
+        # $F0/$F1 and those two, and leaves X and Y alone)
+        "PsBuild:",
+        "    LDA $00C9", "    STA $%04X" % P2_SKY_T,
+        "    LDA $00CA", "    STA $%04X" % (P2_SKY_T + 1),
+        "    LDA $%04X" % P2_HEAD, "    STA $00C9",
+        "    LDA $%04X" % P2_HEADF, "    STA $00CA",
+        # the base object and the horizon object
+        "    LDY $00C4",
+        "    LDA $A8CA,Y", "    STA $00F0",
+        "    LDA $A8D2,Y", "    STA $00F1",
+        "    JSR $DD0B",
+        "    STA $%04X" % (P2_DECOR_DL + 3),
+        "    SEC",
+        "    LDA $A8C6,Y", "    SBC $A8CA,Y",
+        "    ASL A", "    ASL A",
+        "    CLC", "    ADC $%04X" % (P2_DECOR_DL + 3),
+        "    STA $%04X" % (P2_HOR_DL + 3),
+        "    STA $%04X" % (P2_DECOR_TOP + 3),
+        "    LDX #$02",                        # their graphics: player 1's
+        "PsHdr:",
+        "    LDA $1D3B,X", "    STA $%04X,X" % P2_DECOR_DL, "    STA $%04X,X" % P2_DECOR_TOP,
+        "    LDA $18FA,X", "    STA $%04X,X" % P2_HOR_DL,
+        "    DEX",
+        "    BPL PsHdr",
+        "    CLC",
+        "    LDA $%04X" % (P2_DECOR_TOP + 2), "    ADC #$02", "    STA $%04X" % (P2_DECOR_TOP + 2),
+        "    LDA #$00",
+        "    STA $%04X" % (P2_HOR_DL + 4), "    STA $%04X" % (P2_HOR_DL + 5),
+        # the decor objects that are in view
+        "    LDX #$04",
+        "    LDY $00CC",
+        "PsObj:",
+        "    LDA $1C1C,Y", "    STA $00F1",
+        "    LDA $1C2A,Y", "    STA $00F0",
+        "    JSR $DD0B",
+        "    CMP #$A0",
+        "    BEQ PsObjN",
+        "    STA $%04X,X" % (P2_DECOR_DL + 3), "    STA $%04X,X" % (P2_DECOR_TOP + 3),
+        "    LDA #$20", "    SEC", "    SBC $1C1C,Y", "    ORA #$E0",
+        "    STA $%04X,X" % (P2_DECOR_DL + 1), "    STA $%04X,X" % (P2_DECOR_TOP + 1),
+        "    LDA $1C0E,Y", "    STA $%04X,X" % P2_DECOR_DL, "    STA $%04X,X" % P2_DECOR_TOP,
+        "    LDA #$B0", "    STA $%04X,X" % (P2_DECOR_DL + 2),
+        "    LDA #$B2", "    STA $%04X,X" % (P2_DECOR_TOP + 2),
+        "    INX", "    INX", "    INX", "    INX",
+        "    CPX #$%02X" % (P2_DECOR_LEN - 2),
+        "    BCS PsEnd",
+        "PsObjN:",
+        "    DEY",
+        "    BPL PsObj",
+        "PsEnd:",
+        "    LDA #$00",
+        "    STA $%04X,X" % P2_DECOR_DL, "    STA $%04X,X" % (P2_DECOR_DL + 1),
+        "    STA $%04X,X" % P2_DECOR_TOP, "    STA $%04X,X" % (P2_DECOR_TOP + 1),
+        "    LDA $%04X" % P2_SKY_T, "    STA $00C9",
+        "    LDA $%04X" % (P2_SKY_T + 1), "    STA $00CA",
+        "PsDone:",
+        "    RTS",
+
         # No wait for vblank here. Stock waited because its tail ran after the
         # road was drawn; the tail's own deadlines are only "after the view it
         # writes": player 1's road (ends line 217, this DLI fires at 232),
@@ -4349,10 +4536,6 @@ def vbl_src():
         "VtStale:",
         "    JMP $F163",                       # the stock tail, hooks and all
                                                #   (rom:F16B calls MirrorStage)
-        "DliLo:",
-        "    .byte " + ",".join("$%02X" % b for b in stock_lo) + ",<VbTail",
-        "DliHi:",
-        "    .byte " + ",".join("$%02X" % b for b in stock_hi) + ",>VbTail",
     ]
 
 
@@ -5287,7 +5470,18 @@ def dll_template():
     """The new zone list. Replaces the stock 35-zone boot template entirely."""
     plan = mirror_plan()
     z = [[0x8F, 0x24, 0xF6],                          # 0: 16 blank, DLI idx7
-         [0x03, 0x24, 0xF6]]                          # 1:  4 blank, must stay blank
+         [0x03, 0x24, 0xF6],                          # 1:  4 blank, must stay blank
+         # player 2's sky: the horizon's bottom two lines (the tops of the
+         # tallest decor, as zone 18 carries them for player 1), then the
+         # decor in two zones -- its top 8 lines from a copy of the list two
+         # graphics pages up (MARIA counts a zone's offset down from its
+         # height), its last 2 from the list itself. The DLI on those two
+         # (index 13, P2SkyEnd) lands on the horizon line without waiting:
+         # on one 10-line zone it spent nine lines in WSYNC, and with P2Sky
+         # that cost the race a quarter of its ticks (74 of 100).
+         [0x01, P2_HOR_DL >> 8, P2_HOR_DL & 0xFF],
+         [0x07, P2_DECOR_TOP >> 8, P2_DECOR_TOP & 0xFF],
+         [0x81, P2_DECOR_DL >> 8, P2_DECOR_DL & 0xFF]]
     # Index 8 sits partway down the mirror. Its home was expressed in fine
     # sub-zones, which silently lands past the end of a coarse plan -- and a
     # chain link that no zone carries simply never fires, taking every
@@ -5311,7 +5505,7 @@ def dll_template():
     # six lines of its farthest band in the bargain.
     for lines, dl, _mini in plan:
         z.append([(lines - 1), dl >> 8, dl & 0xFF])
-    z.append([0x8F, 0x24, 0xF6])                      # bottom margin, DLI idx12
+    z.append([0x89, 0x24, 0xF6])                      # bottom margin, DLI idx12 (10: 6 to the sky)
     z.append([0x0F, 0x24, 0xF6])
     total = sum((e[0] & 0x0F) + 1 for e in z)
     tl, bl = sum(p[0] for p in top), sum(p[0] for p in plan)
@@ -5562,8 +5756,8 @@ def fix_mirror_split(p):
     # the vblank wait split in two (vbl_src): the NMI's handler tables moved
     # (rom:EBFC, rom:EC01), $E5 not released at rom:F150 (`STA` -> `BIT`,
     # same size and cycles), and rom:F160's spin replaced by VbSplit
-    p.put(0xEBFD, [_xs["DliLo"] & 0xFF, _xs["DliLo"] >> 8], expect=[0x8A, 0xA4])
-    p.put(0xEC02, [_xs["DliHi"] & 0xFF, _xs["DliHi"] >> 8], expect=[0x96, 0xA4])
+    p.put(0xEBFD, [syms["DliLo"] & 0xFF, syms["DliLo"] >> 8], expect=[0x8A, 0xA4])
+    p.put(0xEC02, [syms["DliHi"] & 0xFF, syms["DliHi"] >> 8], expect=[0x96, 0xA4])
     p.put(0xF150, [0x24, 0xE5], expect=[0x85, 0xE5])
     p.put(0xF160, [0x4C, _xs["VbSplit"] & 0xFF, _xs["VbSplit"] >> 8],
           expect=[0x20, 0x8E, 0xDB])
@@ -5693,7 +5887,7 @@ def fix_mirror_split(p):
     # and then makes the same jump. It has to be here, at the very end of the
     # handler, rather than inside the palette block it supersedes: L_ECF8
     # (rom:ECF8) writes P3 on its way out, so anything set earlier is lost.
-    p.put(0xED29, [mirror_palette_addr & 0xFF, mirror_palette_addr >> 8],
+    p.put(0xED29, [syms["SkyHold"] & 0xFF, syms["SkyHold"] >> 8],
           expect=[0x09, 0xEC])
 
     # rom:F171 -- sub_F171's first loop, which copied the stock 107-byte zone

@@ -6530,3 +6530,69 @@ What it needs:
   needs before it can shrink to 4.
 - **Risk:** the top of the sky (DLL 16) is where stock's own HUD started, so
   it is inside the area stock relies on being visible.
+
+*Tabled (user's call):* the return to 32K stays at 48K for now; the
+evaluation above is the reference for picking it up later.
+
+## Player 2's skybox, turning with player 2
+
+Checkpoint 77. Player 2's view now has its own horizon decor (mountains,
+hills and water, trees, desert) above its road, turning with its own heading.
+
+**How player 1's works** (stock):
+- **Heading.** `$C9` (coarse, 0-`$77`, 120 units a turn), `$CA` (fine, 0-3) and
+  `$CB` (accumulator). rom:DBDF, every other frame from `sub_DC4F`, adds
+  Speed/2 × (|curvature|+3), signed by the curve of player 1's segment.
+- **Lists.** rom:DC60 places the base object of zone 19's list (`$1D3B`) and
+  the horizon object of zone 18's (`$18FA`) from per-track tables
+  (`dat_A8C6/CA/D2`). rom:DC89 writes one 4-byte header per decor object in
+  view (`$1C0E/$1C1C/$1C2A` per object, `$CC` the last), ending with a zero
+  width. rom:DD0B gives each object's x (or `$A0`, out of view) from
+  `$F0/$F1` and the heading alone. `$F0-$F2` and `$C9-$CB` are used by
+  nothing else.
+
+**Player 2's:**
+- **Heading** `P2_HEAD`/`P2_HEADF`/`P2_HEADA` (zero page `$60-$62`, freed at
+  checkpoint 76), advanced as rom:DBDF does from player 2's speed and segment.
+  Before a start (`$04-$07`, `$10`, `$11`) it follows player 1's: rom:D8AC
+  clears player 1's heading after player 2's set-up copied it, which left
+  player 2's sky turned through `$07`/`$05`.
+- **Lists** in freed RAM. The decor at `$1B00`, and a copy for the decor's
+  top 8 lines at `$1B9C` with the graphics two pages up: MARIA counts a zone's
+  graphics offset down from its height, so an 8-line zone needs the page 2
+  higher to show the same rows. The horizon object's list is at `$1B30`. They
+  are built with player 2's heading swapped into `$C9/$CA` for rom:DD0B, by
+  `P2Sky` from VbSplit (line ~176): after player 2's sky has been drawn, and
+  before VbTail's stock tail uses the same scratch.
+- **Screen.** Three zones under zone 1: the horizon's bottom 2 lines (the
+  tallest decor's tops, as zone 18 carries them for player 1), the decor's
+  top 8, and its bottom 2. The 12 lines came from the carrier (12 → 6, its
+  minimum) and the first bottom margin (16 → 10). Player 2's road starts 12
+  lines lower, and the HUD and player 1's half 6 lines lower.
+- **Palettes.** DLI_ECA1 (index 7) already leaves the sky's palettes: `$89`,
+  and L_ECF8's track decor P6/P7, exactly what the sky needs. Its closing
+  jump (rom:ED29) now goes to `SkyHold`, which points the chain at a new
+  index 13. `P2SkyEnd`, on the decor's last 2 lines, sets the horizon colour
+  (`$FA`, the water line on track 2) and goes on into MirrorPalette (the road,
+  the cars, the ground `$FB`), handing the chain back to index 8. The DLI
+  handler tables moved into the blob to reach it.
+
+### Wrong turns
+
+- **One 10-line decor zone** with the DLI on it needed nine `WSYNC` lines to
+  reach the horizon line. Together with P2Sky that tipped the race tick to 74
+  of 100: each alone left it at 97-100, so the main loop was right at its
+  six-frame edge. Splitting the decor (8 + 2) puts the DLI where the horizon
+  line starts; one `WSYNC`, and the rate is back to 98-101.
+- **Calibration:** the horizon line landed two rows early (7 lines), then
+  covered the right rows but spilled two rows into the road (9 + 2), before
+  matching (9 + 0, then 1 + 0 on the split zone).
+
+Checked: player 2's sky matches player 1's row for row on all four tracks
+(both dominant colours per scanline; the one exception, a row on track 1, is
+the mountains scrolled to a different point). The headings match before the
+start and turn independently in the race; the decor visibly shifts through a
+turn. Banner, start light, HUD and the qualifying message are all in place in
+the moved divider. Health and state flow are identical in shape to
+checkpoint 76 on four recordings; integrity 0 on four; race tick rate
+98-101/600.
