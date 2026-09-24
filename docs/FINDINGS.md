@@ -6930,3 +6930,73 @@ hundreds included. It is now the seconds byte, as player 1's has always been.
 A new label `QmT2` matched an existing text label of the same name. The
 toolkit's assembler takes a label defined twice without complaint, so the
 branch resolved to the other one. `_assemble` now refuses duplicate labels.
+
+## Curve smoothing, re-evaluated: a cheaper way back (not built)
+
+Asked: the stock smoothing came out for its cost. Is there a cheaper one that
+spends the free ROM instead?
+
+**What was removed.** `DLI_InjectRowCurveX` rewrote each road band's x (and
+width) on every scanline, one `WSYNC` a line: 78-97 stalled lines a frame,
+the frame's largest consumer. Since checkpoint 6 (`06-no-injection`) each band has
+one x and one width for its six lines, in both views, so an edge that slopes
+steps once a band.
+
+**How big the steps are** (`tools/probe-band-slopes.lua`: player 1's
+`RowCurveOffset` over a band's six rows, every 6th frame of three recordings,
+3,647 samples):
+
+    band            1   2   3   4   5   6   7   8   9  10  11  12
+    median (5 rows) 3   3   2   2   3   3   3   3   3   3   3   3
+    90th pct       13  11  10   9   8   8   8   7   7   7   7   7
+    max            27  21  19  16  14  13  12  10  10   9   9   9
+
+Units are 160-mode pixels over five rows. Perspective contributes as well
+as curves: an edge slopes whenever the car is off-centre, so the stair shows
+on straights too. A typical step is about 4 px at a band edge, 8-10 on a
+bend, and up to 20 near the horizon.
+
+**Options.**
+
+1. **Pre-sheared road slices (recommended to try).** Keep one x per band, and
+   draw the band from a variant of its road graphics whose six lines are
+   already offset by s pixels a line (s = the band's slope, rounded and
+   clamped). The x is adjusted for the variant's padding. The CPU cost is a
+   lookup per band per view. It changes only with the track walk (10 Hz), so
+   it can live in the main loop, with no `WSYNC` and no extra zones. Both
+   views share the graphics.
+   - *ROM.* One set of slices is 339 bytes a line (bands 1-7: 8, 12, 16, 20,
+     22, 26, 30; bands 8-12: 16 + 19, 21, 25, 29, 31), about 2K. With s = +/-1
+     each object needs a byte of padding each side, so 375 bytes a line. Two
+     variants (+1, -1) are 750 bytes a line in 6-page columns, about 4.5K.
+     The free ROM holds that: 5,443 bytes after the code ($5ABD-$6FFF, 21 whole
+     pages, three columns), plus the low bytes $28-$FF of the highlight pages
+     $70-$7F (two more 216-byte columns). The narrow far bands (1-4) could
+     take +/-2 and +/-3 as well for a few hundred bytes more.
+   - *What it buys.* Residual step = 6 x |slope - s|. On a typical band it
+     drops from ~4 px to ~1; on the 90th percentile of a bend, from 8-10 to
+     about 2-4. The horizon's worst bends (up to 6 px a row) stay stepped.
+   - *Costs to measure.* MARIA reads two more bytes per road object per line
+     on a sheared band, a few hundred CPU cycles a frame. Crowded near lines
+     could hit MARIA's per-line DMA limit. Band 12's right piece is already
+     31 bytes, the maximum width, so its shear would have to clip a byte at
+     its outer end.
+   - *Player 2.* Its walk samples one row per band, so its slope is the
+     difference between neighbouring bands' samples, divided by 6. The
+     double-integrated curve is smooth enough for that.
+2. **Half-height zones (3-line bands).** This halves the step exactly. But
+   every object in a band (cars, signs) must then be in both halves' lists,
+   the top half's with its page raised by 3. That is about 780 more bytes of
+   display list RAM across both views, against about 500 free and in pieces.
+   Rejected on RAM, not CPU.
+3. **Per-scanline writes by display interrupt instead of `WSYNC`.** A zone's
+   graphics page counts down from its own height. So sub-zones of a band
+   cannot share one list without every header's page being rewritten.
+   Rejected.
+4. **Stock injection on a few bands only.** The cost is per scanline
+   stalled, so any useful share of the 78 lines is back to what was removed.
+   Rejected.
+
+**Suggested first step, if wanted:** a prototype of option 1 for player 1's
+near bands (7-12), s = +/-1 only, about 1.7K of ROM. Measure the tick rate
+and look for DMA overruns before committing the rest.
