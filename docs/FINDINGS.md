@@ -6464,3 +6464,69 @@ arrays (`$18CD`, `$18F0`, `$1973`, `$19E4-$19FF`, `$1CE7`, `$1D1C`, `$1D59`).
 Checked: health identical to checkpoint 75 on four recordings (run-02 differs
 in 6 single-frame samples); integrity 0 on four; race tick rate 100/600; no
 writes to the freed ranges.
+
+## Evaluated: back to 32K, and a skybox for player 2
+
+### 32K
+
+What the build occupies now: the new code area holds 5,292 bytes of code
+(`$4000-$54AB`) plus the HUD row lists (`$7FE0-$7FF1`). Inside the original
+32K it uses the reclaimed injection (about 108 bytes still free there), the
+code blob (`$F400-$FE24`, 359 free) and 32 small patch sites.
+
+What the original 32K could still give (`tools/probe-rom-coverage.lua`: every
+cart byte read by CPU or MARIA once the cart's reset code runs; scripted
+two-player games on all four tracks and six recordings): **1,602 bytes are
+never read**, 1,079 of them in stretches of 16 or more, and 107 of those are
+code. They are mostly sound pitch tables for sounds these runs never
+triggered (`$E099-$E152`), 33-byte graphics page tails, a 112-byte table at
+`$BC79`, and 108 bytes before the vectors (`$FF8E-$FFF9`). Some are surely
+read in situations these runs do not reach, so this is an upper bound. With
+the attract demo cut (~120 bytes) and the free space above, the original ROM
+tops out at about **1.7K for 5.3K of code**.
+
+Where the mod's 7.9K of code goes (new code area, then blob):
+
+    qualifying + race 1,236   hazards/crashes 1,184   rival cars (p2 view) 918
+    shared traffic      803   HUD               565   audio 229   vblank 138
+    player 2 emitter    151   FastZRow           56   blob 2,597 (MirrorStage 273, ...)
+
+Getting to 32K needs about 3.6K of this removed: 45%. Local tightening
+(loops for unrolled blocks, shared helpers) might find 10-20%. The only route
+that could reach 32K is structural: run player 2 through the stock routines
+(physics, collision, crash, walk) by swapping its state into player 1's
+variables and back, instead of keeping re-implementations. That is large,
+touches everything, and costs a swap each way per tick. Recommendation: stay
+at 48K; take local savings only when space is wanted.
+
+### A skybox for player 2
+
+MAME shows DLL lines 8-231 (the decor at DLL 135-144 lands at image rows
+127-136); stock draws its content in 16-215. The current top:
+
+    z0   0-15  blank, DLI idx7 (stock ECA1: sky palettes, decor P6/P7)
+    z1  16-19  blank
+    z2-13  20-91  player 2's road (12 x 6)
+    z14 92-103  blank carrier, DLI idx9
+    z15-17 104-124  HUD ...   (player 1's half unchanged below)
+
+A 12-line sky (10-line decor, 2-line horizon) fits in the top slack, with
+nothing below the HUD moving: z1's 4 lines and 8 of the carrier's 12. Player
+2's sky at 16-27, its road at 28-99, the carrier at 100-103.
+
+What it needs:
+- **Palettes.** idx7 (stock ECA1) already loads the sky colours and the
+  track's decor P6/P7 for the region below it, which is exactly the sky's
+  need. A new DLI at the foot of the sky then switches to player 2's road:
+  its horizon line (`$FA`), ground (`$FB`) and the cars' P6/P7, with
+  MirrorPalette's road colours. The handler table now has room (checkpoint
+  72 relocated it).
+- **A second decor list**, built like `sub_DC4F`/`sub_DC89` build player 1's
+  (zone 19's list at `$1D3B`) from the track's decor objects, but offset by
+  player 2's heading. Player 2 needs its own heading accumulator, driven from
+  its segment curvature and advance the way player 1's is. RAM: a list of
+  about 40 bytes plus the accumulator, from `FREE_RAM`.
+- **The carrier's DLI (idx9)** has to be checked for how many lines it
+  needs before it can shrink to 4.
+- **Risk:** the top of the sky (DLL 16) is where stock's own HUD started, so
+  it is inside the area stock relies on being visible.
