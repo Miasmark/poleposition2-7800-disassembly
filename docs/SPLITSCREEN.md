@@ -140,7 +140,9 @@ including 6,192 generated at build time from the retail's own pixels.
 
 runs the regression set used since checkpoint 80 and prints what to compare
 (the expected values are in the script's header). Set `PP2_HIRES_CAR=1` for
-the higher-detail build, so the checks read its symbols. The unsigned build's
+the higher-detail build, so the checks read its symbols. The same set runs
+through the toolkit's `regress.py` from `tools/check-build.json`, which
+saves the verdicts and compares the next build's with them (README). The unsigned build's
 SHA-256 is in the README; the generator refuses any dump but the retail one.
 
 ## Words used here and in the source

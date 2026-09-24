@@ -7593,3 +7593,61 @@ cloned beside this repository as `../a7800-toolkit`, not at the Karateka
 fork (`../a7800-toolkit-local`). With it, all four builds (VS and
 higher-detail car, unsigned and signed) give the same SHA-256 as before, and
 both bundles apply identically.
+
+## What this mod gave back to the toolkit
+
+After checkpoint 89. The lessons of the mod that are not about Pole Position
+II went into [a7800-toolkit](https://github.com/Miasmark/a7800-toolkit)
+(PR #3), and the generators now use them.
+
+**Fixed in the toolkit.**
+- *`asm.py` accepted a name defined twice.* The later definition won
+  silently: checkpoint 84's branch went 322 bytes astray this way. It now
+  refuses a name redefined with a different value. The same value twice is
+  allowed, because older listings repeat labels.
+- *`disasm.py` wrote every named byte block's label twice.* This is why
+  older listings repeat them: `emit_block` labelled a block, then
+  `emit_bytes` labelled its first run again. It came to light because the
+  new check first refused this game's own listing (`dat_StateHandlersHi`).
+  The listing lost 27 repeated labels and still round-trips.
+- *Bundles were a new file every rebuild.* The zip stamped the time and the
+  OS into every entry. Entries are now fixed, so the same inputs give the
+  same bytes.
+
+**Built from this mod's code.**
+- *`patchset.bundle_from_images`.* It builds a bundle from the dump and each
+  option's finished image: sections, spans grouped by which options change
+  them, anchors clear of other bundles' bytes, and growth. It refuses to
+  write a bundle whose options do not reproduce their images. Both
+  generators now call it, and their hand-written bundle code (about 150
+  lines, and `pick_anchors` twice) is gone. The regenerated
+  `pp2-vs.abp` and `pp2-graphics-hack.abp` have the same sections and
+  anchors as before, apply to the same bytes, and rebuild byte-identical:
+  - `pp2-vs.abp` is `a631bace...`;
+  - `pp2-graphics-hack.abp` is `96585a15...`.
+- *Probes, made game-agnostic.*
+  - `probes/wildfetch.lua`
+  - `probes/romcoverage.lua`
+  - `probes/rendersurvey.lua` with `tools/zonebill.py`
+  - `probes/snapwhen.lua`
+- *`tools/modmap.py`,* the general `vs-rom-map.py`. On this build it
+  reproduces the published retail and overwritten figures (26,830 read,
+  1,952 unread, 3,986 overwritten).
+- *`tools/regress.py`,* the general `check-build.sh`. This project's set is
+  now also in `tools/check-build.json`. On the hires build it gave the
+  script's verdicts, line for line.
+
+**Measured on the way.**
+- *Where coverage should start.* The coverage probe has to skip the BIOS,
+  which reads the whole cartridge to hash it. A game-agnostic start is the
+  cartridge's first INPTCTRL write with the lock bit set. This game writes
+  it at `$D207`, Karateka at `$4061`, Midnight Mutants at `$FF02`, all just
+  after the hand-over. The old probe started at `$D205`, a PC this game
+  alone has.
+- *The signature timing, seen once more.* The unsigned build locks at
+  frame 209 and the signed one at 203. That shift is why recordings desync
+  on a signed build. It is now a toolkit pitfall ("Re-signing a cartridge
+  moves the start of the game").
+- *MAME's palette.* `palette.py` gained MAME's own table: every colour in
+  four MAME screenshots is in it. `$17` is (145,126,9), the gold chosen for
+  player 2's highlights, where the old approximation gave olive.

@@ -17,7 +17,8 @@ Pole Position II VS: a two-player split-screen build from the retail cartridge.
   build, sign7800.py for --sign, patchset.py and bps.py for --bundle.
   From https://github.com/Miasmark/a7800-toolkit, cloned beside this
   repository: looked for at ../a7800-toolkit/tools (tested at commit
-  f449428), or wherever PP2_TOOLKIT points.
+  e44dca9; --bundle needs ff816b1 or later, for bundle_from_images), or
+  wherever PP2_TOOLKIT points.
 
 The build is deterministic: the same dump gives the same bytes, and the
 SHA-256 printed at the end can be compared with README.md's.
@@ -7444,37 +7445,6 @@ def _runs(addrs, gap=1):
     return out
 
 
-def pick_anchors(rom, sections, n=4, size=256):
-    """Extents no option touches, to identify the cartridge by.
-
-    A hash of the whole file is true of exactly one dump -- the pristine one
-    -- and false of every ROM this bundle produces, so it cannot answer "is
-    this the right game" about a cartridge that already has an option on it.
-    Anchors can: ground no option stands on, as true after patching as before.
-    """
-    busy = [(int(s["addr"], 16) - BASE, int(s["addr"], 16) - BASE + s["length"])
-            for s in sections.values()]
-    out = []
-    for i in range(n):
-        start = (len(rom) * (2 * i + 1)) // (2 * n)
-        for at in range(start, len(rom) - size):
-            if any(not (at + size <= a or b <= at) for a, b in busy):
-                continue
-            if any(not (at + size <= a or b <= at) for a, b in
-                   [(int(x["addr"], 16) - BASE, int(x["addr"], 16) - BASE + x["length"])
-                    for x in out]):
-                continue
-            chunk = rom[at:at + size]
-            if len(set(chunk)) < 32:          # a run of one value proves nothing
-                continue
-            out.append({"addr": "0x%04X" % (at + BASE), "length": size,
-                        "crc32": "0x%08X" % (zlib.crc32(chunk) & 0xFFFFFFFF)})
-            break
-    if len(out) < n:
-        raise SystemExit("could not find %d usable anchors" % n)
-    return out
-
-
 def build(out_path, sign=False):
     """Apply the fix directly. Unsigned by default -- see the docstring above
     on why: a recording made against the pristine ROM depends on the
@@ -7533,123 +7503,71 @@ def _patched(rom, hires):
 
 
 def build_bundle(out_path=None):
-    """Write the .abp: vs-split, which grows the cartridge to 48K, and
+    """Write dist/pp2-vs.abp: vs-split, which grows the cartridge to 48K, and
     vs-hires-car on top of it.
 
-    The toolkit's patchset/3 lets an option grow the body ("grow": front, $FF,
-    to 49,152 bytes, as a linear 7800 cartridge grows toward $4000) and sets
-    the .a78 header's ROM size to match. Sections are CPU addresses in the
-    grown body, so the new space's pre-image is the fill. Anchors are retail
-    ground neither option (nor graphics_hack.py) touches.
+    Built by the toolkit's patchset.bundle_from_images from the two finished
+    images, so the structure is worked out rather than written here:
 
-    The two options share the sections where both change bytes (palette 6's
-    colours in RoadTail and MirrorPalette, the highlights and their palette):
-    vs-split's patch over them goes from the retail bytes to the VS build's,
-    vs-hires-car's from the VS build's to its own. That is how the toolkit
-    reads the dependency, and how it knows a cartridge with both carries both.
-    vs-hires-car's other patch is the sprite redraw itself (KevinMos3 and
-    Defender_2600's), over bytes VS leaves alone.
+    - sections: every byte either option changes, CRC32 of the retail bytes
+      (or of the $FF fill, in the space the cartridge grows into);
+    - spans grouped by which options change them, so the two share the nine
+      sections where both write (palette 6's operands, the highlight column
+      and its palette). That is how the toolkit reads the dependency, and
+      how it knows a cartridge with both carries both;
+    - anchors: retail ground neither option touches, and clear of the retail
+      car hack's bytes (graphics_hack.CAR_SPRITE_EDITS), so a cartridge
+      carrying that is still recognised and the clash named as the section
+      it is;
+    - growth: "grow" front, $FF, to 49,152 bytes, as a linear 7800 cartridge
+      grows toward $4000; the .a78 header's ROM size follows.
 
-    Written to dist/. The bundle carries this project's generated graphics:
-    sheared copies of the retail road slices (grey road, a border each side),
-    the highlight column and the VS logo edit -- transformed, not copied --
-    plus the redraw's 159 bytes, with credit, as dist/pp2-graphics-hack.abp
-    already does. Applying it signs the result (patchset.py always does).
+    The builder refuses to write the bundle unless each option, applied to
+    the dump, gives exactly its image. The same inputs give the same file.
+
+    Published in dist/. It carries this project's code and generated graphics
+    (sheared copies of the retail road slices, the highlight column, the VS
+    logo edit) and the redraw's 159 bytes, with credit, as
+    dist/pp2-graphics-hack.abp does. Applying it signs the result.
     """
     sys.path.insert(0, TOOLKIT_TOOLS)
     import patchset
-    import bps
-
-    src, header, rom = load_source()
-    pa, pb = _patched(rom, False), _patched(rom, True)
-    P, A, B = bytes(Patcher(bytes(rom)).rom), bytes(pa.rom), bytes(pb.rom)
-    ta = {i + OUT_BASE for i in range(len(P)) if P[i] != A[i]}
-    tb = {i + OUT_BASE for i in range(len(P)) if A[i] != B[i]}
-
-    sections, kind = {}, {}
-    for at, n in _runs(ta | tb, gap=4):
-        sid = "s_%04X" % at
-        sections[sid] = {"addr": "0x%04X" % at, "length": n,
-                         "crc32": "0x%08X" % patchset.crc32(P[at - OUT_BASE:at - OUT_BASE + n])}
-        here = set(range(at, at + n))
-        kind[sid] = (bool(here & ta), bool(here & tb))
-    only_vs = [k for k, v in kind.items() if v == (True, False)]
-    shared = [k for k, v in kind.items() if v == (True, True)]
-    only_hr = [k for k, v in kind.items() if v == (False, True)]
-    assert shared and only_hr, "vs-hires-car should both build on VS and add the redraw"
-
-    # Anchors avoid the retail car hack's bytes too (patches/graphics_hack.py),
-    # so a cartridge carrying it is still recognised -- and a clash between
-    # the two is then reported as the section it is, not as "another game".
-    busy = {k: v for k, v in sections.items() if int(v["addr"], 16) >= BASE}
     sys.path.insert(0, HERE)
     import graphics_hack
-    for a, _old, new in graphics_hack.CAR_SPRITE_EDITS:
-        busy["hack_%04X" % a] = {"addr": "0x%04X" % a, "length": len(new)}
-    anchors = pick_anchors(rom, busy)
 
-    files = {}
-
-    def patch(name, sids, frm, to):
-        sids = sorted(sids, key=lambda sid: int(sections[sid]["addr"], 16))
-        pre, post = bytearray(), bytearray()
-        for sid in sids:
-            at, n = int(sections[sid]["addr"], 16) - OUT_BASE, sections[sid]["length"]
-            pre += frm[at:at + n]
-            post += to[at:at + n]
-        files[name] = bps.create(bytes(pre), bytes(post))
-        return {"sections": sids, "bps": name,
-                "before": "0x%08X" % patchset.crc32(bytes(pre))}
-
-    options = [{
-        "id": "vs-split",
-        "title": FIXES[0]["title"],
-        "note": FIXES[0]["note"],
-        "grow": {"size": OUT_SIZE, "at": "front", "fill": "0xFF"},
-        "patches": [patch("p/vs-split.bps", only_vs, P, A),
-                    patch("p/vs-split.shared.bps", shared, P, A)],
-    }, {
-        "id": "vs-hires-car",
-        "title": "Higher-detail car (KevinMos3 and Defender_2600), for VS",
-        "note": "The car-sprite redraw by KevinMos3 and Defender_2600 "
-                "(AtariAge forums, \"Pole Position II Graphics Hack\", "
-                "2014-04-12), made to work with VS: player 1's car in their "
-                "blue and white, player 2's the same car with gold highlights "
-                "(after Defender_2600's mock-up) so the two stay told apart. "
-                "Artwork credit is theirs.",
-        "requires": ["vs-split"],
-        "patches": [patch("p/vs-hires-car.shared.bps", shared, A, B),
-                    patch("p/vs-hires-car.sprite.bps", only_hr, P, B)],
-    }]
-    manifest = {
-        "format": patchset.FORMAT_GROW,
-        "name": "Pole Position II VS (two-player split screen)",
-        "what": "Two players at once: player 2's view on top, the HUD as a "
-                "divider, player 1's view below. Grows the cartridge from 32K "
-                "to 48K. Optionally with KevinMos3 and Defender_2600's "
-                "higher-detail car.",
-        "target": {
-            "what": os.path.basename(src),
-            "body_size": len(rom),
-            "body_sha256": hashlib.sha256(bytes(rom)).hexdigest(),
-            "headers": [0, HDR],
-            "region": "ntsc",
-            "base": "0x%04X" % BASE,
-            "anchors": anchors,
-        },
-        "sections": sections,
-        "options": options,
-    }
+    src, header, rom = load_source()
+    vs, hires = bytes(_patched(rom, False).rom), bytes(_patched(rom, True).rom)
+    options = [
+        {"id": "vs-split", "title": FIXES[0]["title"], "note": FIXES[0]["note"],
+         "image": vs},
+        {"id": "vs-hires-car",
+         "title": "Higher-detail car (KevinMos3 and Defender_2600), for VS",
+         "note": "The car-sprite redraw by KevinMos3 and Defender_2600 "
+                 "(AtariAge forums, \"Pole Position II Graphics Hack\", "
+                 "2014-04-12), made to work with VS: player 1's car in their "
+                 "blue and white, player 2's the same car with gold highlights "
+                 "(after Defender_2600's mock-up) so the two stay told apart. "
+                 "Artwork credit is theirs.",
+         "on": "vs-split", "image": hires},
+    ]
     out_path = out_path or os.path.join(ROOT, "dist", "pp2-vs.abp")
     if not os.path.isdir(os.path.dirname(out_path)):
         os.makedirs(os.path.dirname(out_path))
-    patchset.write_bundle(out_path, manifest, files)
+    patchset.bundle_from_images(
+        out_path, bytes(rom), BASE, options,
+        "Pole Position II VS (two-player split screen)",
+        what="Two players at once: player 2's view on top, the HUD as a "
+             "divider, player 1's view below. Grows the cartridge from 32K "
+             "to 48K. Optionally with KevinMos3 and Defender_2600's "
+             "higher-detail car.",
+        target={"what": os.path.basename(src), "region": "ntsc"},
+        grow={"size": OUT_SIZE, "at": "front", "fill": "0xFF"},
+        avoid=[(a, len(new)) for a, _old, new in graphics_hack.CAR_SPRITE_EDITS])
+    ps = patchset.PatchSet(out_path)
     print(out_path)
-    print("  2 options, %d sections (%d VS only, %d shared, %d the redraw), "
-          "%d bytes covered, grows 32K -> 48K"
-          % (len(sections), len(only_vs), len(shared), len(only_hr),
-             sum(v["length"] for v in sections.values())))
-    print("  %d bytes of BPS" % sum(len(v) for v in files.values()))
+    print("  2 options, %d sections, %d bytes covered, grows 32K -> 48K"
+          % (len(ps.sections), sum(s["length"] for s in ps.sections.values())))
+    print("  sha256 %s" % hashlib.sha256(open(out_path, "rb").read()).hexdigest())
     print("")
     for opt, out in (("vs-split", "pp2-vs.a78"), ("vs-hires-car", "pp2-vs-hires.a78")):
         print("  python ../a7800-toolkit/tools/patchset.py apply %s "

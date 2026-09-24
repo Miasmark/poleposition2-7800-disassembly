@@ -132,6 +132,12 @@ What it does carry:
   2K in all;
 - the car redraw's 159 bytes, with credit.
 
+Rebuilding a bundle gives the same file, byte for byte. With the toolkit at
+`e44dca9`, `pp2-vs.abp` is SHA-256
+`a631bace13c0598cfa6271e998f28e4a4459fb13945596d634ea2e7aaecf073e` and
+`pp2-graphics-hack.abp` is
+`96585a15328115c5240009be3606d535ca99b5f625ef7d7be9cc11bf5f2f1b07`.
+
 ### Building it
 
 You need:
@@ -145,7 +151,8 @@ You need:
 3. **[a7800-toolkit](https://github.com/Miasmark/a7800-toolkit)**, cloned
    beside this repository as `../a7800-toolkit`: `asm.py` and `m6502.py` for
    every build, `sign7800.py` to sign, `patchset.py` and `bps.py` for
-   `--bundle`. Verified at commit `f449428`; set `PP2_TOOLKIT` to point at
+   `--bundle`. Verified at commit `e44dca9`; `--bundle` needs `ff816b1` or
+   later (`patchset.bundle_from_images`). Set `PP2_TOOLKIT` to point at
    another `tools` directory.
 
 Then, from this directory:
@@ -195,6 +202,17 @@ original, a trap for any jump into data, and the race's tick rate under
 load -- and prints what to compare (the expected values are in the script's
 header). It takes a couple of minutes and needs a 7800 BIOS (`BIOS`, default
 `../bios`). For the higher-detail build, run it with `PP2_HIRES_CAR=1` set.
+
+Or through the toolkit's `regress.py`, which runs the same set from
+`tools/check-build.json` and compares every verdict with a saved baseline:
+
+```
+python ../a7800-toolkit/tools/regress.py tools/check-build.json --var rom=good.a78 --save good.json
+python ../a7800-toolkit/tools/regress.py tools/check-build.json --var rom=pp2-vs.a78 --against good.json
+```
+
+It exits 1 if anything changed, and gives verdict for verdict what the
+script does.
 
 ## A higher-detail car sprite (credit: KevinMos3 and Defender_2600)
 

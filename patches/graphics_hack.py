@@ -199,34 +199,10 @@ def _runs(addrs, gap=1):
     return out
 
 
-def pick_anchors(rom, sections, n=4, size=256):
-    import zlib
-    busy = [(int(s["addr"], 16) - BASE, int(s["addr"], 16) - BASE + s["length"])
-            for s in sections.values()]
-    out = []
-    for i in range(n):
-        start = (len(rom) * (2 * i + 1)) // (2 * n)
-        for at in range(start, len(rom) - size):
-            if any(not (at + size <= a or b <= at) for a, b in busy):
-                continue
-            if any(not (at + size <= a or b <= at) for a, b in
-                   [(int(x["addr"], 16) - BASE, int(x["addr"], 16) - BASE + x["length"])
-                    for x in out]):
-                continue
-            chunk = rom[at:at + size]
-            if len(set(chunk)) < 32:
-                continue
-            out.append({"addr": "0x%04X" % (at + BASE), "length": size,
-                        "crc32": "0x%08X" % (zlib.crc32(chunk) & 0xFFFFFFFF)})
-            break
-    if len(out) < n:
-        raise SystemExit("could not find %d usable anchors" % n)
-    return out
-
-
 def vs_split_ranges():
     """The retail bytes the VS build (patches/splitscreen.py) changes, as
-    sections for pick_anchors to avoid: so this bundle still recognises a VS
+    (addr, length) ranges for the bundle's anchors to avoid: so this bundle
+    still recognises a VS
     cartridge, and a clash between the two is reported as the section it is
     rather than as "not the cartridge". The signature bytes are included, as
     any signed build rewrites them. Empty if the VS generator is not there."""
@@ -234,7 +210,7 @@ def vs_split_ranges():
         sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
         import splitscreen as S
     except ImportError:
-        return {}
+        return []
     _src, _hdr, rom = S.load_source()
     p = S.Patcher(bytes(rom))
     pristine = bytes(p.rom)
@@ -243,8 +219,7 @@ def vs_split_ranges():
     changed = {a for addr, data in p.writes for a in range(addr, addr + len(data))
                if a >= BASE and pristine[a - S.OUT_BASE] != p.rom[a - S.OUT_BASE]}
     changed.update(range(0xFF80, 0xFFF8))               # the signature
-    return {"vs_%04X" % at: {"addr": "0x%04X" % at, "length": n}
-            for at, n in _runs(changed, gap=4)}
+    return _runs(changed, gap=4)
 
 
 def build(out_path, sign=False):
@@ -274,73 +249,39 @@ def build(out_path, sign=False):
 
 
 def build_bundle(out_path=None):
+    """Write dist/pp2-graphics-hack.abp: the redraw on the retail game.
+
+    Built by the toolkit's patchset.bundle_from_images from the finished
+    image, with anchors kept off every byte the VS build changes
+    (vs_split_ranges), so this bundle still recognises a VS cartridge and
+    names the clash rather than calling it another game."""
     sys.path.insert(0, TOOLKIT_TOOLS)
     import patchset
-    import bps
 
     src, header, rom = load_source()
     p = Patcher(bytes(rom))
     for fix in FIXES:
         fix["fn"](p)
-
-    touched = set()
-    for addr, data in p.writes:
-        touched.update(range(addr, addr + len(data)))
-
-    sections = {}
-    for at, n in _runs(touched, gap=4):
-        sections["s_%04X" % at] = {
-            "addr": "0x%04X" % at, "length": n,
-            "crc32": "0x%08X" % patchset.crc32(bytes(rom[at - BASE:at - BASE + n])),
-        }
-    anchors = pick_anchors(rom, dict(sections, **vs_split_ranges()))
-
-    touched_ids = sorted(sections, key=lambda sid: int(sections[sid]["addr"], 16))
-    before, after = bytearray(), bytearray()
-    for sid in touched_ids:
-        at, n = int(sections[sid]["addr"], 16), sections[sid]["length"]
-        before += rom[at - BASE:at - BASE + n]
-        after += p.rom[at - BASE:at - BASE + n]
-
-    member = "p/hires-car.bps"
-    files = {member: bps.create(bytes(before), bytes(after))}
-    option = {
-        "id": "hires-car",
-        "title": FIXES[0]["title"],
-        "note": FIXES[0]["note"],
-        "patches": [{"sections": touched_ids, "bps": member,
-                     "before": "0x%08X" % patchset.crc32(bytes(before))}],
-    }
-
-    manifest = {
-        "format": patchset.FORMAT,
-        "name": "Pole Position II: higher-detail car sprite",
-        "what": "Incorporates KevinMos3 and Defender_2600's car-sprite "
-                "redraw (AtariAge forums, \"Pole Position II Graphics "
-                "Hack\", 2014-04-12) as a standalone, combinable option. "
-                "Credit for the artwork is theirs; see patches/"
-                "graphics_hack.py for how it was extracted.",
-        "target": {
-            "what": os.path.basename(src),
-            "body_size": len(rom),
-            "body_sha256": hashlib.sha256(bytes(rom)).hexdigest(),
-            "headers": [0, HDR],
-            "region": "ntsc",
-            "base": "0x%04X" % BASE,
-            "anchors": anchors,
-        },
-        "sections": sections,
-        "options": [option],
-    }
     out_path = out_path or os.path.join(DISTDIR, "pp2-graphics-hack.abp")
     if not os.path.isdir(DISTDIR):
         os.makedirs(DISTDIR)
-    patchset.write_bundle(out_path, manifest, files)
+    patchset.bundle_from_images(
+        out_path, bytes(rom), BASE,
+        [{"id": "hires-car", "title": FIXES[0]["title"], "note": FIXES[0]["note"],
+          "image": bytes(p.rom)}],
+        "Pole Position II: higher-detail car sprite",
+        what="Incorporates KevinMos3 and Defender_2600's car-sprite "
+             "redraw (AtariAge forums, \"Pole Position II Graphics "
+             "Hack\", 2014-04-12) as a standalone, combinable option. "
+             "Credit for the artwork is theirs; see patches/"
+             "graphics_hack.py for how it was extracted.",
+        target={"what": os.path.basename(src), "region": "ntsc"},
+        avoid=vs_split_ranges())
+    ps = patchset.PatchSet(out_path)
     print(out_path)
     print("  1 option, %d sections, %d bytes covered"
-          % (len(sections), sum(s["length"] for s in sections.values())))
-    print("  %d bps file(s), %d bytes"
-          % (len(files), sum(len(v) for v in files.values())))
+          % (len(ps.sections), sum(s["length"] for s in ps.sections.values())))
+    print("  sha256 %s" % hashlib.sha256(open(out_path, "rb").read()).hexdigest())
     print("")
     print("  python ../a7800-toolkit/tools/patchset.py list %s" % out_path)
     print("  python ../a7800-toolkit/tools/patchset.py apply %s "

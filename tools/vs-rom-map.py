@@ -9,6 +9,10 @@ The coverage files are tools/probe-rom-coverage.lua's output (a 0/1 string,
 one character per byte $4000-$FFFF: read by the CPU or MARIA after reset)
 from runs of that same build; their union is taken. "Read" is a lower bound
 on what the game uses: code for situations no run reached shows as unread.
+
+The toolkit's tools/modmap.py and probes/romcoverage.lua are the general
+version of this and of the coverage probe; this one stays because it knows
+this build's own regions (code, generated graphics, tables) exactly.
 """
 import os
 import sys

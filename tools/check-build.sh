@@ -4,6 +4,10 @@
 #
 #     MAME=/path/to/mame BIOS=../bios tools/check-build.sh pp2-vs.a78
 #
+# The same set is in tools/check-build.json for the toolkit's regress.py,
+# which saves the verdicts as a baseline and compares a later build with it
+# (it gives the same verdicts as this script, checked on the hires build).
+#
 # Needs the recordings run-02, run-03 and test-pp2-2p-0922-2037/0923-0205/
 # 0923-0236 (committed), a 7800 BIOS directory (BIOS, default ../bios) and
 # Python with patches/splitscreen.py importable (it reads the build's own
