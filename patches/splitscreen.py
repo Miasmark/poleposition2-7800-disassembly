@@ -199,7 +199,7 @@ ROM_SIZE = 32768                 # the SOURCE ROM, as dumped
 OUT_BASE = 0x4000
 OUT_SIZE = 49152
 EXT_ADDR = 0x4000                # the object code's own area
-EXT_END = 0x7FFF
+EXT_END = 0x7FDF                 # the last page's top holds the HUD row lists
 
 ROM_NAME = "Pole Position II (NTSC) (Atari) (1987) (A85FB962).a78"
 SOURCES = [
@@ -652,7 +652,21 @@ GRID_MIN_MIRROR = 0x14       # below this, player 1's slot is too near the
 # display list of its own rather than the game's, so it can be filled with
 # player 2's readouts. Seeded at boot from the row it replaces, so it renders
 # something recognisable before the content is rewritten.
-P2_HUD_DL = 0x2770           # player 2's HUD row: one 5-byte header + end
+P2_HUD_DL = 0x2770           # (was player 2's HUD row list; now its HUD values:)
+P2_SCORE = 0x2770            # player 2's score, BCD, as $1CA5-$1CA7 (3 bytes)
+P2_SCACC = 0x2773            # distance toward the next 10 points, as $AD
+P2_LAPS = 0x2774             # lap seconds BCD, as $BD
+P2_LAPH = 0x2775             # lap hundreds of seconds BCD, as $BE
+P2_LAPRUN = 0x2776           # nonzero once player 2 has crossed the start line
+HUD_BUF1 = 0x27C2            # the 1UP line, 31 characters
+HUD_BUF2 = 0x27E1            # the 2UP line, 31 characters, to $27FF
+HUD_X = 0x12                 # both lines' x: (160 - 31*4) / 2
+# The three divider rows' display lists, in the new code area's last page --
+# fixed, so HUD_ROWS stays a constant: one 31-character header each for the
+# two lines, and an empty list for the third row.
+HUD_DL2 = 0x7FE0
+HUD_DL1 = 0x7FE8
+HUD_DLB = 0x7FF0
 P2_HUD_TEMPLATE = 0xEEC0            # 12 bytes; moved off $FC00 to leave
                                     # P2_TEMPLATE room to grow
 SWCHA = 0x0280               # player 2's stick: bit 3 right, 2 left, 1 down, 0 up
@@ -768,8 +782,16 @@ DIVIDER_ADDR = DLL_BASE + DIVIDER_ZONE * 3
 # DLI bit for index 10. Every writer of these three zones -- this table, the
 # light's dat_A6CD and the banner's dat_A6BB -- has to agree on that bit, or
 # whichever one runs last silently drops the interrupt.
-HUD_ROWS = [0x06, P2_HUD_DL >> 8, P2_HUD_DL & 0xFF,
-            0x06, 0x1D, 0x28, 0x86, 0x1D, 0x34]
+# 2UP on the top row, 1UP straight under it, the third row empty: the third
+# row draws in read mode 0 (the gear, alone, was the only thing stock put
+# there -- which is why "HI"/"LO" always looked bold), so text on it comes out
+# doubled and the "h" of mph as a block. Measured: H1 had 1UP there.
+# Seven lines each, as stock: the font is seven tall. (Tried 8+8+5, which
+# keeps the divider's 21: the eighth line reads past the glyphs and draws
+# stray dots under every space.)
+HUD_ROWS = [0x06, HUD_DL2 >> 8, HUD_DL2 & 0xFF,
+            0x06, HUD_DL1 >> 8, HUD_DL1 & 0xFF,
+            0x86, HUD_DLB >> 8, HUD_DLB & 0xFF]
 
 # HudReassert lives here: $F3FF-$FF7E (2,945 bytes) is a run of untouched $FF
 # filler, confirmed via the toolkit's own --gaps report (disasm.py) and by
@@ -969,7 +991,7 @@ def hud_reassert_src(addr):
         [] if os.getenv("PP2_KEEP_INJECTION") else road_stage_src()
     ) + p2_stage_src() + p2_car_src() + [
         "    RTS",
-    ] + p2_stage_tables() + p2_slot_tables() + ["P2Emit = $%04X" % _ext()[1]["P2Emit"], "P2ObjSeg = $%04X" % _ext()[1]["P2ObjSeg"], "P2ObjInit = $%04X" % _ext()[1]["P2ObjInit"], "P2Collide = $%04X" % _ext()[1]["P2Collide"], "P2Clear = $%04X" % _ext()[1]["P2Clear"], "P2CrashTick = $%04X" % _ext()[1]["P2CrashTick"], "P2BuildLists = $%04X" % _rival_helpers()[1]["P2BuildLists"]] + [
+    ] + p2_stage_tables() + p2_slot_tables() + ["P2Emit = $%04X" % _ext()[1]["P2Emit"], "P2ObjSeg = $%04X" % _ext()[1]["P2ObjSeg"], "P2ObjInit = $%04X" % _ext()[1]["P2ObjInit"], "P2Collide = $%04X" % _ext()[1]["P2Collide"], "P2Clear = $%04X" % _ext()[1]["P2Clear"], "HudTick = $%04X" % _ext()[1]["HudTick"], "HudFill = $%04X" % _ext()[1]["HudFill"], "P2CrashTick = $%04X" % _ext()[1]["P2CrashTick"], "P2BuildLists = $%04X" % _rival_helpers()[1]["P2BuildLists"]] + [
 
         "WrapSlot0:",
         "    CMP #$A0",
@@ -1045,14 +1067,13 @@ def hud_reassert_src(addr):
     ] + (_unrolled_mirror_stage() if os.getenv("PP2_HOOK_PALETTE") else []) + [
         "    JMP $EC09",
         "P2HudInit:",
-        "    LDX #$00",
+        "    LDA #$00",
+        "    LDX #$06",
         "P2HudLoop:",
-        "    LDA $%04X,X" % P2_HUD_TEMPLATE,
-        "    STA $%04X,X" % P2_HUD_DL,
-        "    INX",
-        "    CPX #$0C",
-        "    BNE P2HudLoop",
-        "    RTS",
+        "    STA $%04X,X" % P2_SCORE,
+        "    DEX",
+        "    BPL P2HudLoop",
+        "    JMP HudFill",
         "HudTriplet:",
         "    .byte $%02X,$%02X,$%02X,$%02X,$%02X,$%02X,$%02X,$%02X,$%02X"
         % tuple(HUD_ROWS),
@@ -1279,7 +1300,8 @@ def _check_p2_ram():
         ("GAP", GAP_PSEG, 7),
         ("P2_BANDX", P2_BANDX, 13),
         ("P2_HIT", P2_HIT, 2),
-        ("P2_HUD_DL", P2_HUD_DL, 12),
+        ("P2_HUD", P2_HUD_DL, 12),
+        ("HUD_BUFS", HUD_BUF1, 62),
     ]
     regions.sort(key=lambda r: r[1])
     for (n1, a1, s1), (n2, a2, _) in zip(regions, regions[1:]):
@@ -2067,7 +2089,7 @@ def p2_gap_src():
         "    LDA $%04X" % P1_SEG,  "    STA $%04X" % GAP_PSEG,
         "    LDA $%04X" % P1_POS_LO, "    STA $%04X" % GAP_PLO,
         "    LDA $%04X" % P1_POS_HI, "    STA $%04X" % GAP_PHI,
-    ] + p2_collide_src() + ["    JSR P2Collide"]
+    ] + p2_collide_src() + ["    JSR P2Collide", "    JSR HudTick"]
 
 
 def p2_collide_src():
@@ -2545,6 +2567,11 @@ def car_world_src():
         "    LDA $%04X" % (P2_OA0 + 1), "    SBC #$00", "    STA $%04X" % (P2_OA0 + 1),
         "    BPL P2OsDone",
         "    LDX $%04X" % P2_OA2,
+        "    BNE P2OsNoLine",
+        # the start line (the boundary out of segment 0): a new lap
+        "    LDA #$01", "    STA $%04X" % P2_LAPRUN,
+        "    LDA #$00", "    STA $%04X" % P2_LAPS, "    STA $%04X" % P2_LAPH,
+        "P2OsNoLine:",
         "    INX",
         "    CPX $%04X" % OBJ_TRACK_LEN,
         "    BCC P2OsNw",
@@ -2571,6 +2598,15 @@ def car_world_src():
         "    LDA #$00", "    STA $%04X" % P2_ACTIVE,
         "    STA $%04X" % P2_CRASH, "    STA $%04X" % P2_ARM,
         "    LDA #$FF", "    STA $%04X" % P2_CRSLOT,
+        "    LDA #$00",
+        "    STA $%04X" % P2_LAPRUN, "    STA $%04X" % P2_LAPS, "    STA $%04X" % P2_LAPH,
+        "    LDA $%04X" % GAME_STATE,
+        "    CMP #$10",                        # a new session: the score too
+        "    BNE P2OiKeep",
+        "    LDA #$00",
+        "    STA $%04X" % P2_SCORE, "    STA $%04X" % (P2_SCORE + 1),
+        "    STA $%04X" % (P2_SCORE + 2), "    STA $%04X" % P2_SCACC,
+        "P2OiKeep:",
         "    RTS",
     ]
 
@@ -3079,6 +3115,208 @@ def p2_hazard_src():
     ]
 
 
+def hud_src():
+    """The two-line HUD: 2UP on the divider's top row, 1UP under it, the third
+    row empty (it draws in read mode 0). Each line is one 31-character text
+    object:
+
+        2UP sssss  tt  HI  sss:t  sssmph
+        0   4     10   15  19     26
+
+    score, the race clock (one clock, both lines), gear, the lap time to a
+    tenth (the game's own is to a hundredth), speed. Player 1's fields are
+    copied from the buffers the game already writes (rom:C69A score at $1FAE,
+    rom:C72A clock $1FB7, SetGear $1FC6, rom:C772 lap $1FA2, rom:C7B5 speed
+    $1FC0); player 2's are built the same way from its own values.
+
+    Player 2's score and lap time are its own, by player 1's rules:
+    - score: Speed/2 a tick into an accumulator, 10 points for every 40 of it
+      (rom:C600-C64D), while driving ($02, $03);
+    - lap: seconds counted when the tick phase $E0 comes round to 0, the tenth
+      from the same phase table (dat_9CE3), in the states rom:C74E runs it in;
+      it starts, and restarts, when player 2 crosses the start line (its object
+      segment stepping from 0, as rom:CBD1 does for player 1).
+    """
+    B1, B2 = HUD_BUF1, HUD_BUF2
+    tpl1 = [0x8D, 0xA8, 0xA3] + [0xAB] * 26 + [0xAC, 0xAD]
+    tpl2 = [0x8E, 0xA8, 0xA3] + [0xAB] * 26 + [0xAC, 0xAD]
+    tpl2[22] = 0xB0                                   # the lap's colon
+    return [
+        # --- per tick, from P2Tick: player 2's score and lap, then the lines
+        # points only while driving ($02 qualifying, $03 race): rom:C600 is
+        # only called from the driving paths, and its own list ($11 $10 $0B
+        # $01) is just the states among those it skips. Counting everywhere
+        # else it isn't excluded gave player 2 a thousand points in the
+        # intermission after qualifying.
+        "HudTick:",
+        "    LDA $%04X" % GAME_STATE,
+        "    CMP #$02", "    BEQ HtScore",
+        "    CMP #$03", "    BNE HtNoScore",
+        "HtScore:",
+        "    LDA $%04X" % P2_SPEED,
+        "    LSR A",
+        "    CLC", "    ADC $%04X" % P2_SCACC,
+        "    STA $%04X" % P2_SCACC,
+        "    LDY #$00",                        # the BCD points this tick
+        "HtAcc:",
+        "    LDA $%04X" % P2_SCACC,
+        "    SEC", "    SBC #$28",
+        "    BCC HtAdd",
+        "    STA $%04X" % P2_SCACC,
+        "    SED",
+        "    TYA", "    CLC", "    ADC #$10", "    TAY",
+        "    CLD",
+        "    JMP HtAcc",
+        "HtAdd:",
+        "    TYA",
+        "    BEQ HtNoScore",
+        "    SED",
+        "    CLC", "    ADC $%04X" % (P2_SCORE + 2), "    STA $%04X" % (P2_SCORE + 2),
+        "    LDA $%04X" % (P2_SCORE + 1), "    ADC #$00", "    STA $%04X" % (P2_SCORE + 1),
+        "    LDA $%04X" % P2_SCORE, "    ADC #$00", "    STA $%04X" % P2_SCORE,
+        "    CLD",
+        "HtNoScore:",
+        # the lap clock: not in the states rom:C74E skips, not before the line
+        "    LDA $%04X" % P2_LAPRUN,
+        "    BEQ HudFill",
+        "    LDX #$07",
+        "    LDA $%04X" % GAME_STATE,
+        "HtLapSt:",
+        "    CMP $ADD0,X",
+        "    BEQ HudFill",
+        "    DEX",
+        "    BPL HtLapSt",
+        "    LDA $00E0",
+        "    BNE HudFill",
+        "    SED",
+        "    LDA $%04X" % P2_LAPS, "    CLC", "    ADC #$01", "    STA $%04X" % P2_LAPS,
+        "    LDA $%04X" % P2_LAPH, "    ADC #$00", "    STA $%04X" % P2_LAPH,
+        "    CLD",
+
+        # --- both lines, from scratch
+        "HudFill:",
+        "    LDX #$1E",
+        "HfTpl:",
+        "    LDA HudTpl1,X", "    STA $%04X,X" % B1,
+        "    LDA HudTpl2,X", "    STA $%04X,X" % B2,
+        "    DEX",
+        "    BPL HfTpl",
+        # player 1: the game's own digits
+        "    LDX #$04",
+        "HfP1a:",
+        "    LDA $1FAE,X", "    STA $%04X,X" % (B1 + 4),       # score
+        "    LDA $1FA2,X", "    STA $%04X,X" % (B1 + 19),      # lap, to the tenth
+        "    DEX",
+        "    BPL HfP1a",
+        "    LDX #$02",
+        "HfP1b:",
+        "    LDA $1FB7,X", "    STA $%04X,X" % (B1 + 10),      # clock,
+        "    STA $%04X,X" % (B2 + 10),                         #   both lines
+        "    LDA $1FC0,X", "    STA $%04X,X" % (B1 + 26),      # speed
+        "    DEX",
+        "    BPL HfP1b",
+        "    LDA $1FC6", "    STA $%04X" % (B1 + 15),          # gear
+        "    LDA $1FC7", "    STA $%04X" % (B1 + 16),
+        # player 2: score, five digits from three BCD bytes, leading zeros
+        # blank but the last (rom:C69A)
+        "    LDX #$00",                        # 0 while still leading
+        "    STX $%04X" % CL_I,                # the cell
+        "    LDA $%04X" % P2_SCORE,            "    JSR HfLo",
+        "    LDA $%04X" % (P2_SCORE + 1),      "    JSR HfHi",
+        "    LDA $%04X" % (P2_SCORE + 1),      "    JSR HfLo",
+        "    LDA $%04X" % (P2_SCORE + 2),      "    JSR HfHi",
+        "    LDX #$01",                        # the last digit always shows
+        "    LDA $%04X" % (P2_SCORE + 2),      "    JSR HfLo",
+        # lap: hundreds (blank if 0, rom:C776), tens, ones, the tenth
+        "    LDA $%04X" % P2_LAPH, "    AND #$0F",
+        "    BEQ HfLapBl",
+        "    TAY", "    LDA $BCE9,Y",
+        "    STA $%04X" % (B2 + 19),
+        "HfLapBl:",
+        "    LDA $%04X" % P2_LAPS,
+        "    LSR A", "    LSR A", "    LSR A", "    LSR A",
+        "    TAY", "    LDA $BCE9,Y", "    STA $%04X" % (B2 + 20),
+        "    LDA $%04X" % P2_LAPS, "    AND #$0F",
+        "    TAY", "    LDA $BCE9,Y", "    STA $%04X" % (B2 + 21),
+        "    LDY #$00",
+        "    LDA $%04X" % P2_LAPRUN,
+        "    BEQ HfTenth",
+        "    LDX $00E0",
+        "    LDA $9CE3,X",
+        "    LSR A", "    LSR A", "    LSR A", "    LSR A",
+        "    TAY",
+        "HfTenth:",
+        "    LDA $BCE9,Y", "    STA $%04X" % (B2 + 23),
+        # gear
+        "    LDA $%04X" % P2_GEAR,
+        "    BEQ HfLo2",
+        "    LDA #$9D", "    STA $%04X" % (B2 + 15),       # HI
+        "    LDA #$9E", "    STA $%04X" % (B2 + 16),
+        "    BNE HfSpeed",
+        "HfLo2:",
+        "    LDA #$9F", "    STA $%04X" % (B2 + 15),       # LO
+        "    LDA #$A2", "    STA $%04X" % (B2 + 16),
+        # speed: rom:C7B5's conversion, player 2's speed
+        "HfSpeed:",
+        "    LDA $%04X" % P2_SPEED,
+        "    CMP #$C8",
+        "    BCC HfSp1",
+        "    LDX #$8E",                        # 2
+        "    SEC", "    SBC #$C8",
+        "    JMP HfSpD",
+        "HfSp1:",
+        "    CMP #$64",
+        "    BCC HfSp0",
+        "    LDX #$8D",                        # 1
+        "    SEC", "    SBC #$64",
+        "    JMP HfSpD",
+        "HfSp0:",
+        "    LDX #$AB",                        # blank
+        "HfSpD:",
+        "    STX $%04X" % (B2 + 26),
+        "    TAY",                             # 0..99, binary
+        "    LSR A", "    LSR A", "    LSR A", "    LSR A",
+        "    TAX",
+        "    BEQ HfSpH0",                      # rom:C7E5: 0 tens
+        "    LDA $BCF4,X",                     # BCD of the high nibble x 16
+        "HfSpH0:",
+        "    STA $%04X" % CL_T,
+        "    TYA", "    AND #$0F", "    TAX",
+        "    LDA $A9B6,X",                     # BCD of the low nibble
+        "    SED", "    CLC", "    ADC $%04X" % CL_T, "    CLD",
+        "    TAY",
+        "    LSR A", "    LSR A", "    LSR A", "    LSR A",
+        "    TAX", "    LDA $BCE9,X", "    STA $%04X" % (B2 + 27),
+        "    TYA", "    AND #$0F",
+        "    TAX", "    LDA $BCE9,X", "    STA $%04X" % (B2 + 28),
+        "    RTS",
+
+        # one BCD digit into the next score cell of line 2 (Y counts cells
+        # via HfCell). In: A the byte, X nonzero once a digit has shown.
+        "HfHi:",
+        "    LSR A", "    LSR A", "    LSR A", "    LSR A",
+        "HfLo:",
+        "    AND #$0F",
+        "    BNE HfShow",
+        "    CPX #$00",
+        "    BNE HfShow",
+        "    LDA #$AB",                        # a leading zero: blank
+        "    BNE HfPut",
+        "HfShow:",
+        "    LDX #$01",
+        "    TAY", "    LDA $BCE9,Y",
+        "HfPut:",
+        "    LDY $%04X" % CL_I,
+        "    STA $%04X,Y" % (B2 + 4),
+        "    INC $%04X" % CL_I,
+        "    RTS",
+        "HudTpl1:",
+        "    .byte " + ",".join("$%02X" % b for b in tpl1),
+        "HudTpl2:",
+        "    .byte " + ",".join("$%02X" % b for b in tpl2),
+    ]
+
+
 _EXT = []
 
 
@@ -3153,7 +3391,7 @@ def _ext():
     if not _EXT:
         lines = ([".org $%04X" % EXT_ADDR] + fast_zrow_src() + rival_car_src()
                  + ["P2Emit:"] + p2_emit_src() + ["    RTS"] + p2_slot_tables()
-                 + car_world_src() + p2_hazard_src())
+                 + car_world_src() + p2_hazard_src() + hud_src())
         _EXT.append(_assemble(lines))
     return _EXT[0]
 
@@ -4085,9 +4323,10 @@ def dll_template():
         dli = 0x80 if n == idx8_at else 0x00
         z.append([(lines - 1) | dli, dl >> 8, dl & 0xFF])
     z.append([(CARRIER_LINES - 1) | 0x80, 0x24, 0xF6])  # blank, DLI idx9
-    z.append([0x06, P2_HUD_DL >> 8, P2_HUD_DL & 0xFF])   # divider: player 2's row
-    z.append([0x06, 0x1D, 0x28])
-    z.append([0x86, 0x1D, 0x34])                      #   DLI idx10
+    # the divider: 2UP, 1UP, an empty row (the third carries DLI idx10)
+    z.append(HUD_ROWS[0:3])
+    z.append(HUD_ROWS[3:6])
+    z.append(HUD_ROWS[6:9])
     z.append([0x09, 0x18, 0xFA])                      # horizon, stock
     z.append([0x89, 0x1D, 0x3B])                      # decor, DLI idx11
     # Player 1's view, built from the SAME plan as player 2's -- same zone
@@ -4311,6 +4550,10 @@ def fix_mirror_split(p):
     if not os.getenv("PP2_STOCK_TRAFFIC"):
         ct = _ext()[1]["CarTick"]
         p.put(0xD70D, [0x20, ct & 0xFF, ct >> 8], expect=[0x20, 0xAD, 0xC9])
+    for _dl, _buf in ((HUD_DL2, HUD_BUF2), (HUD_DL1, HUD_BUF1)):
+        p.put(_dl, [_buf & 0xFF, 0x60, _buf >> 8, 0x41, HUD_X, 0x00, 0x00],
+              expect=[0xFF] * 7)
+    p.put(HUD_DLB, [0x00, 0x00], expect=[0xFF, 0xFF])
     _xc = list(_ext()[0])
     if EXT_ADDR + len(_xc) - 1 > EXT_END:
         raise SystemExit("the $4000 code area overruns $%04X" % EXT_END)

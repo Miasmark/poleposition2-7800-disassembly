@@ -5832,3 +5832,74 @@ now play differently, since the cars no longer start inside each other).
 Integrity and health unchanged.
 
 `tools/probe-start-positions.lua` reads both positions at each start.
+
+## The HUD: one line per player
+
+Checkpoint 66. The divider's text rows now read
+
+    2UP  score  clock  gear  lap  speed MPH     <- player 2, top row
+    1UP  score  clock  gear  lap  speed MPH     <- player 1, under it
+
+each one 31-character text object, the clock shared (there is one race clock),
+the lap to a tenth rather than a hundredth.
+
+**Where the game keeps each value** (read from the code, all confirmed on
+screen):
+
+| field | value | HUD characters | writer |
+|---|---|---|---|
+| score | `$1CA5-$1CA7` BCD | `$1FAE` (5) | rom:C69A, leading zeros blank |
+| top score | `$1CA8-$1CAA` | `$1F90` | same |
+| clock | `$DE/$DF` BCD, -1 every 6 ticks | `$1FB7` (3) | rom:C705 |
+| lap | `$BC/$BD/$BE` BCD | `$1FA2` (6, colon `$B0`) | rom:C772 |
+| speed | `$CE` binary | `$1FC0` (3) + mph `$AC $AD` | rom:C7B5 |
+| gear | `$DB` | `$1FC6` (2) | SetGearLo/Hi |
+
+The score is distance: Speed/2 a tick into `$AD`, 10 points per 40 of it
+(rom:C600), called only from the driving paths. The lap's seconds step when
+the tick phase `$E0` comes round to 0 and its hundredths are that phase's
+entry in `dat_9CE3` (00 14 37 45 62 79); it does not run in states 05 07 10 11
+08 0E 0F 01 (`dat_ADD0`).
+
+**Built.** The 1UP line copies player 1's fields out of the game's own HUD
+characters every tick. The 2UP line is built from player 2's own values:
+- **score** (`P2_SCORE`), by rom:C600's rule on player 2's speed, in states
+  $02 and $03, reset at the qualifying banner;
+- **lap time** (`P2_LAPS`/`P2_LAPH`), by rom:C74E's rule on the same tick phase,
+  started and restarted when player 2 crosses the start line -- its object
+  segment stepping out of segment 0, the boundary whose crossing starts player
+  1's lap (rom:CBD1) -- so it counts from player 2's own crossing;
+- gear and speed from player 2's (rom:C7B5's conversion), the clock copied.
+
+The rows' display lists are in ROM at `$7FE0`/`$7FE8`/`$7FF0` (the new code
+area stops at `$7FDF`), so `HUD_ROWS` -- written by HudReassert, StartDriveHud,
+QualDriveHud and the boot zone list -- is a constant as before. The HUD
+appears and disappears exactly as stock's does: blank on the banners, the
+start light and "PREPARE TO RACE" in their places, back when driving starts.
+
+Checked with both players driven identically (`tools/probe-hud-values.lua`):
+through the qualifying lap the two scores agree to within the 10 points of one
+tick either side of a sample, and player 2's lap seconds equal player 1's whole
+seconds at every sample, both starting on the frame of the line.
+
+### Wrong turns
+
+- **1UP on the third row** drew bold with the "h" of mph a solid block: that
+  row renders in read mode 0 (it only ever held the gear, which is why "HI" /
+  "LO" always looked bold). 1UP is on the second row; the third is empty.
+- **8-line rows** (8+8+5, keeping the divider's 21 lines) to show the glyphs'
+  last line: the font is seven lines tall, and the eighth reads past it and
+  draws stray dots under every space. Back to 7+7+7, as stock.
+- **Player 2 scored between races**: its score ran in every state not on
+  rom:C600's skip list, but C600 itself only runs while driving -- player 2
+  gained 1,020 points in the intermission after qualifying. Now $02/$03 only.
+
+### Seen, for the next step (player 2's laps)
+
+- **Player 2 keeps driving after qualifying ends**: the gap moves through the
+  states after `$0B`, while player 1 is stopped by the game.
+- **Player 2 gets none of the bonuses** player 1 does at the end of
+  qualifying (player 1 went 8,570 -> 10,000 -> 10,400) -- no qualifying
+  position, no lap bonus yet.
+- Player 2's lap clock already restarts at each crossing, so its lap times --
+  the input to a qualifying position -- are there to be used.
