@@ -6392,3 +6392,28 @@ had:
   injection. Retiring the copy frees all three and its CPU.
 - `$1C53-$1C55`, the rest of the stripped `RowCurveOffsetAlt` tail past the
   staging copies.
+
+## Cleanup: player 1's skyline in the track's colours
+
+Checkpoint 75. Compared with the stock ROM on all four tracks, row by row
+through the horizon (dominant colours per scanline):
+
+- **The decor drew in the cars' colours.** The horizon decor (zone 19:
+  mountains, hills, trees) draws in P6/P7, which stock's L_ECF8 (rom:ECF8)
+  loads every frame from the track's `$F4-$F9`. The divider's copy of that
+  code had the load inside the start-light tint's `$06/$07` branch. So outside
+  those states the decor kept whatever P6/P7 held, the cars' colours from
+  MirrorPalette: white trees on track 3, white snow on track 1's mountains.
+  The load now runs every frame, as stock's does.
+- **The horizon's last lines.** RoadTail stands in for the injection, whose
+  first lines stock times after DLI_ED4F's palette block: two lines on,
+  `BACKGRND` = `$FA` (the track's horizon colour: the water line on track 2);
+  two more, `BACKGRND` = `$FB` (the ground) and the cars' P7 (rom:EDAD-EDCB);
+  then P6. RoadTail wrote the ground and the cars' palettes at once, so the
+  water line never showed. After checkpoint 74 the early P7 also turned the
+  decor's bottom three rows white; they still draw in the track's P7. RoadTail
+  now keeps stock's line timing (four `WSYNC`s).
+
+Checked: all four tracks' horizon rows match stock (differences only where
+the decor has scrolled to a different heading); player 1's car stays yellow
+under the PREPARE banner; race tick rate still 100/600.

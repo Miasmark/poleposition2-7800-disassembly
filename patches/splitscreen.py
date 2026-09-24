@@ -988,12 +988,18 @@ def hud_reassert_src(addr):
         # margin (rom:F158, now neutered). This puts the ground colour back
         # before the road is drawn, and lets the margin share it.
         "RoadTail:",
-        "    LDA $00FB",
-        "    STA BACKGRND",
-        # and the cars' palettes, which the injection also set for the road
-        # (rom:EDC1-EDCB P7, rom:EDE2-EDEC P6). Without it player 1's car kept
-        # whatever the divider left: in $06 and $07 the start-light code there
-        # loads L_ECF8's P6/P7 for the banner, and player 1's car went green.
+        # The injection's first lines, as stock times them after DLI_ED4F's
+        # palette block: two lines on, the track's horizon colour ($FA -- the
+        # water line on track 2); two more, the ground ($FB) and the cars' P7
+        # (rom:EDAD-EDCB), then P6 (rom:EDE2). Written at once, the ground
+        # swallowed the horizon line and P7 turned the decor's bottom rows
+        # white -- they draw in the track's P7 until the zone ends.
+        "    STA WSYNC",
+        "    STA WSYNC",
+        "    LDA $00FA", "    STA BACKGRND",
+        "    STA WSYNC",
+        "    STA WSYNC",
+        "    LDA $00FB", "    STA BACKGRND",
         "    LDA #$0F", "    STA P7C1", "    STA P7C2", "    STA P7C3",
         "    LDA #$2F", "    STA P6C1",
         "    LDA #$26", "    STA P6C2",
@@ -1092,13 +1098,19 @@ def hud_reassert_src(addr):
         "    LDA $0048",
         "PalNoSub:",
         "    CMP #$06",
-        "    BMI PalDone",
+        "    BMI PalP67",
         "    CMP #$08",
-        "    BPL PalDone",
+        "    BPL PalP67",
         "    LDA #$0A", "    STA P4C1",
         "    LDA #$35", "    STA P4C2",
         "    LDA #$0C", "    STA P4C3",
-        # and P6/P7 back to what L_ECF8 loads for this region.
+        # and P6/P7 back to what L_ECF8 loads for this region -- every frame,
+        # as stock does (rom:ECF8 follows the tint, it is not part of it):
+        # they are the track's horizon decor colours ($F4-$F9, set at track
+        # load, rom:DD55-DD97). Inside the tint branch, the decor drew in the
+        # cars' colours outside $06/$07 (white trees on track 3). RoadTail puts
+        # the cars' colours back for player 1's road.
+        "PalP67:",
         "    LDA $00F4", "    STA P6C1",
         "    LDA $00F5", "    STA P6C2",
         "    LDA $00F6", "    STA P6C3",
