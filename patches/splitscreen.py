@@ -713,7 +713,7 @@ P2_PASSY = 0x273F            # the list index, while testing a slot
 # all four tracks and 0923-0205 the attract demo). "untouched": never written
 # either. Free for new work; claim a range by moving it out of this list.
 FREE_RAM = [
-    (0x0097, 0x009B, "zero page: injection colour rows and the dead curve copy (patched out)"),
+    (0x0094, 0x009B, "zero page: injection colour rows and the dead curve copy (patched out)"),
     (0x1B36, 0x1B4D, "RowCurveXStaged's tail: the dead curve copy's target (patched out)"),
     (0x1BD8, 0x1BE9, "RowCurveXStagedSrc's tail: the stripped walk tail's output"),
     (0x202E, 0x203F, "untouched"),
@@ -841,7 +841,8 @@ SM_DX1 = 0x0079              # 7:   and x adjustment
 SM_W2 = 0x0080               # 7: player 2's
 SM_DX2 = 0x0087              # 7
 SM_T = 0x008E                # 4: SmSelect's scratch
-TC_Z = 0x0092                # 5: TopCopy's pointer (2), band, dest, count
+ZU_LO = 0x0092               # ZRowUp's search bounds (checkpoint 88)
+ZU_HI = 0x0093
 # the top-half lists: player 1's in the free page after the zone list,
 # player 2's in the free pieces elsewhere (TOP_SIZE each)
 P1_TOP = {b: 0x2599 + TOP_SIZE * i for i, b in enumerate([1, 2, 3, 4, 5, 6, 7])}
@@ -1504,7 +1505,7 @@ def _check_p2_ram():
         ("P2_QUAL", P2_QST, 6),
         ("P2_TBS", P2_TBS, 1),
         ("SM", SM_IX, 0x2B),
-        ("TC", TC_Z, 5),
+        ("ZU", ZU_LO, 2),
     ] + [("P1_TOP%d" % b, P1_TOP[b], TOP_SIZE) for b in SPLIT_BANDS] + [
         ("P2_TOP%d" % b, P2_TOP[b], TOP_SIZE) for b in SPLIT_BANDS] + [
         ("P2_RACE", P2_CLOCK, 7),
@@ -4937,6 +4938,81 @@ def qual_src():
 _EXT = []
 
 
+def zrow_up_src():
+    """rom:CE3E by halving: the object pass's row search (checkpoint 88).
+
+    CE3E walks rows up from 0 (the horizon) and returns the first whose
+    distance the object's Z ($47/$48) reaches -- by the sign of Z - T[row],
+    16 bits -- or $4E when none does: up to 78 passes of about 15 cycles,
+    and the profile's single largest item in a race (13.8% of the visible
+    frame, stress scenario). Callers read only Y and keep X (the object).
+    The test is monotone in the row for Z below $8000 and for Z at or above
+    $8600 (never true: returns $4E at once); between, the signed difference
+    wraps, so that band goes to the original loop. Checked at build time for
+    every Z from 0 to $FFFF.
+    """
+    if os.getenv("PP2_LINEAR_CE3E"):
+        return ["ZRowUp:", "    JMP $CE3E"]
+    import io as _io
+    rom = bytearray(_io.open(load_source()[0], "rb").read())
+    rom = rom[len(rom) - ROM_SIZE:]
+    T = [rom[PERSP_Z_LO + x - BASE] | rom[PERSP_Z_HI + x - BASE] << 8 for x in range(78)]
+
+    def linear(z):
+        for y in range(0x4E):
+            if not ((z - T[y]) & 0x8000):
+                return y
+        return 0x4E
+
+    def model(z):
+        hi = z >> 8
+        if hi >= 0x86:
+            return 0x4E
+        if hi >= 0x80:
+            return linear(z)
+        lo, top = 0, 0x4E
+        while lo < top:
+            mid = (lo + top) >> 1
+            if not ((z - T[mid]) & 0x8000):
+                top = mid
+            else:
+                lo = mid + 1
+        return lo
+    assert all(linear(z) == model(z) for z in range(0x10000)), "ZRowUp would differ"
+    return [
+        "ZRowUp:",
+        "    LDA $48",
+        "    BMI ZuNeg",
+        "    LDA #$00", "    STA $%02X" % ZU_LO,
+        "    LDA #$4E", "    STA $%02X" % ZU_HI,
+        "ZuLoop:",
+        "    LDA $%02X" % ZU_LO,
+        "    CMP $%02X" % ZU_HI,
+        "    BCS ZuDone",
+        "    ADC $%02X" % ZU_HI,               # carry clear: lo < hi
+        "    LSR A",
+        "    TAY",
+        "    LDA $47", "    CMP $%04X,Y" % PERSP_Z_LO,
+        "    LDA $48", "    SBC $%04X,Y" % PERSP_Z_HI,
+        "    BPL ZuTrue",
+        "    INY", "    STY $%02X" % ZU_LO,
+        "    JMP ZuLoop",
+        "ZuTrue:",
+        "    STY $%02X" % ZU_HI,
+        "    JMP ZuLoop",
+        "ZuDone:",
+        "    LDY $%02X" % ZU_LO,
+        "    RTS",
+        "ZuNeg:",
+        "    CMP #$86",
+        "    BCS ZuNone",
+        "    JMP $CE3E",                       # the wrapping band: as stock
+        "ZuNone:",
+        "    LDY #$4E",
+        "    RTS",
+    ]
+
+
 def fast_zrow_src():
     """sub_E3CD by binary search.
 
@@ -5006,7 +5082,7 @@ def _ext():
     refers only to the helpers (assembled first) and to fixed addresses, so the
     blob can refer to it without a cycle."""
     if not _EXT:
-        lines = ([".org $%04X" % EXT_ADDR] + fast_zrow_src() + rival_car_src()
+        lines = ([".org $%04X" % EXT_ADDR] + fast_zrow_src() + zrow_up_src() + rival_car_src()
                  + ["P2Emit:"] + p2_emit_src() + ["    RTS"] + p2_slot_tables()
                  + car_world_src() + p2_hazard_src() + hud_src() + audio_src()
                  + qual_src() + vbl_src() + smooth_far_src() + top_half_src())
@@ -6859,6 +6935,13 @@ def fix_mirror_split(p):
                     _pos & 0xFF, 0x60, _pos >> 8, 0x40 | (32 - 3), HUD_POS_X, 0x00, 0x00],
               expect=[0xFF] * 12)
     p.put(HUD_DLB, [0x00, 0x00], expect=[0xFF, 0xFF])
+    # rom:CE3E, the object pass's row search: by halving (checkpoint 88).
+    # Its four callers are retargeted; CE3E itself stays intact, since
+    # ZRowUp falls back to it -- a JMP written over CE3E took CE40 too, the
+    # loop's own start, and crashed the first fallback.
+    _v = _ext()[1]["ZRowUp"]
+    for _at in (0xCDF2, 0xCE0F, 0xCE72, 0xCE8B):
+        p.put(_at, [0x20, _v & 0xFF, _v >> 8], expect=[0x20, 0x3E, 0xCE])
     # player 2's bonus tally (checkpoint 84): see TallyT
     _ts = _ext()[1]
     for _at, _sym, _exp in ((0xD6A9, "TallyT", [0xA5, 0xAC, 0xF0, 0x32]),

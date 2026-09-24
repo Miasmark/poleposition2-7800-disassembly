@@ -7198,3 +7198,56 @@ bands' own selection and apply code. Each step costs some speed, and the
 near bands' per-frame adjustments (four per band per view) come on top.
 Estimated at about 90-93 in the stress test. Or, in scope order, spend less:
 near bands 8-10 only, or reduce the far bands' extreme shears.
+
+## Speed: the object pass's row search, by halving
+
+Checkpoint 88. Asked (before near-band shearing): find speed first.
+
+**The profile.** `tools/probe-pcprof.lua` samples the CPU's PC at each zone
+boundary (MARIA's zone-list reads). It was run in the stress scenario, both
+cars at 240 in traffic, frames 7000-7600, three starts (550,000 samples),
+alongside the scripted race. Two probes loaded together must not share a
+global tap table: the profiler's `TAPS={}` dropped the race probe's taps
+until it was loaded with its table renamed.
+
+    13.8%  rom:CE3E-CE51, the object pass's row search
+    13.4%  the blob, mostly just after STA WSYNC (lines waited out)
+    12.7%  rom:E709, the main loop waiting for vblank before the rebuild
+     4.4%  rom:EA28, the six-frame staging wait
+
+**rom:CE3E** walks rows up from 0 and returns the first whose distance
+(`$EB56`/`$EAB9`) the object's Z (`$47`/`$48`) reaches, by the sign of
+Z - T[row], or `$4E`: up to 78 passes of about 15 cycles, called up to
+twice per object (rom:CDF2, CE0F, CE72, CE8B). `FastZRow` (checkpoint
+60) had replaced rom:E3CD, a different search walking the other
+way; this one was untouched. `ZRowUp` is the same search by halving: seven
+steps, X kept, the answer in Y as before. The test is monotone in the row
+for Z below `$8000`, and Z at or above `$8600` never meets it (`$4E` at once,
+the objects behind). The band between wraps the signed difference and falls
+back to the stock routine. Checked at build time for all 65,536 Z, and live
+(a probe recomputing the stock search at each return): 0 differences in
+66,750 searches over four recordings.
+
+Race tick rate in the stress scenario, six starts: **100, 100, 102, 100,
+100, 100**, against 94-100 at checkpoint 87. Health is identical to
+checkpoint 87 on four recordings, list integrity is 0 on four, and the
+tallies pay as before (a scripted race: 60 s, 36 cars, player 2's 31).
+
+*Wrong turn, a crash:* the first build wrote `JMP ZRowUp` over rom:CE3E.
+Three bytes: CE3E, CE3F and CE40, and CE40 is the stock loop's own start,
+the branch target and the fallback's entry. The patch's expected bytes
+covered only what it overwrote, so the build check could not see that the
+third byte was a branch target. Any fallback then ran a broken
+instruction. On test-0236 the CPU fetched from `$85EC`, road graphics, at
+f1661; the variant with the stock search (every call a fallback) crashed at
+f271. Found with a tap on CPU fetches in `$8000-$BFFF`, which dumped the
+stack (the chain from rom:D710, the race tick). A code-area shift alone was
+ruled out: checkpoint 87's build with 5 bytes of padding ran clean. Fixed by
+retargeting the four callers and leaving CE3E intact.
+`PP2_LINEAR_CE3E=1` builds with the stock search.
+
+*Also seen:* in the scripted qualifying pairs, lap times now differ from
+checkpoint 80's table, because the race no longer loses ticks. Player 2
+meets traffic in the same lane, 7 contacts in the 198/200 pair. Each
+result is right for its times (e.g. 189/190: player 2 faster for 8th,
+player 1 out).
