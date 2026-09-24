@@ -114,7 +114,37 @@
   "rom:DF3D": "SoundUpdate",
   "rom:E03E": "SoundPitchPtr",
   "rom:C38D": "EngineNote",
-  "rom:D917": "LoadTrack"
+  "rom:D917": "LoadTrack",
+  "rom:D253": "MainLoopDispatch",
+  "rom:D305": "StateDrive",
+  "rom:D4B6": "StateRaceLapLine",
+  "rom:D725": "StatePause",
+  "rom:D316": "GameOver",
+  "rom:D32D": "EndRaceNotFinished",
+  "rom:D478": "RoundScoreAtLine",
+  "rom:D662": "DrawTallyValue",
+  "rom:D82B": "ClearMessageRows",
+  "rom:DB7C": "ResetTallyTimer",
+  "rom:D83D": "ResumeDriving",
+  "rom:D8AC": "SceneSetup",
+  "rom:D1AD": "PlaceOnGrid",
+  "rom:C705": "RaceClockTick",
+  "rom:C9AD": "ObjectTick",
+  "rom:E286": "BuildObjectList",
+  "rom:E709": "ObjectRebuild",
+  "rom:E6D7": "EmitObjectLists",
+  "rom:E729": "ObjectEmitter",
+  "rom:E3CD": "ZToRowFromBumper",
+  "rom:CE3E": "ZToRowFromHorizon",
+  "rom:E475": "SelectObjectSprite",
+  "rom:E8AC": "BuildRowCurveY",
+  "rom:E93D": "WalkTrack",
+  "rom:EA28": "WaitStageTick",
+  "rom:DB8E": "VblankSpin",
+  "rom:F171": "BootCopyZoneList",
+  "rom:DC4F": "BuildDecorLists",
+  "rom:DBDF": "AdvanceHeading",
+  "rom:DD0B": "DecorX"
  },
  "ram": {
   "1B00": "RowCurveXStaged",
@@ -171,7 +201,38 @@
   "1900": "SegCurve",
   "18D7": "ObjSegLenLo",
   "195A": "ObjSegLenHi",
-  "18B4": "SegObjDesc"
+  "18B4": "SegObjDesc",
+  "009D": "GameState",
+  "00A6": "GridPosition",
+  "00A7": "LapCount",
+  "00C3": "RaceLaps",
+  "00C5": "TallyTimer",
+  "00B8": "SixFrameCounter",
+  "00B9": "BlinkCounter",
+  "00E5": "ObjRebuildGate",
+  "00CD": "StripePhase",
+  "00E6": "StripeRowHi",
+  "00E7": "StripeRowLo",
+  "00FA": "HorizonColour",
+  "00FB": "GroundColour",
+  "00FC": "StripeColour",
+  "00F4": "DecorPalette",
+  "00C9": "Heading",
+  "00DD": "ObjListCount",
+  "00FF": "DliIndex",
+  "00E0": "ClockPhase",
+  "1F00": "StripeTexture",
+  "1F3C": "RowWidthField",
+  "1FC8": "MessageText",
+  "1FEB": "TallyRow",
+  "1997": "CarSlotNext",
+  "1A7F": "ListClass",
+  "1A94": "ListRow",
+  "1AA9": "ListBot",
+  "1ABE": "ListPage",
+  "1AD3": "ListLo",
+  "1AE8": "ListX",
+  "1BEA": "ListPW"
  },
  "comments": {},
  "headers": {},
@@ -195,6 +256,18 @@
    "note": "The segment-length menu: fourteen 16-bit lengths, low bytes at $A197 and high bytes at $A1A5. Read as pairs they are round decimal numbers -- 300, 500, 900, 1000, 1500, 2000, 2500, 3000, 5000, 5300, 10000, 1200, 600, 800 -- which is what identifies them; the road accumulates the pair as a 16-bit quantity at rom:C4E7. LoadTrack indexes this by the LOW nibble of each track byte."
   },
   {
+   "loc": "rom:A295",
+   "end": "rom:A29F",
+   "name": "dat_SpritePtrLo",
+   "note": "Per size class: low byte of the pointer to that size's five viewing-angle frames (lo,hi pairs). Size 0 is the car's own column, $8B00 + angle*8."
+  },
+  {
+   "loc": "rom:A29F",
+   "end": "rom:A2A9",
+   "name": "dat_SpritePtrHi",
+   "note": "High bytes to dat_SpritePtrLo."
+  },
+  {
    "loc": "rom:A48A",
    "end": "rom:A4A2",
    "name": "dat_DliHandlerTable",
@@ -213,10 +286,40 @@
    "note": "Low bytes of the main game-state dispatch table, twenty entries. sub_D253 at rom:D25E indexes this and dat_StateHandlersHi by the state in $9D, builds the vector in $40/$41 and does JMP ($0040) at rom:D26A. The tracer cannot follow that, so sixteen of the twenty handlers sat in gaps -- several landing exactly on a gap start address, which is what confirmed the table. Entry 11 is rom:D3F7, QualifyingPosition, which had already been identified independently. Entry 20 reads $00AA, out of ROM, so the table is exactly twenty long."
   },
   {
+   "loc": "rom:ABCA",
+   "end": "rom:ABD4",
+   "name": "dat_SpriteWidthBySize",
+   "note": "Width field per size class (8 bytes at size 0 down to 1)."
+  },
+  {
+   "loc": "rom:ACCA",
+   "end": "rom:ACD4",
+   "name": "dat_SpriteHeightBySize",
+   "note": "Sprite height in rows per size class (rom:E493)."
+  },
+  {
    "loc": "rom:AE24",
    "end": "rom:AE2F",
    "name": "dat_HudSpeedTemplate",
    "note": "The SPEED field's template, copied to ram_1FBA by rom:F204. Reads 'SPEED  00' then $AC $AD, which render as the 'mph' unit on screen."
+  },
+  {
+   "loc": "rom:BA7E",
+   "end": "rom:BACC",
+   "name": "dat_SizeByRow",
+   "note": "Sprite size class (0-9) for each of the 78 road rows; OcRow and the stock object pass look a row's size up here. See 'The other player's car'."
+  },
+  {
+   "loc": "rom:BB7E",
+   "end": "rom:BBCC",
+   "name": "dat_RowToBand",
+   "note": "Road row -> band (0-12), 78 rows."
+  },
+  {
+   "loc": "rom:C07E",
+   "end": "rom:C0CC",
+   "name": "dat_RowTexIndex",
+   "note": "Each road row's offset into the stripe texture ($1F00), 78 rows. sub_E8AC reads ($FD),Y at this offset; it falls about 6 a row near the horizon and 1 a row at the bumper, against a texture half-period of 15 -- which is how long a stripe is at each depth. See docs/FINDINGS.md, 'The far stripes are per band'."
   },
   {
    "loc": "rom:C3C1",
@@ -273,6 +376,12 @@
    "note": "Priority per sound id, consulted by SoundStart at rom:DF0A when both voices are busy: the incoming sound takes a voice only if it outranks what is already there. The scheme is legible at a glance -- the engine $0F is priority 0, so anything at all steals its voice, and the race-start fanfare $13 is priority 20, far above the 2-10 of everything else, so nothing interrupts it. NOTE the last byte at $E1DE is also the first note of the pitch stream for sound 3; both want the value $14, so the tables abut and share it."
   },
   {
+   "loc": "rom:EA41",
+   "end": "rom:EAB9",
+   "name": "dat_LateralRampLo",
+   "note": "Low bytes of the 16-bit per-row lateral step, indexed by |lateral|; the high bytes are at $EADE and overlap dat_PerspectiveZHi's tail, so they are not declared separately. See 'Player 2's camera is derived'."
+  },
+  {
    "loc": "rom:EAB9",
    "end": "rom:EB07",
    "name": "dat_PerspectiveZHi",
@@ -283,6 +392,12 @@
    "end": "rom:EBA4",
    "name": "dat_PerspectiveZLo",
    "note": "Low bytes of the 78-entry perspective table; see dat_PerspectiveZHi at rom:EAB9."
+  },
+  {
+   "loc": "rom:EBA4",
+   "end": "rom:EBB1",
+   "name": "dat_BandBase",
+   "note": "Each band's fixed perspective base, added to RowCurveOffset (rom:E9D0) to give the band's x; indexed through dat_RowToBand."
   }
  ],
  "notes": {
