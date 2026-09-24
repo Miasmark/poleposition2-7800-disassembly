@@ -7000,3 +7000,28 @@ bend, and up to 20 near the horizon.
 **Suggested first step, if wanted:** a prototype of option 1 for player 1's
 near bands (7-12), s = +/-1 only, about 1.7K of ROM. Measure the tick rate
 and look for DMA overruns before committing the rest.
+
+## The title logo: II becomes VS
+
+Checkpoint 85. The title's logo is palette 0 (1 black letters, 2 grey
+pennants, 3 blue stripe) in objects of a title list at `$226B`. The II is
+one 4-byte (16 px) object at x 136 in four zones: `$A5D6` (5 lines), `$B00E`
+(10), `$B00A` (10) and `$A5DA` (5). Its pennant is larger than the other
+letters' and runs lower. The II is serif bars top and bottom with two 2-pixel
+stems.
+
+The pennant is kept. The II's black is filled back in grey, or blue on the
+stripe's diagonal, and V (7 px) and S (5 px) are drawn in black with 2-pixel
+strokes, as the logo's own letters are. There are 20 rows of 4 bytes in
+`TITLE_VS`, each put with its stock bytes as the expected value;
+`PP2_NO_VS=1` leaves the II. It shows in both of the logo's colour phases.
+
+*Only the title reads them.* A read tap over those 80 bytes through two
+whole recordings saw reads in state `$00`, plus a few frames of `$01` and
+`$06` while the title was still on screen. X1 differs from checkpoint 84's
+build in 68 bytes, all in pages `$A5` and `$B0-$B9`.
+
+*Probe trap:* the first run of that tap logged nothing at all. The taps were
+held in a Lua local that nothing referenced after set-up, so they were
+garbage-collected. Keep tap handles in a global, as
+`tools/probe-rom-coverage.lua` does.
