@@ -7463,3 +7463,125 @@ option refused this way is known not to be on the cartridge.
 
 The standalone reader (`Anchored-Bundle-of-Patches/abp.py`) refuses a `/3`
 bundle by name, as intended: "is 'patchset/3', not patchset/2".
+
+## The higher-detail car in VS, and the bundle published
+
+After checkpoint 89. The request was to make KevinMos3 and Defender_2600's
+car redraw work in VS, and to publish the VS bundle.
+
+**What carries over.**
+- The 38 sprite edits (the upright frame at `$8B10`, 26 lines, and its
+  6-line companion at `$AAE8`) touch nothing VS changes. They go in as they
+  are, checked against the retail bytes.
+- The two palette values, `P6C1 $2F -> $93` and `P6C2 $26 -> $0D`, do not
+  carry over. In the retail game they are operands in the scanline
+  injection at rom:EDE3/EDE7, which VS no longer runs. VS sets palette 6 in
+  two places, `RoadTail` (player 1's view) and `MirrorPalette` (player 2's),
+  so the hack's values go there instead.
+- `PP2_HIRES_CAR=1` builds it in. `car_colours()`, `car_rom()` and
+  `ovl_pw()` are what change. `car_rom()` is the retail body with the redraw,
+  and the highlight art is now derived from it.
+
+**First look: every car blue and white.** A first build used the hack's
+colours in both views, and MAME showed four identical-looking cars:
+
+- Each car in the other player's view is drawn from the same pages at the
+  nearest size, also in palette 6.
+- Player 2's blue and white highlights all but vanished on a blue body.
+- Rivals use palettes 3 (yellow `$1E $17`), 4 (white `$0E $98`) and 5
+  (blue `$9C $96`). A blue and white car sits close to two of them.
+
+**The fix inverts the contrast.**
+- Player 1 keeps the redraw as released.
+- Player 2 has the same car with **gold** highlights, in palette 3, the
+  yellow rival's (`$1E` light, `$17` gold).
+- On the stock car, player 2 was gold with blue; now it is blue with gold.
+  Rivals are single-colour cars, so neither combination is one of theirs.
+- Palette 3 holds the same values in both views (`MirrorPalette` writes
+  `$1E/$17`, and stock does the same in player 1's view). The header byte
+  changes from `$98` to `$78` in both views.
+
+**The highlight rule, on a frame it was not written for.** The rule finds
+the wing's centre as the longest black run in band 9's second line. The
+redrawn upright frame has no such gap: the wing is solid, with a light
+stripe across it and light endplate lines. On it, the rule coloured the
+whole wing and drew no bar. The frame now takes a second branch, used when
+the run is under 4 pixels:
+- light pixels in band 9's top four lines become the bar;
+- body pixels outside columns 9-22 (the wing tips) become gold;
+- the sidepods (band 8's bottom two lines, outside the roll hoop) become
+  gold, as before.
+
+The other four leans are still the stock drawing, and keep the stock rule.
+The stock build is unchanged (`0c5b6488...`).
+
+**Checked.**
+- *Screenshots in MAME* (`test-pp2-2p-0923-0205`): player 2's car in its
+  own view and in player 1's view, upright and leaning, with the highlights
+  on their frames. `tools/probe-overlay-shots.lua` takes `PW=0x78` for this
+  build.
+- *`tools/check-build.sh`* on the unsigned hires build:
+  - health identical to the stock build on all four recordings;
+  - integrity 0; `ZRowUp` 0 differences; no wild fetch;
+  - tick rate 100 on all six starts.
+
+The change is data and immediates of the same length, so none of that was
+expected to move, and none of it did.
+
+| hires build | SHA-256 |
+|---|---|
+| unsigned | `1dde56ea0fc864d52fc2e3500decd72d05139dcbbb2bda022da03d59d21ab660` |
+| signed | `7990630e12dba759673718cf1307d097ef775d94342b0a5a85b4fcbe887b21a5` |
+
+**The bundle: `dist/pp2-vs.abp`, two options.**
+- `vs-split`, and `vs-hires-car` on top of it.
+- 508 sections: 467 VS only, 9 shared, 32 the redraw. 17,307 bytes of BPS.
+- The shared sections are where both options change bytes (palette 6's
+  operands, the highlight column, the highlight header's palette). Each
+  option has a patch over exactly that span: `vs-split` from retail to VS,
+  `vs-hires-car` from VS to hires. That is how the toolkit reads the
+  dependency (`derived: vs-hires-car needs vs-split`).
+
+Tested:
+1. Each option on the retail dump gives the generator's `--build --sign`
+   image of its variant, byte for byte.
+2. `vs-hires-car` applied to a VS cartridge gives the same image as in one go.
+3. Applying either option again changes nothing.
+4. `check` reports:
+   - retail: both applicable;
+   - VS: one on, one applicable;
+   - VS + hires: both on;
+   - the retail-hacked cartridge: both refused, naming `s_ED9D`.
+5. A headerless dump gives the same body.
+
+**Two bugs on the way.**
+- *Ours.* The first bundle's hires image differed from the generator's at
+  one byte: `$4100`, `RcP1Show`'s `LDA #` of the highlight header (`$98`
+  where `$78` belonged). `_ext()`, `_hi_code()`, the slices and the rival
+  code are assembled once per process and cached, and the bundle builds both
+  variants in one process. `_patched()` now empties the four caches going in
+  and coming out.
+- *The toolkit's* (commit `064514a`). This was the first real chain: two
+  options sharing sections, one rewriting the other's bytes. It broke in
+  three places, each now in the self-test and the format doc:
+  - a span's pristine state was taken from the last patch's `before`, so
+    `vs-split` looked built on nothing;
+  - once `vs-hires-car` was on, `vs-split` read as blocked;
+  - on retail, `vs-hires-car` read as blocked, though `apply` runs
+    `vs-split` first.
+
+**Publishing, and what the bundle carries.** The generated graphics were
+the reason the bundle stayed in `build/`. The user's call: they are
+transformative, and mostly grey road with a border each side, so it is
+published. For the record, a byte audit of the new 16K on the hires image
+(runs of 16 or more bytes, not flat, that also occur in the retail ROM):
+- 2,162 bytes in the graphics area, the sheared road slices' unshifted rows;
+- 224 bytes in the code area, fragments of the game's own routines that
+  player 2's copies mirror (from pages `$C9`, `$D4`, `$DB`, `$DC`, `$DF`).
+
+Retail bytes kept in place are CRC32s only, as before.
+
+**Also fixed:** the README's bundle command from the previous commit had
+lost its line continuations. It was written through a non-raw Python
+string, which turned `\` plus newline into nothing. This time the text was
+written from a file.

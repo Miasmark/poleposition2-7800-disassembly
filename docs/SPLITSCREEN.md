@@ -34,6 +34,7 @@ result; the rival traffic is shared.
 | Near bands 8-11 smoothed (+/-1 px a line, the line re-split into two pieces) | 89 | `_slices_build`, `SmSelect`, `SmApply` (`SnLoop`), the stage | `PP2_NO_NEAR` |
 | Far bands 1-7 split in two, a stripe per half | 87 | `top_half_src`, `P2TopStage` | `PP2_NO_SPLIT` |
 | The object pass's row search by halving | 88 | `zrow_up_src` | `PP2_LINEAR_CE3E` (test) |
+| The higher-detail car (KevinMos3 and Defender_2600); player 2's highlights gold on it | after 89 | `HIRES_CAR`, `car_colours`, `car_rom`, `ovl_pw` | `PP2_HIRES_CAR` (off by default; bundle option `vs-hires-car`) |
 
 ## What runs when
 
@@ -96,10 +97,12 @@ that runs every frame (60 Hz). The build adds to both.
 - A far band's third object, or one in an unexpected slot, draws in the
   band's bottom half only (rare).
 - In player 1's view, player 2's car has highlights only at the nearest size;
-  further ahead it looks like a gold rival.
-- The separate higher-detail car hack (`patches/graphics_hack.py`) does not
+  further ahead it looks like a gold rival (with the higher-detail car, like
+  player 1's blue and white one).
+- The retail car hack's own bundle (`dist/pp2-graphics-hack.abp`) does not
   stack with this build: its car-palette bytes `$EDE3`/`$EDE7` are in the
-  reclaimed injection (README).
+  reclaimed injection. The VS build carries the redraw itself instead
+  (`PP2_HIRES_CAR`, bundle option `vs-hires-car`).
 - Recordings replay against the unsigned build; a signed build (for
   hardware) plays them back differently (README).
 
@@ -136,7 +139,8 @@ including 6,192 generated at build time from the retail's own pixels.
     MAME=/path/to/mame tools/check-build.sh pp2-vs.a78
 
 runs the regression set used since checkpoint 80 and prints what to compare
-(the expected values are in the script's header). The unsigned build's
+(the expected values are in the script's header). Set `PP2_HIRES_CAR=1` for
+the higher-detail build, so the checks read its symbols. The unsigned build's
 SHA-256 is in the README; the generator refuses any dump but the retail one.
 
 ## Words used here and in the source

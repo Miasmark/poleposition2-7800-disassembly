@@ -7,7 +7,8 @@
 # Needs the recordings run-02, run-03 and test-pp2-2p-0922-2037/0923-0205/
 # 0923-0236 (committed), a 7800 BIOS directory (BIOS, default ../bios) and
 # Python with patches/splitscreen.py importable (it reads the build's own
-# symbols, so the ROM must come from the current generator). Output lands in
+# symbols, so the ROM must come from the current generator; set
+# PP2_HIRES_CAR=1 for the higher-detail build). Output lands in
 # build/check-<rom name>/; takes a few minutes, the MAME runs in parallel.
 #
 # What to expect from a healthy build (checkpoints 88-89):

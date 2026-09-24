@@ -14,19 +14,18 @@ Pole Position II VS: a two-player split-screen build from the retail cartridge.
   file is refused before anything is written.
 * Python 3 (built and tested with 3.10).
 * The a7800 toolkit's tools directory -- asm.py and m6502.py for every
-  build, sign7800.py for --sign. Looked for at ../a7800-toolkit-local/tools
-  (tested at commit 59a55e9; --bundle needs 2ad23b3 or later, for
-  bundles that grow the cartridge), or wherever PP2_TOOLKIT points.
+  build, sign7800.py for --sign, patchset.py and bps.py for --bundle.
+  Looked for at ../a7800-toolkit-local/tools (tested at commit 064514a),
+  or wherever PP2_TOOLKIT points.
 
 The build is deterministic: the same dump gives the same bytes, and the
 SHA-256 printed at the end can be compared with README.md's.
 
 Every edit is checked against the bytes it expects to find, so building
 against the wrong dump -- or a change that assumes the wrong bytes -- fails
-by name instead of producing a corrupt ROM. Nothing from the cartridge is
-stored here: the new graphics (player 2's highlights, the sheared road
-slices, the VS in the logo) are generated from the dump's own pixels at
-build time.
+by name instead of producing a corrupt ROM. The new graphics (player 2's
+highlights, the sheared road slices, the VS in the logo) are generated from
+the dump's own pixels at build time.
 
 ## What it builds
 
@@ -54,6 +53,11 @@ Features, all on by default:
     PP2_NO_VS=1       the title logo keeps its II (ck 85)
     PP2_P2PAL=n       player 2's car in palette n (default 6, the gold car)
 
+Off by default:
+
+    PP2_HIRES_CAR=1   KevinMos3 and Defender_2600's higher-detail car
+                      (graphics_hack.py), made to work here: see HIRES_CAR
+
 Test hooks, for measuring and bisecting (not for play): PP2_LINEAR_CE3E,
 PP2_LINEAR_ZROW, PP2_NO_TOPCOPY, PP2_NO_OVL_P1, PP2_KEEP_INJECTION,
 PP2_NO_OTHERCAR, PP2_NO_P2RIVAL, PP2_NO_P2SKY, PP2_FULL_E8AC, PP2_CARCAP,
@@ -62,21 +66,25 @@ PP2_HOOKAT, ...). Each is described where it is read.
 
 ## The .abp bundle
 
---bundle writes the toolkit's anchored bundle (patchset/3): one option,
-vs-split, that grows the 32K body to 48K at the front (a linear 7800
-cartridge ends at $FFFF) and has the .a78 header's ROM size set to match.
-Applying it gives exactly the --build --sign image. Until toolkit commit
-2ad23b3 the format could only patch fixed extents, and --bundle refused.
-It goes to build/, not dist/: the bundle carries the generated graphics,
-which are derived from the dump's pixels, so building against the user's
-own copy stays the main route.
+--bundle writes dist/pp2-vs.abp, the toolkit's anchored bundle (patchset/3),
+with two options:
 
-It does not stack with the higher-detail car (graphics_hack.py). Two of that
-patch's bytes, $EDE3/$EDE7 (the car's palette), sit in the scanline
-injection this build reclaims, and RoadTail/MirrorPalette set the car
-palette here instead. Each bundle's anchors avoid the other's bytes, so
-patchset.py recognises either cartridge and names the clash rather than
-calling it another game.
+    vs-split       the VS build: grows the 32K body to 48K at the front (a
+                   linear 7800 cartridge ends at $FFFF) and has the .a78
+                   header's ROM size set to match
+    vs-hires-car   the higher-detail car on top of it (PP2_HIRES_CAR)
+
+Each gives exactly the --build --sign image of its variant, in one go or in
+two steps. The two share the sections where both change bytes (palette 6 in
+RoadTail and MirrorPalette, the highlights and their palette), which is how
+the toolkit reads the dependency and knows a cartridge with both carries
+both. See build_bundle.
+
+The retail car hack's own bundle (graphics_hack.py) does not stack with
+either. Two of its bytes, $EDE3/$EDE7 (palette 6), sit in the scanline
+injection this build reclaims. Each bundle's anchors avoid the other's
+bytes, so patchset.py recognises either cartridge and names the clash
+rather than calling it another game.
 
 ## Signing this and testing against a recording are two different needs
 
@@ -749,8 +757,9 @@ P2_BAND_SLOTS = {b: (3 if b <= 8 else 2) for b in range(1, 13)}   # P2BuildLists
 # Player 2's highlights (checkpoint 83): a second 160A object drawn over the
 # top of player 2's car, in palette 4 ($0E white, $98 blue; the helmet is left
 # to the car's own light gold, which reads as yellow). Design after a mock-up
-# by defender_2600 (AtariAge). The pixels are derived by rule from the stock
-# car at build time (p2_overlay_art). The overlay covers the car's lines 14-19
+# by Defender_2600 (AtariAge). The pixels are derived by rule from the car at
+# build time (p2_overlay_art); with the higher-detail car they are gold on
+# blue instead, in palette 3 (ovl_pw). The overlay covers the car's lines 14-19
 # (lines count up from the bottom of band 11, whose page is $8B: the car is one
 # 30-page column $8B-$A8, six pages a band), which is band 9's top four lines
 # and band 8's bottom two.
@@ -792,13 +801,58 @@ P2_TOP = dict(zip([1, 2, 3, 4, 5, 6, 7],
 OVL_COL = 0x7000             # 16 pages: 5 blank, the overlay's 6, 5 blank --
 OVL_HI = 0x75                #   blank so any band's six lines read zero past
 OVL_LINE0 = 14               #   the overlay. Low bytes $00-$27 only (5 x 8).
-OVL_PW = (4 << 5) | 0x18     # palette 4, 8 bytes
+def ovl_pw():
+    """The highlights' palette/width byte, 8 bytes wide. Palette 4 ($0E
+    white, $98 blue) on the stock gold car; palette 3 ($1E light, $17 gold,
+    the yellow rival's) on the higher-detail car, which is blue and white
+    itself -- gold on blue is the same contrast the other way round, and still
+    a combination no rival has."""
+    return ((3 if HIRES_CAR else 4) << 5) | 0x18
 P2_OVL_BANDS = [8, 9] if P2_OVL else []
 # a band's header page: its bottom line is car line (11 - band) * 6
 P2_OVL_HI = {b: OVL_HI + (11 - b) * 6 - OVL_LINE0 for b in (8, 9)}
 P2_CAR_SEED = [(0x10, 0xA3), (0x08, 0x9D), (0x08, 0x97), (0xE0, 0xAA), (0x08, 0x8B)]
 # player 2's car palette (experiment: PP2_P2PAL; stock 6, the gold car)
 P2_CAR_PAL = int(os.getenv("PP2_P2PAL", "6"))
+
+# The higher-detail car: KevinMos3 and Defender_2600's redraw, as
+# patches/graphics_hack.py extracts it. PP2_HIRES_CAR=1 builds it in; the
+# bundle offers it as a second option. The sprite edits apply as they are
+# (VS leaves those bytes alone). The hack's other two bytes recolour palette 6
+# in the scanline injection at rom:EDE3/EDE7, which this build no longer
+# runs, so its colours go where this build sets palette 6 instead: RoadTail
+# for player 1's view, MirrorPalette for player 2's. The highlights are
+# derived from car_rom(), so they follow the redrawn frame.
+HIRES_CAR = bool(os.getenv("PP2_HIRES_CAR"))
+STOCK_CAR_COLOURS = (0x2F, 0x26)             # P6C1, P6C2 (rom:EDE2-EDE8)
+
+
+def _hack_edits():
+    sys.path.insert(0, HERE)
+    import graphics_hack
+    sprite = [e for e in graphics_hack.CAR_SPRITE_EDITS
+              if not RECLAIMED_LO <= e[0] <= RECLAIMED_HI]
+    pal = {e[0]: e[2][0] for e in graphics_hack.CAR_SPRITE_EDITS
+           if RECLAIMED_LO <= e[0] <= RECLAIMED_HI}
+    assert sorted(pal) == [0xEDE3, 0xEDE7], sorted(pal)
+    return sprite, (pal[0xEDE3], pal[0xEDE7])
+
+
+def car_colours(view):
+    """Palette 6's first two colours in player 1's or player 2's view."""
+    if not HIRES_CAR:
+        return STOCK_CAR_COLOURS
+    return _hack_edits()[1]
+
+
+def car_rom():
+    """The retail body with the car as this build draws it."""
+    rom = bytearray(load_source()[2])
+    if HIRES_CAR:
+        for addr, old, new in _hack_edits()[0]:
+            assert rom[addr - BASE:addr - BASE + len(old)] == old, hex(addr)
+            rom[addr - BASE:addr - BASE + len(new)] = new
+    return rom
 P2_CAR_W = (P2_CAR_PAL << 5) | 0x18   # 8 bytes
 P2_CAR_X = 0x40              # 64
 P2_CAR_DELTA = 0x2754        # this frame's lean adjustment, L2 - L1
@@ -1042,8 +1096,8 @@ def hud_reassert_src(addr):
         # which is why the car in the mirror came out blue while the same car
         # below it was yellow.
         "    LDA #$0F", "    STA P7C1", "    STA P7C2", "    STA P7C3",
-        "    LDA #$2F", "    STA P6C1",
-        "    LDA #$26", "    STA P6C2",
+        "    LDA #$%02X" % car_colours(2)[0], "    STA P6C1",
+        "    LDA #$%02X" % car_colours(2)[1], "    STA P6C2",
         "    LDA #$00", "    STA P6C3",
         "    LDA $00FB", "    STA BACKGRND",
         "    JMP $EC09",
@@ -1070,8 +1124,8 @@ def hud_reassert_src(addr):
         "    STA WSYNC",
         "    LDA $00FB", "    STA BACKGRND",
         "    LDA #$0F", "    STA P7C1", "    STA P7C2", "    STA P7C3",
-        "    LDA #$2F", "    STA P6C1",
-        "    LDA #$26", "    STA P6C2",
+        "    LDA #$%02X" % car_colours(1)[0], "    STA P6C1",
+        "    LDA #$%02X" % car_colours(1)[1], "    STA P6C2",
         "    LDA #$00", "    STA P6C3",
         "    JSR P2Frame",
         "    JMP $F143",
@@ -1776,7 +1830,7 @@ def p2_dl_template():
             clo, chi = P2_CAR_SEED[P2_CAR_BANDS.index(b)]
             e += [clo, P2_CAR_W, chi, P2_CAR_X]
         if lay[b]["ovl"] is not None:
-            e += [0x10, OVL_PW, P2_OVL_HI[b], 0xA1]     # parked until drawn
+            e += [0x10, ovl_pw(), P2_OVL_HI[b], 0xA1]   # parked until drawn
         out += e
     # Only the headers are stored: the object slots are identical parked
     # entries and the end markers identical zeros, so MirrorInit writes those
@@ -2321,12 +2375,13 @@ def top_half_src():
 def p2_overlay_art():
     """Player 2's highlights, as OVL_COL's bytes: {address: byte}.
 
-    After a mock-up by defender_2600 (AtariAge): blue over the sidepods and
+    After a mock-up by Defender_2600 (AtariAge): blue over the sidepods and
     wing tips, a white bar across the wing with white ends and centre, the
-    helmet left gold. Derived by rule from the stock car so every lean lines
-    up with its own frame. Colours: 1 white, 2 blue (palette 4), 0 clear.
+    helmet left gold. Derived by rule from the car (car_rom(): stock, or the
+    higher-detail redraw) so every lean lines up with its own frame. Colours:
+    1 white, 2 blue (palette 4), 0 clear.
     """
-    rom = load_source()[2]
+    rom = car_rom()
 
     def px(hi, lo):
         """The car's six lines in a band, top first, 32 pixels each."""
@@ -2355,17 +2410,30 @@ def p2_overlay_art():
                     best = (cur, c - 1)
                 cur = None
         a, z = best
-        for r in (0, 1):                  # sidepods blue, the centre white
-            for c in range(32):
-                if s9[r][c] in (1, 2):
-                    o9[r][c] = W if a <= c <= z else B
-        for c in range(32):               # the bar white, its outer ends blue
-            if s9[2][c] in (1, 2):
-                o9[2][c] = W if a - 3 <= c <= z + 3 else B
-        for c in range(32):               # the bar's ends, one line down
-            if s9[3][c] in (1, 2) and a - 4 <= c <= z + 4 and \
-                    ((c + 1 < 32 and s9[3][c + 1] == 3) or (c > 0 and s9[3][c - 1] == 3)):
-                o9[3][c] = W
+        if z - a < 4:
+            # No wing gap: the higher-detail redraw of the upright frame
+            # (HIRES_CAR), whose wing is solid with a light stripe across it
+            # and light endplate lines. The same idea in its terms: the
+            # light pixels become the bar, the wing tips outside the
+            # endplates and the sidepods the other colour.
+            for r in (0, 1, 2, 3):
+                for c in range(32):
+                    if s9[r][c] == 2:
+                        o9[r][c] = W
+                    elif s9[r][c] == 1 and not 9 <= c <= 22:
+                        o9[r][c] = B
+        else:
+            for r in (0, 1):                  # sidepods blue, the centre white
+                for c in range(32):
+                    if s9[r][c] in (1, 2):
+                        o9[r][c] = W if a <= c <= z else B
+            for c in range(32):               # the bar white, its outer ends blue
+                if s9[2][c] in (1, 2):
+                    o9[2][c] = W if a - 3 <= c <= z + 3 else B
+            for c in range(32):               # the bar's ends, one line down
+                if s9[3][c] in (1, 2) and a - 4 <= c <= z + 4 and \
+                        ((c + 1 < 32 and s9[3][c + 1] == 3) or (c > 0 and s9[3][c - 1] == 3)):
+                    o9[3][c] = W
         # line L of the car -> OVL_HI + (L - OVL_LINE0); band 9's top line
         # (row 0) is car line 17, band 8's is 23
         lines = {}
@@ -5931,7 +5999,7 @@ def rival_car_src(part="main"):
         "    SEC", "    SBC #$05",             "    STA $1AA9,X",
         "    LDA $%04X" % OC_LO,  "    STA $1AD3,X",
         "    LDA #$%02X" % OVL_HI, "    STA $1ABE,X",
-        "    LDA #$%02X" % OVL_PW, "    STA $1BEA,X",
+        "    LDA #$%02X" % ovl_pw(), "    STA $1BEA,X",
         "    LDA $%04X" % OC_X,   "    STA $1AE8,X",
         "    LDA #$04",           "    STA $1A7F,X",   # a car's slot class
         "    INC $00DD",
@@ -7157,6 +7225,9 @@ def fix_mirror_split(p):
     if not os.getenv("PP2_NO_VS"):
         for _a, _old, _new in TITLE_VS:
             p.put(_a, _new, expect=_old)
+    if HIRES_CAR:
+        for _a, _old, _new in _hack_edits()[0]:
+            p.put(_a, _new, expect=_old)
     if P2_OVL:
         _art = p2_overlay_art()
         for _pg in range(16):
@@ -7437,77 +7508,123 @@ def build(out_path, sign=False):
     return 0
 
 
+def _patched(rom, hires):
+    """The build's Patcher, with or without the higher-detail car. The
+    assembled blocks are cached once per process, and the car changes what
+    they hold (palette 6, the highlights' palette), so the caches are emptied
+    on the way in and out."""
+    global HIRES_CAR
+    def forget():
+        for cache in (_SLICES, _HI, _EXT, _RIVAL):
+            del cache[:]
+    keep, HIRES_CAR = HIRES_CAR, hires
+    forget()
+    try:
+        p = Patcher(bytes(rom))
+        for fix in FIXES:
+            fix["fn"](p)
+    finally:
+        HIRES_CAR = keep
+        forget()
+    return p
+
+
 def build_bundle(out_path=None):
-    """Write the .abp: one option, vs-split, that grows the cartridge to 48K.
+    """Write the .abp: vs-split, which grows the cartridge to 48K, and
+    vs-hires-car on top of it.
 
     The toolkit's patchset/3 lets an option grow the body ("grow": front, $FF,
     to 49,152 bytes, as a linear 7800 cartridge grows toward $4000) and sets
     the .a78 header's ROM size to match. Sections are CPU addresses in the
     grown body, so the new space's pre-image is the fill. Anchors are retail
-    ground nothing touches. One patch spans every section.
+    ground neither option (nor graphics_hack.py) touches.
 
-    Written to build/ by default, not dist/: the bundle carries the generated
-    graphics (sheared road slices, player 2's highlights, the VS), which are
-    derived from the retail dump's pixels -- see README, "Pole Position II
-    VS". Applying it signs the result (patchset.py always does).
+    The two options share the sections where both change bytes (palette 6's
+    colours in RoadTail and MirrorPalette, the highlights and their palette):
+    vs-split's patch over them goes from the retail bytes to the VS build's,
+    vs-hires-car's from the VS build's to its own. That is how the toolkit
+    reads the dependency, and how it knows a cartridge with both carries both.
+    vs-hires-car's other patch is the sprite redraw itself (KevinMos3 and
+    Defender_2600's), over bytes VS leaves alone.
+
+    Written to dist/. The bundle carries this project's generated graphics:
+    sheared copies of the retail road slices (grey road, a border each side),
+    the highlight column and the VS logo edit -- transformed, not copied --
+    plus the redraw's 159 bytes, with credit, as dist/pp2-graphics-hack.abp
+    already does. Applying it signs the result (patchset.py always does).
     """
     sys.path.insert(0, TOOLKIT_TOOLS)
     import patchset
     import bps
 
     src, header, rom = load_source()
-    p = Patcher(bytes(rom))
-    pristine = bytes(p.rom)                      # the grown body before any edit
-    for fix in FIXES:
-        fix["fn"](p)
+    pa, pb = _patched(rom, False), _patched(rom, True)
+    P, A, B = bytes(Patcher(bytes(rom)).rom), bytes(pa.rom), bytes(pb.rom)
+    ta = {i + OUT_BASE for i in range(len(P)) if P[i] != A[i]}
+    tb = {i + OUT_BASE for i in range(len(P)) if A[i] != B[i]}
 
-    touched = set()
-    for addr, data in p.writes:
-        touched.update(range(addr, addr + len(data)))
-    touched = {a for a in touched if pristine[a - OUT_BASE] != p.rom[a - OUT_BASE]}
+    sections, kind = {}, {}
+    for at, n in _runs(ta | tb, gap=4):
+        sid = "s_%04X" % at
+        sections[sid] = {"addr": "0x%04X" % at, "length": n,
+                         "crc32": "0x%08X" % patchset.crc32(P[at - OUT_BASE:at - OUT_BASE + n])}
+        here = set(range(at, at + n))
+        kind[sid] = (bool(here & ta), bool(here & tb))
+    only_vs = [k for k, v in kind.items() if v == (True, False)]
+    shared = [k for k, v in kind.items() if v == (True, True)]
+    only_hr = [k for k, v in kind.items() if v == (False, True)]
+    assert shared and only_hr, "vs-hires-car should both build on VS and add the redraw"
 
-    sections = {}
-    for at, n in _runs(touched, gap=4):
-        sections["s_%04X" % at] = {
-            "addr": "0x%04X" % at, "length": n,
-            "crc32": "0x%08X" % patchset.crc32(pristine[at - OUT_BASE:at - OUT_BASE + n]),
-        }
-    # Anchors avoid the higher-detail car's bytes too (patches/graphics_hack.py),
+    # Anchors avoid the retail car hack's bytes too (patches/graphics_hack.py),
     # so a cartridge carrying it is still recognised -- and a clash between
     # the two is then reported as the section it is, not as "another game".
     busy = {k: v for k, v in sections.items() if int(v["addr"], 16) >= BASE}
-    try:
-        sys.path.insert(0, HERE)
-        import graphics_hack
-        for a, _old, new in graphics_hack.CAR_SPRITE_EDITS:
-            busy["hack_%04X" % a] = {"addr": "0x%04X" % a, "length": len(new)}
-    except ImportError:
-        pass
+    sys.path.insert(0, HERE)
+    import graphics_hack
+    for a, _old, new in graphics_hack.CAR_SPRITE_EDITS:
+        busy["hack_%04X" % a] = {"addr": "0x%04X" % a, "length": len(new)}
     anchors = pick_anchors(rom, busy)
 
-    ids = sorted(sections, key=lambda sid: int(sections[sid]["addr"], 16))
-    before, after = bytearray(), bytearray()
-    for sid in ids:
-        at, n = int(sections[sid]["addr"], 16), sections[sid]["length"]
-        before += pristine[at - OUT_BASE:at - OUT_BASE + n]
-        after += p.rom[at - OUT_BASE:at - OUT_BASE + n]
+    files = {}
 
-    member = "p/vs-split.bps"
-    files = {member: bps.create(bytes(before), bytes(after))}
-    option = {
+    def patch(name, sids, frm, to):
+        sids = sorted(sids, key=lambda sid: int(sections[sid]["addr"], 16))
+        pre, post = bytearray(), bytearray()
+        for sid in sids:
+            at, n = int(sections[sid]["addr"], 16) - OUT_BASE, sections[sid]["length"]
+            pre += frm[at:at + n]
+            post += to[at:at + n]
+        files[name] = bps.create(bytes(pre), bytes(post))
+        return {"sections": sids, "bps": name,
+                "before": "0x%08X" % patchset.crc32(bytes(pre))}
+
+    options = [{
         "id": "vs-split",
         "title": FIXES[0]["title"],
         "note": FIXES[0]["note"],
         "grow": {"size": OUT_SIZE, "at": "front", "fill": "0xFF"},
-        "patches": [{"sections": ids, "bps": member,
-                     "before": "0x%08X" % patchset.crc32(bytes(before))}],
-    }
+        "patches": [patch("p/vs-split.bps", only_vs, P, A),
+                    patch("p/vs-split.shared.bps", shared, P, A)],
+    }, {
+        "id": "vs-hires-car",
+        "title": "Higher-detail car (KevinMos3 and Defender_2600), for VS",
+        "note": "The car-sprite redraw by KevinMos3 and Defender_2600 "
+                "(AtariAge forums, \"Pole Position II Graphics Hack\", "
+                "2014-04-12), made to work with VS: player 1's car in their "
+                "blue and white, player 2's the same car with gold highlights "
+                "(after Defender_2600's mock-up) so the two stay told apart. "
+                "Artwork credit is theirs.",
+        "requires": ["vs-split"],
+        "patches": [patch("p/vs-hires-car.shared.bps", shared, A, B),
+                    patch("p/vs-hires-car.sprite.bps", only_hr, P, B)],
+    }]
     manifest = {
         "format": patchset.FORMAT_GROW,
         "name": "Pole Position II VS (two-player split screen)",
         "what": "Two players at once: player 2's view on top, the HUD as a "
                 "divider, player 1's view below. Grows the cartridge from 32K "
-                "to 48K.",
+                "to 48K. Optionally with KevinMos3 and Defender_2600's "
+                "higher-detail car.",
         "target": {
             "what": os.path.basename(src),
             "body_size": len(rom),
@@ -7518,19 +7635,22 @@ def build_bundle(out_path=None):
             "anchors": anchors,
         },
         "sections": sections,
-        "options": [option],
+        "options": options,
     }
-    out_path = out_path or os.path.join(ROOT, "build", "pp2-vs.abp")
+    out_path = out_path or os.path.join(ROOT, "dist", "pp2-vs.abp")
     if not os.path.isdir(os.path.dirname(out_path)):
         os.makedirs(os.path.dirname(out_path))
     patchset.write_bundle(out_path, manifest, files)
     print(out_path)
-    print("  1 option, %d sections, %d bytes covered, grows 32K -> 48K"
-          % (len(sections), sum(v["length"] for v in sections.values())))
-    print("  %d bytes of BPS" % len(files[member]))
+    print("  2 options, %d sections (%d VS only, %d shared, %d the redraw), "
+          "%d bytes covered, grows 32K -> 48K"
+          % (len(sections), len(only_vs), len(shared), len(only_hr),
+             sum(v["length"] for v in sections.values())))
+    print("  %d bytes of BPS" % sum(len(v) for v in files.values()))
     print("")
-    print("  python ../a7800-toolkit-local/tools/patchset.py apply %s "
-          "--rom \"%s\" --with vs-split --out pp2-vs.a78" % (out_path, ROM_NAME))
+    for opt, out in (("vs-split", "pp2-vs.a78"), ("vs-hires-car", "pp2-vs-hires.a78")):
+        print("  python ../a7800-toolkit-local/tools/patchset.py apply %s "
+              "--rom \"%s\" --with %s --out %s" % (out_path, ROM_NAME, opt, out))
     return 0
 
 
@@ -7547,7 +7667,7 @@ def main():
                          "build you intend to test against an existing .inp "
                          "recording -- see the docstring's note on why")
     ap.add_argument("--bundle", nargs="?", const="", metavar="OUT",
-                    help="write the .abp (default: build/pp2-vs.abp); needs the "
+                    help="write the .abp (default: dist/pp2-vs.abp); needs the "
                          "toolkit's patchset/3 (a body that grows)")
     ap.add_argument("-o", "--out", help="output path for --build")
     args = ap.parse_args()

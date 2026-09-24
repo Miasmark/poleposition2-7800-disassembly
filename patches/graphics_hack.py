@@ -29,11 +29,8 @@ existing recording).
 
 `bps.create()` below necessarily encodes the *replacement* bytes as literals
 -- there is no CRC32-only way to describe "draw these specific new pixels"
--- so, unlike this project's own edits, this option's BPS carries someone
-else's creative work verbatim. That is the point of asking to include it
-with credit, not an oversight; see the module docstring in
-`patches/splitscreen.py` for the general policy this is the one deliberate
-exception to.
+-- so this option's BPS carries someone else's creative work verbatim. That
+is the point of asking to include it with credit, not an oversight.
 
 The 159 bytes below were extracted by diffing the hack's own release against
 a pristine dump, header and cartridge signature excluded (both differ for
@@ -41,6 +38,15 @@ reasons that have nothing to do with the sprite -- their build re-signed the
 cartridge, and changed the header's title string). Nothing else from their
 release is reproduced here: not their signature, not their header, not any
 byte outside what actually draws the car.
+
+## In the VS build
+
+This file's bundle is for the retail game, and does not stack with Pole
+Position II VS: $EDE3/$EDE7 sit in the scanline injection VS reclaims. VS
+carries the redraw itself (patches/splitscreen.py, HIRES_CAR;
+dist/pp2-vs.abp, option vs-hires-car). It takes CAR_SPRITE_EDITS from here
+and sets the two palette values where VS sets palette 6. Player 2's car gets
+gold highlights, so the two players are still told apart.
 """
 import argparse
 import hashlib
