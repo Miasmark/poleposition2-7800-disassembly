@@ -6021,3 +6021,125 @@ integrity 0 on all.
 **Not yet**: player 2's qualifying position is not shown on screen (player 1's
 message is the game's), and "player 1 does not qualify, player 2 races alone"
 waits on player 2's own race logic (next).
+
+## Player 2's race: its own clock, laps and finish
+
+Checkpoint 70.
+
+**Player 1's race** (for reference): `$A7` is 1 when the race starts, and the
+race ends at the crossing where it equals `$C3` (5 on track 3), so four laps
+after the start line. Each other crossing adds 60 to the clock (BCD, rom:D504)
+with jingle `$0B`. The clock goes −1 every 6 ticks (rom:C705, skipped in
+states `$01`/`$0E`). When the clock reaches 0 (rom:D324) or player 1 finishes
+(rom:D4BC), the game waits, running the race tick, until `CrashTimer | Speed`
+is 0. It then tallies 200 a second left (`$0F`, 4 × 50) and cars passed
+(`$08`).
+
+**Player 2, built** (`P2_CLOCK` `P2_CPH` `P2_LAPN` `P2_RST` `P2_RACE`, $2730-$2735):
+- `P2RaceGo`, from `P2RaceSlot` when player 2 qualified: its own clock from
+  player 1's starting clock, its lap count from `$A7`.
+- `P2RaceTick`, once a tick from HudTick: the clock, as rom:C705 runs it. At 0,
+  player 2 is out of time: parked, slowing 16 a tick.
+- `P2RaceLap`, at player 2's line during the race: +60 and the jingle, or on
+  the last lap the finish: parked, and 200 a second left added to its score.
+  The lap clock is no longer restarted at each crossing in the race, so it
+  runs on as the race total, as player 1's does.
+- `RaceWait`, at rom:D324 and rom:D4BC (`LDA $D4 / ORA $CE`): reports
+  "not stopped" while player 2 is still racing. Player 1 waits, held at speed 0
+  through the race tick, until player 2 finishes or runs out of time.
+- A finished or timed-out player 2, once stopped, is taken off the track
+  (`P2_PARK` 2): no longer drawn in player 1's view, and nothing to hit.
+  Before this, it sat stopped just past the line in its lane, in player 1's
+  path on every later lap.
+- 2UP shows player 2's own clock once it is racing.
+
+### Wrong turns
+
+- **Lap count off by one.** `P2_LAPN` started at 0 while `$A7` starts at 1, so
+  player 2 needed a fifth lap. Seen: player 1 finished, and player 2 ran out
+  of time a lap short while the game held player 1. It now starts from `$A7`.
+- **Player 2 frozen when player 1 timed out.** Player 2's drive was gated on
+  player 1's race clock ("is the race under way?"). With player 1 out of time
+  and held by RaceWait, player 2 kept speed and score but did not move, while
+  its own clock ran down. Seen: the gap stuck at −16008 through the hold. In
+  the race, player 2's own state now decides this.
+- **Probe artifacts, not bugs.** The race probe wrote player 1's clock (60)
+  every frame and forced both speeds. So player 1 could never time out, and a
+  player past its time kept driving and earned another +60 at the line. The
+  probe now leaves player 1's clock alone (`FREECLK`), stops driving player 1
+  once its clock is 0, and stops driving player 2 once `P2_RST` is set.
+
+### A crash when player 2 falls far behind (pre-existing, fixed)
+
+Player 1 at 240 and player 2 at 120 reset the machine at player 1's first lap
+crossing: state, track and clock all `$F0`. The same happens on the committed
+checkpoint 69 build. The stock ROM makes about 12 crossings at each of 230,
+240, 250 and 255 without it.
+
+Traced:
+- **The write:** rom:E935, the stripe loop (`X` from `$E6` down to `$E7`), with
+  `$E6` = `$E7` = `$4D`. An empty range runs the loop all the way round,
+  across zero page.
+- **Where `$E6/$E7` come from:** rom:CC23 takes the first type-1 object (the
+  start line and the signs), `$E6` from its Z+6 and `$E7` from its Z+106,
+  through rom:CC63's row table. That table ends at 0 for row `$4D`, so any
+  type-1 object at Z ≤ −107 gives `$4D`/`$4D`. In stock the start line's Z
+  always equals `$D5` (the distance to the segment end), and the line leaves
+  the list at the crossing, so this never happens.
+- **Why the line was elsewhere:** slot 3, the line, was 2,124 short of `$D5`
+  and drifting further. A write tap showed it moved twice a tick. The first
+  move is rom:C9F0's; the second comes from rom:CAA0, the stock recycle pass.
+  For an object more than 256 behind (Z hi negative and not `$FF`), CAA0 resets
+  it to −96. If player 1 is left of centre, it then leaves through rom:CACA
+  `JMP sub_CA89`, which lands in C9F0's movement loop and moves every object
+  after it in the list again. Stock never has an object that far behind.
+- **Why objects were that far behind:** cars kept for a trailing player 2
+  (CarRetire) sit behind player 1. Once player 2 is more than `$4000` behind,
+  the gap pins and CarRetire goes back to the stock pass, which then meets
+  those cars. One such object a tick is enough to double-move the rest.
+
+Fixed twice:
+- On the pinned path (`CrPin`), any object more than 256 behind is first set
+  to 256 behind (`$FF00`), so the stock pass retires it the ordinary way
+  (rom:CAD4).
+- `E6E7Safe` also refuses an empty range: if `$E7` ≠ `$FF` and `$E6` ≤ `$E7`,
+  `$E6` stays `$FF` ("no range"). `$E7` = `$FF` is a real range (up to the
+  top). Stock never produces an empty range, or it would reset itself.
+
+Still true: a pinned gap no longer tracks the real separation, and cars all
+stay in player 1's frame while it is pinned. Player 2 that far behind sees no
+cars until the gap unpins. The long-term answer is probably to wrap the gap
+modulo the track length; noted for later.
+
+### Checked (scripted, track 3, both at −40/+40)
+
+    p1 215/p2 210 then 240/240, clock pinned  p2 laps 1→5 with p1's; p1
+        finishes; the game holds; p2 finishes (+200/s); release, $0F, game over
+    p1 160, p2 240 (pinned)   p2 finishes first, stops, leaves the track; p1
+        races to its own finish
+    p1 150, p2 240 (free)     p1 out of time at 71 s, held at 0; p2 races on,
+        laps 2..5, finishes with 25 s (+5,000); release, $08, game over
+    p1 150, p2 150 (free)     both out of time; game over at once
+    p1 240, p2 240 (free)     p2 crashes into a car 3 frames after p1 finishes,
+        4,557 behind; recovers; out of time 1,622 short; release
+    p1 240, p2 120 (free)     the crash case: no reset. p2 out of time and off
+        the track, p1 finishes the race
+
+Health identical to checkpoint 69 on run-02, run-03 and both 2-player
+recordings (the recordings drift a frame from f698 on, the known boot-timing
+desync). Integrity 0 on four recordings.
+
+### Measured, for the optimization pass
+
+Race-tick rate in a racing window (f7000-7600, both cars at 240, traffic):
+
+    stock 100 ticks / 600 frames   ck60 82   ck62 57   ck65 51   ck69 54   ck70 53
+
+Two-player racing therefore runs at a little over half stock speed once both
+views have traffic. Qualifying (f1400-3600 of 0923-0205) is still at a full
+6.00 frames a tick. Both clocks count ticks, so the race stays fair; it just
+plays slowly. The drop arrived with player 2's world objects and collisions
+(checkpoints 60-62), not with this round.
+
+**Not yet:** player 2 has no cars-passed tally (`$08` counts player 1's
+only). "Player 1 does not qualify, player 2 races alone" is next.

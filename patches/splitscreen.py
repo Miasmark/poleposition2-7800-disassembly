@@ -670,6 +670,14 @@ P2_QSEC = 0x26FE             # the qualifying lap's seconds and hundredths,
 P2_LAPC = 0x26FF             #   for a tie on position
 P2_PARK = 0x2700             # 0 driving, 1 parked (qualified, waiting), 2 out
 P2_LAPPH = 0x2701            # player 2's lap tick phase 0..5, as $E0 is player 1's
+# player 2's race: its own clock (as $DE/$DF), laps, and whether it is done.
+# $A7 is 1 when the race starts and the race ends at the crossing where it
+# equals $C3 (5): four laps; player 2's count starts from $A7 too.
+P2_CLOCK = 0x2730            # BCD, hundreds then seconds
+P2_CPH = 0x2732              # the clock's tick phase 0..5
+P2_LAPN = 0x2733             # laps completed, as $A7 (the race is $C3 + 1)
+P2_RST = 0x2734              # 0 racing, 1 finished, 2 out of time
+P2_RACE = 0x2735             # nonzero: player 2 is in this race
 HUD_BUF1 = 0x27C2            # the 1UP line, 31 characters
 HUD_BUF2 = 0x27E1            # the 2UP line, 31 characters, to $27FF
 HUD_X = 0x12                 # both lines' x: (160 - 31*4) / 2
@@ -1314,6 +1322,7 @@ def _check_p2_ram():
         ("P2_HIT", P2_HIT, 2),
         ("P2_HUD", P2_HUD_DL, 12),
         ("P2_QUAL", P2_QST, 6),
+        ("P2_RACE", P2_CLOCK, 6),
         ("HUD_BUFS", HUD_BUF1, 62),
     ]
     regions.sort(key=lambda r: r[1])
@@ -1828,6 +1837,11 @@ def p2_drive_src():
         "    LDA $%04X" % GAME_STATE,
         "    CMP #$01",
         "    BEQ P2CanDrive",
+        # in the race, player 2's own clock: it drives until P2RaceTick or
+        # P2RaceLap parks it, and parked it slows to a stop (P2Ctl) -- player
+        # 1 out of time, held stopped by RaceWait, must not freeze it
+        "    LDA $%04X" % P2_RACE,
+        "    BNE P2CanDrive",
         "    LDA $%04X" % RACE_CLOCK_HI,
         "    ORA $%04X" % RACE_CLOCK_LO,
         "    BNE P2CanDrive",
@@ -2300,6 +2314,7 @@ def p2_race_init_src():
         "    BNE P2RiRace",
         "    LDA #$00",                        # a new qualifying session
         "    STA $%04X" % P2_QST, "    STA $%04X" % P2_QPOS, "    STA $%04X" % P2_PARK,
+        "    STA $%04X" % P2_RACE,
         "    JMP P2GridSym",
         "P2RiRace:",
         "    JMP P2RaceSlot",                  # its grid slot, or sitting out
@@ -2362,8 +2377,29 @@ def car_world_src():
         "    LDA $%04X" % P2_ACTIVE,
         "    BEQ CrStock",
         "    LDA $%04X" % GAP_HI,
-        "    CMP #$40", "    BEQ CrStock",
+        "    CMP #$40", "    BEQ CrPin",
         "    CMP #$C0", "    BNE CrGo",
+        # The gap just pinned: cars kept for player 2 can be left more than
+        # 256 behind player 1, which the stock pass never sees. It resets such
+        # an object to -96 and, with player 1 left of centre, leaves through
+        # rom:CACA `JMP sub_CA89` -- into the movement loop, moving every
+        # object after it a second time. The start line then drifts off its
+        # segment end, gets behind the car, and rom:CC23 hands the stripe loop
+        # an empty range (see E6E7Safe). Bring them to 256 behind: the stock
+        # pass retires them the ordinary way (rom:CAD4).
+        "CrPin:",
+        "    LDY $00AE",
+        "    BMI CrStock",
+        "CrPinL:",
+        "    LDX $19A4,Y",
+        "    LDA $19D4,X",
+        "    BPL CrPinN",
+        "    CMP #$FF", "    BEQ CrPinN",
+        "    LDA #$FF", "    STA $19D4,X",
+        "    LDA #$00", "    STA $19C4,X",
+        "CrPinN:",
+        "    DEY",
+        "    BPL CrPinL",
         "CrStock:",
         "    JMP $CAA0",                       # player 1's frame throughout
         "CrGo:",
@@ -3248,6 +3284,7 @@ def hud_src():
         # intermission after qualifying.
         "HudTick:",
         "    JSR P2Engine",                    # player 2's engine sound
+        "    JSR P2RaceTick",                  # its race clock
         "    LDA $%04X" % GAME_STATE,
         "    CMP #$02", "    BEQ HtScore",
         "    CMP #$03", "    BNE HtNoScore",
@@ -3322,6 +3359,22 @@ def hud_src():
         "    BPL HfP1b",
         "    LDA $1FC6", "    STA $%04X" % (B1 + 15),          # gear
         "    LDA $1FC7", "    STA $%04X" % (B1 + 16),
+        # player 2's own clock once it is racing (hundreds blank if 0)
+        "    LDA $%04X" % P2_RACE,
+        "    BEQ HfClk",
+        "    LDA $%04X" % P2_CLOCK, "    AND #$0F",
+        "    TAY", "    LDA $BCE9,Y",
+        "    LDY $%04X" % P2_CLOCK,
+        "    BNE HfClkH",
+        "    LDA #$AB",
+        "HfClkH:",
+        "    STA $%04X" % (HUD_BUF2 + 10),
+        "    LDA $%04X" % (P2_CLOCK + 1),
+        "    LSR A", "    LSR A", "    LSR A", "    LSR A",
+        "    TAY", "    LDA $BCE9,Y", "    STA $%04X" % (HUD_BUF2 + 11),
+        "    LDA $%04X" % (P2_CLOCK + 1), "    AND #$0F",
+        "    TAY", "    LDA $BCE9,Y", "    STA $%04X" % (HUD_BUF2 + 12),
+        "HfClk:",
         # player 2: score, five digits from three BCD bytes, leading zeros
         # blank but the last (rom:C69A)
         "    LDX #$00",                        # 0 while still leading
@@ -3570,6 +3623,11 @@ def qual_src():
         "P2Line:",
         "    LDA $%04X" % P2_LAPRUN,
         "    BEQ P2LnNew",                     # the first crossing: just start
+        "    LDA $%04X" % P2_RACE,
+        "    BEQ P2LnQual",
+        "    JMP P2RaceLap",                   # in the race: a lap; the lap
+        "P2LnQual:",                           #   clock runs on (the race total,
+                                               #   as player 1's does)
         "    LDA $%04X" % P2_QST,
         "    BNE P2LnNew",
         "    LDA $%04X" % GAME_STATE,
@@ -3678,6 +3736,7 @@ def qual_src():
         "    LDA $%04X" % P2_QST,
         "    CMP #$01",
         "    BEQ P2RsGo",
+        "    LDA #$00", "    STA $%04X" % P2_RACE,
         "    LDA #$02", "    STA $%04X" % P2_PARK,    # did not qualify: out,
         "    LDA #$09", "    STA $%04X" % P2_QPOS,    #   parked behind the grid
         "    JSR P2RsTrack",
@@ -3685,6 +3744,7 @@ def qual_src():
         "    RTS",
         "P2RsGo:",
         "    LDA #$00", "    STA $%04X" % P2_PARK,
+        "    JSR P2RaceGo",
         "    JSR P2RsTrack",
         "    JSR P2RaceLane",                  # its x, its slot cleared
         # --- the cars sitting right behind either player in its lane start
@@ -3820,6 +3880,97 @@ def qual_src():
         "    LDA $%04X" % P2_TRACK_LO, "    ADC $%04X,Y" % SEG_LEN_LO, "    STA $%04X" % P2_TRACK_LO,
         "    LDA $%04X" % P2_TRACK_HI, "    ADC $%04X,Y" % SEG_LEN_HI, "    STA $%04X" % P2_TRACK_HI,
         "P2RsOk:",
+        "    RTS",
+
+        # --- player 2's race (rom:D4B6 and rom:C705 for player 1)
+        "P2RaceGo:",                           # from P2RaceSlot, qualified
+        "    LDA #$01", "    STA $%04X" % P2_RACE,
+        "    LDA #$00",
+        "    STA $%04X" % P2_RST, "    STA $%04X" % P2_CPH,
+        "    LDA $00A7", "    STA $%04X" % P2_LAPN,         # player 1's count: 1 at
+        "    LDA $00DE", "    STA $%04X" % P2_CLOCK,        #   the start, done at $C3
+        "    LDA $00DF", "    STA $%04X" % (P2_CLOCK + 1),
+        "    RTS",
+        # its clock, once a tick: -1 every 6 ticks except in states $01 and
+        # $0E, as rom:C705; at 0 player 2 coasts to a stop and is out
+        "P2RaceTick:",
+        "    LDA $%04X" % P2_RACE,
+        "    BEQ P2RtDone",
+        "    LDA $%04X" % P2_RST,
+        "    BNE P2RtOff",
+        "    LDA $%04X" % GAME_STATE,
+        "    CMP #$01", "    BEQ P2RtDone",
+        "    CMP #$0E", "    BEQ P2RtDone",
+        "    INC $%04X" % P2_CPH,
+        "    LDA $%04X" % P2_CPH,
+        "    CMP #$06",
+        "    BCC P2RtDone",
+        "    LDA #$00", "    STA $%04X" % P2_CPH,
+        "    SED",
+        "    LDA $%04X" % (P2_CLOCK + 1), "    SEC", "    SBC #$01", "    STA $%04X" % (P2_CLOCK + 1),
+        "    LDA $%04X" % P2_CLOCK, "    SBC #$00", "    STA $%04X" % P2_CLOCK,
+        "    CLD",
+        "    ORA $%04X" % (P2_CLOCK + 1),
+        "    BNE P2RtDone",
+        "    LDA #$02", "    STA $%04X" % P2_RST,          # out of time
+        "    LDA #$01", "    STA $%04X" % P2_PARK,
+        "P2RtDone:",
+        "    RTS",
+        # finished or out of time: once stopped, off the track -- not drawn in
+        # player 1's view, nothing to hit -- as one that sits the race out
+        "P2RtOff:",
+        "    LDA $%04X" % P2_SPEED,
+        "    BNE P2RtDone",
+        "    LDA $%04X" % P2_PARK,
+        "    CMP #$01",
+        "    BNE P2RtDone",
+        "    LDA #$02", "    STA $%04X" % P2_PARK,
+        "    RTS",
+        # a lap, at player 2's line in the race (rom:D4B6): the last one
+        # finishes it -- stopped, 200 a second left (rom:D69E, 4 x 50) --
+        # any other adds 60 to its clock (rom:D504), with the jingle
+        "P2RaceLap:",
+        "    LDA $%04X" % P2_RST,
+        "    BNE P2RlpDone",
+        "    LDA $%04X" % P2_LAPN,
+        "    CMP $00C3",
+        "    BEQ P2RlpFin",
+        "    INC $%04X" % P2_LAPN,
+        "    SED",
+        "    LDA $%04X" % (P2_CLOCK + 1), "    CLC", "    ADC #$60", "    STA $%04X" % (P2_CLOCK + 1),
+        "    LDA $%04X" % P2_CLOCK, "    ADC #$00", "    STA $%04X" % P2_CLOCK,
+        "    CLD",
+        "    LDA #$0B", "    JSR $DEF3",
+        "P2RlpDone:",
+        "    RTS",
+        "P2RlpFin:",
+        "    LDA #$01", "    STA $%04X" % P2_RST, "    STA $%04X" % P2_PARK,
+        "    SED",
+        "    LDX #$02",                        # seconds x 200: twice into the hundreds
+        "P2RlpBon:",
+        "    CLC",
+        "    LDA $%04X" % (P2_SCORE + 1), "    ADC $%04X" % (P2_CLOCK + 1), "    STA $%04X" % (P2_SCORE + 1),
+        "    LDA $%04X" % P2_SCORE, "    ADC $%04X" % P2_CLOCK, "    STA $%04X" % P2_SCORE,
+        "    DEX",
+        "    BNE P2RlpBon",
+        "    CLD",
+        "    RTS",
+        # rom:D324 / rom:D4BC, `LDA CrashTimer / ORA Speed` ahead of "stopped:
+        # end of the race": still nonzero -- player 1 held at 0 in the race
+        # tick (rom:D6EB) -- while player 2 is racing
+        "RaceWait:",
+        "    LDA $00D4",
+        "    ORA $00CE",
+        "    BNE RwDone",
+        "    LDA $%04X" % P2_RACE,
+        "    BEQ RwDone",
+        "    LDA $%04X" % P2_RST,
+        "    BNE RwFree",
+        "    LDA #$01",
+        "    RTS",
+        "RwFree:",
+        "    LDA #$00",
+        "RwDone:",
         "    RTS",
     ]
 
@@ -4449,12 +4600,22 @@ def rival_car_src(part="main"):
         # race in the original game; our extra main-loop work shifted run-03
         # onto it at f9321. $E6 = $FF is "no range" (rom:E925 skips it), so
         # clearing it first makes every intermediate state safe.
+        # And an empty range -- both ends on the same row, as when the object
+        # is 107 or more behind (rows clamp at $4D) -- would run the loop the
+        # whole way round too: that stays "no range". $E7 = $FF (the far end
+        # past the horizon) is a real range, to the top.
         "E6E7Safe:",
         "    PHA",
         "    LDA #$FF", "    STA $00E6",
         "    PLA",
         "    STA $00E7",
+        "    CMP #$FF", "    BEQ E6Ok",
+        "    CPY $00E7",
+        "    BEQ E6No",
+        "    BCC E6No",
+        "E6Ok:",
         "    STY $00E6",
+        "E6No:",
         "    RTS",
         # --- OC_X/L/S0/S1/SIZE -> OC_LO/HI/PW, as rom:E4F1 and rom:E5C7 -------
         "OcSprite:",
@@ -5069,6 +5230,11 @@ def fix_mirror_split(p):
     # QualHold waits for player 2's lap, settles a tie, adds its bonus.
     p.put(0xD422, [0x20, _xs["QualHold"] & 0xFF, _xs["QualHold"] >> 8],
           expect=[0xE8, 0x86, 0xA6])
+    # rom:D324 (the race clock out) and rom:D4BC (player 1 finished): the
+    # "stopped?" test says not while player 2 is still racing (RaceWait)
+    for _at in (0xD324, 0xD4BC):
+        p.put(_at, [0x20, _xs["RaceWait"] & 0xFF, _xs["RaceWait"] >> 8, 0xEA],
+              expect=[0xA5, 0xD4, 0x05, 0xCE])
     p.put(0xE617, [0x20, _xs["CrTimerX"] & 0xFF, _xs["CrTimerX"] >> 8, 0xEA],
           expect=[0xA6, 0xD4, 0xE0, 0x14])
     p.put(0xC87E, [0x20, _xs["ColZHi"] & 0xFF, _xs["ColZHi"] >> 8],
