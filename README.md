@@ -109,7 +109,7 @@ cartridge. It has two options:
   It brings `vs-split` along.
 
 ```
-python ../a7800-toolkit-local/tools/patchset.py apply dist/pp2-vs.abp \
+python ../a7800-toolkit/tools/patchset.py apply dist/pp2-vs.abp \
     --rom "Pole Position II (NTSC) (Atari) (1987) (A85FB962).a78" \
     --with vs-split --out pp2-vs.a78
 ```
@@ -117,9 +117,11 @@ python ../a7800-toolkit-local/tools/patchset.py apply dist/pp2-vs.abp \
 Use `--with vs-hires-car` for the higher-detail car. It can also go on top of
 a cartridge that already has `vs-split`. `patchset.py check` says which
 options a cartridge carries. The result is signed for real hardware, and is
-byte-identical to the generator's `--build --sign` below. It needs the
-toolkit's `patchset.py`, `bps.py` and `sign7800.py`, at commit `064514a` or
-later (bundles that grow the cartridge, and options built on each other).
+byte-identical to the generator's `--build --sign` below. It needs
+[a7800-toolkit](https://github.com/Miasmark/a7800-toolkit)'s `patchset.py`,
+`bps.py` and `sign7800.py`, at commit `f449428` or later (bundles that grow
+the cartridge, and options built on each other), cloned beside this
+repository as `../a7800-toolkit`.
 
 Where the bundle keeps retail bytes in place, it stores only their CRC32s.
 What it does carry:
@@ -140,10 +142,11 @@ You need:
    `Pole Position II (NTSC) (Atari) (1987) (A85FB962).a78`, or point
    `PP2_ROM` at it. Any other file is refused before anything is written.
 2. **Python 3** (built with 3.10; nothing outside the standard library).
-3. **The a7800 toolkit's `tools` directory**: `asm.py` and `m6502.py` for
+3. **[a7800-toolkit](https://github.com/Miasmark/a7800-toolkit)**, cloned
+   beside this repository as `../a7800-toolkit`: `asm.py` and `m6502.py` for
    every build, `sign7800.py` to sign, `patchset.py` and `bps.py` for
-   `--bundle`. It is looked for at `../a7800-toolkit-local/tools` (verified
-   with that checkout at commit `064514a`); set `PP2_TOOLKIT` to use another.
+   `--bundle`. Verified at commit `f449428`; set `PP2_TOOLKIT` to point at
+   another `tools` directory.
 
 Then, from this directory:
 
@@ -210,7 +213,7 @@ It comes two ways:
   `hires-car`, exactly as they released it.
 
   ```
-  python ../a7800-toolkit-local/tools/patchset.py apply dist/pp2-graphics-hack.abp \
+  python ../a7800-toolkit/tools/patchset.py apply dist/pp2-graphics-hack.abp \
       --rom "Pole Position II (NTSC) (Atari) (1987) (A85FB962).a78" \
       --with hires-car --out pp2-hires-car.a78
   ```

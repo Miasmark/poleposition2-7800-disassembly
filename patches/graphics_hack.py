@@ -56,7 +56,7 @@ import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
-TOOLKIT_TOOLS = os.path.join(ROOT, "..", "a7800-toolkit-local", "tools")
+TOOLKIT_TOOLS = os.path.join(ROOT, "..", "a7800-toolkit", "tools")
 sys.path.insert(0, TOOLKIT_TOOLS)
 
 HDR = 128
@@ -342,8 +342,8 @@ def build_bundle(out_path=None):
     print("  %d bps file(s), %d bytes"
           % (len(files), sum(len(v) for v in files.values())))
     print("")
-    print("  python ../a7800-toolkit-local/tools/patchset.py list %s" % out_path)
-    print("  python ../a7800-toolkit-local/tools/patchset.py apply %s "
+    print("  python ../a7800-toolkit/tools/patchset.py list %s" % out_path)
+    print("  python ../a7800-toolkit/tools/patchset.py apply %s "
           "--rom \"%s\" --with hires-car --out pp2-hires-car.a78" % (out_path, ROM_NAME))
     return 0
 

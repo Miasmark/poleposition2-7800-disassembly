@@ -15,8 +15,9 @@ Pole Position II VS: a two-player split-screen build from the retail cartridge.
 * Python 3 (built and tested with 3.10).
 * The a7800 toolkit's tools directory -- asm.py and m6502.py for every
   build, sign7800.py for --sign, patchset.py and bps.py for --bundle.
-  Looked for at ../a7800-toolkit-local/tools (tested at commit 064514a),
-  or wherever PP2_TOOLKIT points.
+  From https://github.com/Miasmark/a7800-toolkit, cloned beside this
+  repository: looked for at ../a7800-toolkit/tools (tested at commit
+  f449428), or wherever PP2_TOOLKIT points.
 
 The build is deterministic: the same dump gives the same bytes, and the
 SHA-256 printed at the end can be compared with README.md's.
@@ -120,7 +121,7 @@ import zlib
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
-TOOLKIT_TOOLS = os.environ.get("PP2_TOOLKIT") or os.path.join(ROOT, "..", "a7800-toolkit-local", "tools")
+TOOLKIT_TOOLS = os.environ.get("PP2_TOOLKIT") or os.path.join(ROOT, "..", "a7800-toolkit", "tools")
 sys.path.insert(0, TOOLKIT_TOOLS)
 
 HDR = 128
@@ -7482,7 +7483,9 @@ def build(out_path, sign=False):
     missing = [n for n in need if not os.path.isfile(os.path.join(TOOLKIT_TOOLS, n))]
     if missing:
         raise SystemExit("the a7800 toolkit's tools were not found at %s (missing %s);\n"
-                         "set PP2_TOOLKIT to its tools directory" % (TOOLKIT_TOOLS, ", ".join(missing)))
+                         "clone https://github.com/Miasmark/a7800-toolkit beside this "
+                         "repository, or set PP2_TOOLKIT to its tools directory"
+                         % (TOOLKIT_TOOLS, ", ".join(missing)))
     src, header, rom = load_source()
     p = Patcher(bytes(rom))
     for fix in FIXES:
@@ -7649,7 +7652,7 @@ def build_bundle(out_path=None):
     print("  %d bytes of BPS" % sum(len(v) for v in files.values()))
     print("")
     for opt, out in (("vs-split", "pp2-vs.a78"), ("vs-hires-car", "pp2-vs-hires.a78")):
-        print("  python ../a7800-toolkit-local/tools/patchset.py apply %s "
+        print("  python ../a7800-toolkit/tools/patchset.py apply %s "
               "--rom \"%s\" --with %s --out %s" % (out_path, ROM_NAME, opt, out))
     return 0
 

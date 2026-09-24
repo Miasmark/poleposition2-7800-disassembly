@@ -4,7 +4,7 @@ Walk a RAM dump's display lists and bill them with dmabudget's measured
 constants, so every game is costed by the same instrument."""
 import sys, os, re
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                                "..", "..", "a7800-toolkit-local", "tools"))
+                                "..", "..", "a7800-toolkit", "tools"))
 import dlwalk, dmabudget as B
 
 FRAME = 262 * 114          # NTSC CPU cycles per frame

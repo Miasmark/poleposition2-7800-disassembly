@@ -7585,3 +7585,11 @@ Retail bytes kept in place are CRC32s only, as before.
 lost its line continuations. It was written through a non-raw Python
 string, which turned `\` plus newline into nothing. This time the text was
 written from a file.
+
+**Toolkit, since.** The toolkit work above went forward to the public
+repository, [a7800-toolkit](https://github.com/Miasmark/a7800-toolkit), as PR
+#2 (merged, `f449428`). The generators, README and tools now look for it
+cloned beside this repository as `../a7800-toolkit`, not at the Karateka
+fork (`../a7800-toolkit-local`). With it, all four builds (VS and
+higher-detail car, unsigned and signed) give the same SHA-256 as before, and
+both bundles apply identically.
