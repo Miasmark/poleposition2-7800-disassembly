@@ -6596,3 +6596,27 @@ turn. Banner, start light, HUD and the qualifying message are all in place in
 the moved divider. Health and state flow are identical in shape to
 checkpoint 76 on four recordings; integrity 0 on four; race tick rate
 98-101/600.
+
+*Decided (user):* thinner traffic for a player far behind stays as it is,
+as a feature: with the gap pinned past `$4000`, the trailing player 2 sees no
+rival cars until it closes up.
+
+## Player 2's qualifying result on screen
+
+Checkpoint 78. While the game shows its qualifying message (states `$12`,
+`$0E`), the divider's three rows are the message (`$1D09`, text at `$1FC8`,
+player 1's place blinked in by rom:DA03), a blank middle row (`$24F6`) and the
+bonus tally (`$1D15`). The middle row now says where the other player stands:
+
+    2UP POSITION n       both qualified (n is player 2's place)
+    2UP NOT QUALIFIED    player 2 sits the race out
+    1UP NOT QUALIFIED    player 1 sits it out (the message above is player 2's)
+
+`QMsg`, once a frame from VbSplit (after the divider has been drawn), points
+the middle zone at its own 31-character line (`QM_BUF`/`QM_DL`, in the
+never-touched RAM at `$1FF3`). It saves the zone's own entry on the way in and
+puts it back once the state moves on. The text uses the game's font; its
+letters decode from the message itself (Q = `$A4`, R = `$A5`, Y = `$AA`).
+
+Checked: all three cases on screen; the banner at `$07` and the HUD in the
+race are back afterwards.

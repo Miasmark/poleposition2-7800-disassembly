@@ -698,7 +698,7 @@ FREE_RAM = [
     (0x0065, 0x009B, "zero page: injection colour rows and the dead curve copy (patched out)"),
     (0x1B36, 0x1B4D, "RowCurveXStaged's tail: the dead curve copy's target (patched out)"),
     (0x1BCA, 0x1BE9, "RowCurveXStagedSrc's tail: the stripped walk tail's output"),
-    (0x1FF3, 0x203F, "untouched"),
+    (0x201D, 0x203F, "untouched"),
     (0x210F, 0x213F, "untouched (below the stack's reach)"),
     (0x2200, 0x2233, "stock race DLL, replaced by DLL_BASE; untouched"),
     (0x256F, 0x25FF, "past the end of DLL_BASE's 37 zones; untouched"),
@@ -715,6 +715,12 @@ P2_DECOR_LEN = 46
 P2_HOR_DL = 0x1B30           # player 2's horizon list: one object and the end
 P2_DECOR_TOP = 0x1B9C        # the same list for the decor's top 8 lines: graphics 2 pages up
 P2_HOR_LEN = 6
+# The other player's qualifying result, on the divider's middle row while
+# the game's own message shows (checkpoint 78)
+QM_BUF = 0x1FF3              # 31 characters
+QM_DL = 0x2012               # its list: one 5-byte header and the end
+QM_SAVE = 0x2019             # 3: the row's own zone entry, put back after
+QM_ON = 0x201C               # nonzero while the row is ours
 STG_ROFF = 0x1C38            # 13: RowCurveOffset at each band's sample row
 STG_BANDX = 0x1C45           # 13: P2_BANDX
 HUD_BUF1 = 0x27C2            # the 1UP line, 31 characters
@@ -1422,6 +1428,7 @@ def _check_p2_ram():
                                    ("P2_DECOR_DL", P2_DECOR_DL, P2_DECOR_LEN),
                                    ("P2_HOR_DL", P2_HOR_DL, P2_HOR_LEN),
                                    ("P2_DECOR_TOP", P2_DECOR_TOP, P2_DECOR_LEN),
+                                   ("QM", QM_BUF, 42),
                                    ("DLL", DLL_BASE, DLL_ZONES * 3)]:
             if a <= hi and a + sz - 1 >= lo:
                 raise SystemExit("RAM $%04X..$%04X (%s) is listed free: %s"
@@ -4350,6 +4357,15 @@ def _ext():
     return _EXT[0]
 
 
+def _qm_text(t):
+    font = {" ": 0xAB, "Y": 0xAA}
+    for i, ch in enumerate("ABCDEFGHILMNOPQRSTU"):
+        font[ch] = 0x96 + i
+    for d in range(10):
+        font[str(d)] = 0x8C + d
+    return [font[c] for c in t]
+
+
 def vbl_src():
     """The vblank wait, split (see the checkpoint 72 notes; the handler tables
     now live in the blob, with index 13 for player 2's sky): VbSplit ends DLI
@@ -4361,8 +4377,87 @@ def vbl_src():
         "VbSplit:",
         "    LDA #$00", "    STA $009C",
         "    LDA #$0C", "    STA $00FF",
+        "    JSR QMsg",
     ] + ([] if os.getenv("PP2_NO_P2SKY") else ["    JSR P2Sky"]) + [
         "    JMP $EC09",
+        # --- the other player's qualifying result, once a frame from VbSplit
+        # (the divider has been drawn by then). While the game shows its
+        # qualifying message ($12, $0E) the divider's middle row, blank there,
+        # points at QM_DL; after, the row gets its own entry back.
+        "QMsg:",
+        "    LDA $009D",
+        "    CMP #$12", "    BEQ QmOn",
+        "    CMP #$0E", "    BEQ QmOn",
+        "    LDA $%04X" % QM_ON,
+        "    BEQ QmRet",
+        "    LDX #$02",
+        "QmRest:",
+        "    LDA $%04X,X" % QM_SAVE, "    STA $%04X,X" % (DIVIDER_ADDR + 3),
+        "    DEX",
+        "    BPL QmRest",
+        "    LDA #$00", "    STA $%04X" % QM_ON,
+        "QmRet:",
+        "    RTS",
+        "QmOn:",
+        "    LDA $%04X" % QM_ON,
+        "    BNE QmZone",
+        "    LDX #$02",                        # the row's own entry, for after
+        "QmSave:",
+        "    LDA $%04X,X" % (DIVIDER_ADDR + 3), "    STA $%04X,X" % QM_SAVE,
+        "    DEX",
+        "    BPL QmSave",
+        "    LDX #$1E",                        # a blank line
+        "    LDA #$AB",
+        "QmClr:",
+        "    STA $%04X,X" % QM_BUF,
+        "    DEX",
+        "    BPL QmClr",
+        # which line: player 1 sat out (the game's message is player 2's),
+        # player 2 qualified, or player 2 did not
+        "    LDA $%04X" % P1_OUT,
+        "    BEQ QmP2",
+        "    LDX #$00",
+        "    JMP QmCopy",
+        "QmP2:",
+        "    LDA $%04X" % P2_QST,
+        "    CMP #$01",
+        "    BEQ QmPos",
+        "    LDX #$12",
+        "    JMP QmCopy",
+        "QmPos:",
+        "    LDA $%04X" % P2_QPOS,
+        "    CLC", "    ADC #$8C",
+        "    STA $%04X" % (QM_BUF + 13),
+        "    LDX #$24",
+        "QmCopy:",                             # X: the text's offset; 0-ended
+        "    LDY #$00",
+        "QmCp:",
+        "    LDA QmTxt,X",
+        "    BEQ QmDl",
+        "    STA $%04X,Y" % QM_BUF,
+        "    INX", "    INY",
+        "    BNE QmCp",
+        "QmDl:",
+        "    LDX #$06",
+        "QmDlC:",
+        "    LDA QmHdr,X", "    STA $%04X,X" % QM_DL,
+        "    DEX",
+        "    BPL QmDlC",
+        "    LDA #$01", "    STA $%04X" % QM_ON,
+        "QmZone:",                             # every frame: the game may
+        "    LDA #$06", "    STA $%04X" % (DIVIDER_ADDR + 3),   # rewrite it
+        "    LDA #$%02X" % (QM_DL >> 8), "    STA $%04X" % (DIVIDER_ADDR + 4),
+        "    LDA #$%02X" % (QM_DL & 0xFF), "    STA $%04X" % (DIVIDER_ADDR + 5),
+        "    RTS",
+        "QmHdr:",                              # as the HUD's lines
+        "    .byte $%02X,$60,$%02X,$41,$%02X,$00,$00" % (QM_BUF & 0xFF, QM_BUF >> 8, HUD_X),
+        "QmTxt:",
+        "QmT1:",
+        "    .byte " + ",".join("$%02X" % b for b in _qm_text("1UP NOT QUALIFIED")) + ",$00",
+        "QmT2:",
+        "    .byte " + ",".join("$%02X" % b for b in _qm_text("2UP NOT QUALIFIED")) + ",$00",
+        "QmT3:",
+        "    .byte " + ",".join("$%02X" % b for b in _qm_text("2UP POSITION")) + ",$00",
         # --- player 2's skybox, once a frame from VbSplit: after player 2's
         # sky has been drawn (lines 20-31) and well before VbTail, whose stock
         # tail (sub_DC4F) uses the same scratch ($F0-$F2) and $C9/$CA.
