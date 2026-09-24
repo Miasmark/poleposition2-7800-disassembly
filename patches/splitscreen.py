@@ -3844,9 +3844,14 @@ def qual_src():
         "    BEQ QhP1Better",                  # dead level: player 1's
         "QhP2Better:",
         "    CPX #$08",
-        "    BEQ QhP2Out",                     # player 1 cannot go to 9th
+        "    BEQ QhP1Out",
         "    INX",                             # player 1 one place back
         "    JMP QhBonus",
+        # both 8th, player 2 faster: player 2 keeps 8th, and player 1 -- 9th,
+        # out -- sits the race out as when it does not qualify at all (QualOut)
+        "QhP1Out:",
+        "    PLA", "    PLA",                  # the JSR at rom:D422
+        "    JMP QoAloneGo",
         "QhP1Better:",
         "    LDA $%04X" % P2_QPOS,
         "    CMP #$08",
@@ -4208,6 +4213,7 @@ def qual_src():
         "    RTS",
         "QoAlone:",
         "    PLA", "    PLA",
+        "QoAloneGo:",                          # (and QualHold, a tie for 8th)
         "    LDA #$01", "    STA $%04X" % P1_OUT,
         "    LDY $%04X" % P2_QPOS,
         "    SED",

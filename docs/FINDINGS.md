@@ -6652,3 +6652,25 @@ window had keyboard focus while chat was being typed. Test runs now pass
 
 Checked: player 1 winning (its block blinks) and player 2 winning (a race
 player 1 sat out; its block blinks), in both blink phases.
+
+## Qualifying ties, tested live, and the one for 8th fixed
+
+Checkpoint 80 (asked: does the faster player get a shared slot?). QualHold
+(rom:D422) has always settled a shared slot by lap time: the faster keeps it,
+the slower goes one place back, and a dead heat goes to player 1. What
+checkpoint 69 did not test live, and got wrong: both 8th with player 2 faster.
+Player 1 cannot go to 9th on that path, so the code put player 2 out instead,
+the faster player losing the place. Since checkpoint 71 a player 1 that does
+not qualify can sit out, so QualHold now hands that case to the same path
+(QualOut's body, `QoAloneGo`): player 2 keeps 8th, player 1 sits out, player
+2 races alone.
+
+Checked, scripted pairs on track 3 (slots: under 58.50, 60, 62, 64, 66, 68,
+70, 73):
+
+| p1, p2 speed | laps (p1 / p2) | slot | result |
+|---|---|---|---|
+| 201, 200 | 68.00 / 69.00 | both 7 | p1 7th, p2 8th |
+| 198, 200 | 69.37 / 68.79 | both 7 | p2 7th, p1 8th |
+| 195, 198 | 70.00 / 72.37 | both 8 | p1 8th, p2 out (sits out) |
+| 189, 190 | 72.37 / 70.79 | both 8 | p2 8th, p1 out: the race starts with player 2 alone. Before this, p2 was out. |
