@@ -156,6 +156,17 @@ python ../a7800-toolkit-local/tools/patchset.py apply dist/pp2-graphics-hack.abp
     --with hires-car --out pp2-hires-car.a78
 ```
 
+## Player 2's highlights (design credit: Defender_2600)
+
+In the split-screen build, player 2's car carries blue and white highlights
+over its top section, in both views, so it cannot be mistaken for a gold
+rival. The look follows a mock-up by **Defender_2600** on AtariAge; the pixels
+are generated from the stock car by `p2_overlay_art()` in
+`patches/splitscreen.py`. The highlights are derived from the *stock* car, so
+combining the split-screen build with the higher-detail car above misaligns
+them on the upright frame (the two patches still touch disjoint bytes).
+`PP2_NO_OVL=1` builds without them.
+
 ## Recording a session
 
 Live findings come from replaying a MAME input recording -- a deterministic

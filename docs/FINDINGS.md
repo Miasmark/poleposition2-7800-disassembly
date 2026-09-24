@@ -6813,3 +6813,60 @@ number. Gold with blue is a combination no rival has.
   the rival emitter at 10+ sizes, so an overlay there needs its own slot and
   graphics per size. Near sizes only is practical.
 - **DMA.** 8 bytes a line on each overlaid band, plus the header.
+
+## Player 2's highlights: a second sprite over the car
+
+Checkpoint 83. The user's idea: overlay another 160A sprite on player 2's car
+in another palette, highlights only, on the top section. **Design credit:
+Defender_2600 (AtariAge)**, whose mock-up set the look: blue wing and
+sidepods, a white bar across the wing with white ends and centre, a yellow
+helmet. The helmet is the car's own light gold (`$2F`) showing through; the
+overlay is palette 4 (`$0E` white, `$98` blue), constant in both views'
+road regions, so no palette register changes.
+
+**The sprite is one column.** The player car (and a rival at size 0) is a
+single 30-page column, `$8B-$A8`: line L up from the bottom of band 11 is
+page `$8B + L`, six a band, and the lean or viewing angle picks the low byte
+(`$00-$20`, eight apart). The highlights sit on lines 14-19 only: band 9's
+top four lines and band 8's bottom two. The highlight column is built the
+same way. Pages `$75-$7A` hold lines 14-19, with five zero pages either side
+(`$70-$7F`, low bytes `$00-$27`). Whichever six lines a band shows, the rows
+past the highlights then read blank; the new code area's `$FF` fill would
+not. `EXT_END` moves to `$6FFF`.
+
+**Player 2's view.** Bands 8 and 9 of player 2's lists get a header after
+the car (drawn over it): page `$79` for band 8 and `$73` for band 9, which
+lines their bottom lines up with car lines 18 and 12. The low byte is
+player 2's lean. They park with the car (a crash, or out of the race). The
+8 bytes come from the object slots: over four recordings, no near band ever
+held three objects, and bands 9-12 held two in under 0.1% of frames. Those
+bands now have two slots, so the lists are 248 bytes (headers at `$2684`,
+`$26A2`, `$26BC`, `$26D2`, `$26E8` for bands 8-12). Parking, the list
+build and the emitter's cap take per-band counts (`P2ObjCap`, and
+`P2BuildLists` computes the count inline: it assembles apart from the
+table).
+
+**Player 1's view.** Player 2's car is an entry in the game's own object
+list, sliced into bands by the stock emitter. The highlights are a second
+entry: rows `ROW-14` to `ROW-19`, page `$75`, the car's angle as the low
+byte, palette 4. They are added only at size 0 (the car's own pages) and
+not while player 2 crashes. The entry goes in *before* the car's, because
+the emitter works from the last entry and hands out slots in order. The car
+takes the earlier slot and the highlights the next, so they draw on top.
+
+*Checked:* on screen in both views, including player 2 alongside player 1
+at an angle, where the highlights follow the angled frame. The green seen
+inside the helmet in one shot is the grass behind the car: the roll hoop's
+inside is transparent in the stock sprite too. Health matches checkpoint 82
+on four recordings, list integrity is 0 on four, qualifying ties are as
+before, and player 2 alone finishes. Race tick rate is 99, 101, 99, 94, 98
+and 100 over six starts against 96, 99, 99, 98, 98 and 100 without the
+highlights. That is the same within the test's noise (one early reading of
+94 alone looked like a cost).
+
+*Not covered:* sizes 1-5 (player 2 further ahead of player 1) have no
+highlights, and there player 2 still looks like a gold rival. Combined with
+the higher-detail car (graphics hack), which redraws the upright frame
+`$8B10`, the highlights are derived from the stock car and misalign on that
+frame. `PP2_NO_OVL=1` builds without them. `PP2_NO_OVL_P1` (test hook)
+leaves out player 1's view only.

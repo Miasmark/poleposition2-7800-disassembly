@@ -199,7 +199,8 @@ ROM_SIZE = 32768                 # the SOURCE ROM, as dumped
 OUT_BASE = 0x4000
 OUT_SIZE = 49152
 EXT_ADDR = 0x4000                # the object code's own area
-EXT_END = 0x7FDF                 # the last page's top holds the HUD row lists
+EXT_END = 0x6FFF                 # $7000-$7FFF: the highlight column (low
+                                 #   bytes $00-$27) and the HUD row lists ($7FE0)
 
 ROM_NAME = "Pole Position II (NTSC) (Atari) (1987) (A85FB962).a78"
 SOURCES = [
@@ -394,17 +395,24 @@ def p2_band_layout():
         if has_car:
             car = off
             off += 4
+        ovl = None
+        if b in P2_OVL_BANDS:
+            ovl = off                 # after the car: drawn over it
+            off += 4
         obj = off
-        out[b] = {"addr": addr, "road1": road1, "car": car, "obj": obj,
-                  "hdr": obj}         # bytes of headers ahead of the slots
-        addr += obj + 4 * P2_OBJ_SLOTS + 2   # the object slots, then the end marker
+        out[b] = {"addr": addr, "road1": road1, "car": car, "ovl": ovl, "obj": obj,
+                  "hdr": obj,         # bytes of headers ahead of the slots
+                  "slots": P2_BAND_SLOTS[b]}
+        addr += obj + 4 * P2_BAND_SLOTS[b] + 2   # the object slots, then the end marker
     return out
 
 
 def p2_dl_bytes():
     """Total size of player 2's lists, for the copy loop and the layout check."""
     lay = p2_band_layout()
-    return lay[12]["addr"] + lay[12]["obj"] + 4 * P2_OBJ_SLOTS + 2 - P2_DL_BASE
+    n = lay[12]["addr"] + lay[12]["obj"] + 4 * P2_BAND_SLOTS[12] + 2 - P2_DL_BASE
+    assert n <= 256, "player 2's lists are %d bytes; offsets reach 256" % n
+    return n
 P2_TEMPLATE = 0xEE10
 
 # A constant added to player 2's road x. Zero makes the two views identical
@@ -790,10 +798,31 @@ P1_CAR_SLOT = [0x244C + 0x1C, 0x246E + 0x1C, 0x2490 + 0x1C, 0x24B2 + 0x1C]
 P2_CAR_BANDS = [7, 8, 9, 10, 11]     # band 7: the car's top (roll hoop), as
                                      #   player 1's own top slice sits there
 # Object slots per band in player 2's lists: the first is reserved for the other
-# player's car, the rest take world objects. Three keeps every band's list, and
-# the whole block, inside the 256 bytes the one-byte offsets from P2_DL_BASE can
-# reach, and inside the free RAM before P2_LATERAL at $2702.
-P2_OBJ_SLOTS = 3
+# player's car, the rest take world objects. The whole block must stay inside
+# the 256 bytes the one-byte offsets from P2_DL_BASE can reach, and inside the
+# free RAM before P2_LATERAL at $2702. Three a band until checkpoint 83; bands
+# 9-12 now have two (over four recordings no near band held a third, and bands
+# 9-12 held a second in under 0.1% of frames), which pays for the highlight
+# headers below.
+P2_OBJ_SLOTS = 3             # the most any band has
+P2_BAND_SLOTS = {b: (3 if b <= 8 else 2) for b in range(1, 13)}   # P2BuildLists
+                                                                 #   computes this inline
+# Player 2's highlights (checkpoint 83): a second 160A object drawn over the
+# top of player 2's car, in palette 4 ($0E white, $98 blue; the helmet is left
+# to the car's own light gold, which reads as yellow). Design after a mock-up
+# by defender_2600 (AtariAge). The pixels are derived by rule from the stock
+# car at build time (p2_overlay_art). The overlay covers the car's lines 14-19
+# (lines count up from the bottom of band 11, whose page is $8B: the car is one
+# 30-page column $8B-$A8, six pages a band), which is band 9's top four lines
+# and band 8's bottom two.
+P2_OVL = not os.getenv("PP2_NO_OVL")
+OVL_COL = 0x7000             # 16 pages: 5 blank, the overlay's 6, 5 blank --
+OVL_HI = 0x75                #   blank so any band's six lines read zero past
+OVL_LINE0 = 14               #   the overlay. Low bytes $00-$27 only (5 x 8).
+OVL_PW = (4 << 5) | 0x18     # palette 4, 8 bytes
+P2_OVL_BANDS = [8, 9] if P2_OVL else []
+# a band's header page: its bottom line is car line (11 - band) * 6
+P2_OVL_HI = {b: OVL_HI + (11 - b) * 6 - OVL_LINE0 for b in (8, 9)}
 P2_CAR_SEED = [(0x10, 0xA3), (0x08, 0x9D), (0x08, 0x97), (0xE0, 0xAA), (0x08, 0x8B)]
 # player 2's car palette (experiment: PP2_P2PAL; stock 6, the gold car)
 P2_CAR_PAL = int(os.getenv("PP2_P2PAL", "6"))
@@ -1678,7 +1707,15 @@ def p2_tick_src():
         "P2OcClear:",
         "    LDY P2ObjOfs,X",
         "    LDA #$A1",
-    ] + ["    STA $%04X,Y" % (P2_DL_BASE + 3 + 4 * k) for k in range(P2_OBJ_SLOTS)] + [
+    ] + ["    STA $%04X,Y" % (P2_DL_BASE + 3 + 4 * k)
+         for k in range(min(P2_BAND_SLOTS.values()))] + [
+        # the third slot only where a band has one
+        "    LDA P2ObjCap,X",
+        "    CMP #$0C",
+        "    BCC P2OcNo3",
+        "    LDA #$A1",
+        "    STA $%04X,Y" % (P2_DL_BASE + 3 + 8),
+        "P2OcNo3:",
         "    DEX",
         "    BPL P2OcClear",
         "    JSR P2Emit",
@@ -1709,6 +1746,8 @@ def p2_dl_template():
         if lay[b]["car"] is not None:
             clo, chi = P2_CAR_SEED[P2_CAR_BANDS.index(b)]
             e += [clo, P2_CAR_W, chi, P2_CAR_X]
+        if lay[b]["ovl"] is not None:
+            e += [0x10, OVL_PW, P2_OVL_HI[b], 0xA1]     # parked until drawn
         out += e
     # Only the headers are stored: the object slots are identical parked
     # entries and the end markers identical zeros, so MirrorInit writes those
@@ -1719,6 +1758,78 @@ def p2_dl_template():
 
 def p2_template_len():
     return len(p2_dl_template())
+
+
+def p2_overlay_art():
+    """Player 2's highlights, as OVL_COL's bytes: {address: byte}.
+
+    After a mock-up by defender_2600 (AtariAge): blue over the sidepods and
+    wing tips, a white bar across the wing with white ends and centre, the
+    helmet left gold. Derived by rule from the stock car so every lean lines
+    up with its own frame. Colours: 1 white, 2 blue (palette 4), 0 clear.
+    """
+    rom = load_source()[2]
+
+    def px(hi, lo):
+        """The car's six lines in a band, top first, 32 pixels each."""
+        return [[(rom[(((hi + off) << 8) + lo + i) - BASE] >> (6 - 2 * k)) & 3
+                 for i in range(8) for k in range(4)] for off in range(5, -1, -1)]
+
+    W, B = 1, 2
+    art = {}
+    for lean in (0x00, 0x08, 0x10, 0x18, 0x20):
+        o8 = [[0] * 32 for _ in range(6)]
+        o9 = [[0] * 32 for _ in range(6)]
+        s8 = px(0x9D, lean)
+        s9 = px(0x97, lean)
+        # band 8, its bottom two lines: gold outside the roll hoop -> blue
+        for r in (4, 5):
+            for c in range(32):
+                if s8[r][c] in (1, 2) and not 12 <= c <= 19:
+                    o8[r][c] = B
+        # band 9: the wing centre is the longest black run of its second line
+        best, cur = (0, -1), None
+        for c in range(33):
+            if c < 32 and s9[1][c] == 3:
+                cur = c if cur is None else cur
+            elif cur is not None:
+                if c - 1 - cur > best[1] - best[0]:
+                    best = (cur, c - 1)
+                cur = None
+        a, z = best
+        for r in (0, 1):                  # sidepods blue, the centre white
+            for c in range(32):
+                if s9[r][c] in (1, 2):
+                    o9[r][c] = W if a <= c <= z else B
+        for c in range(32):               # the bar white, its outer ends blue
+            if s9[2][c] in (1, 2):
+                o9[2][c] = W if a - 3 <= c <= z + 3 else B
+        for c in range(32):               # the bar's ends, one line down
+            if s9[3][c] in (1, 2) and a - 4 <= c <= z + 4 and \
+                    ((c + 1 < 32 and s9[3][c + 1] == 3) or (c > 0 and s9[3][c - 1] == 3)):
+                o9[3][c] = W
+        # line L of the car -> OVL_HI + (L - OVL_LINE0); band 9's top line
+        # (row 0) is car line 17, band 8's is 23
+        lines = {}
+        for r in range(6):
+            lines[12 + 5 - r] = o9[r]
+            lines[18 + 5 - r] = o8[r]
+        for L, row in lines.items():
+            j = L - OVL_LINE0
+            if not 0 <= j <= 5:
+                assert not any(row), "highlight pixels outside lines 14-19"
+                continue
+            for i in range(8):
+                v = 0
+                for k in range(4):
+                    v |= row[i * 4 + k] << (6 - 2 * k)
+                art[((OVL_HI + j) << 8) + lean + i] = v
+    col = {}
+    for page in range(OVL_COL >> 8, (OVL_COL >> 8) + 16):
+        for lo in range(0x28):
+            a = (page << 8) + lo
+            col[a] = art.get(a, 0)
+    return col
 
 
 def p2_car_src():
@@ -1759,6 +1870,8 @@ def p2_car_src():
     for b in P2_CAR_BANDS:
         dl = lay[b]["addr"] + lay[b]["car"]
         lines += ["    LDA #$A1", "    STA $%04X" % (dl + 3)]
+    for b in P2_OVL_BANDS:
+        lines += ["    STA $%04X" % (lay[b]["addr"] + lay[b]["ovl"] + 3)]
     lines += ["    JMP P2CarEnd", "P2CarDraw:"]
 
     # this frame's lean, straight off the stick: $08 right, $18 left, $10 level
@@ -1798,6 +1911,12 @@ def p2_car_src():
         else:
             lines += ["    LDA #$%02X" % P2_CAR_BASE_HI[b], "    STA $%04X" % (dl + 2),
                       "    LDA $%04X" % P2_LEAN, "    STA $%04X" % (dl + 0)]
+    # the highlights: the same lean (the overlay's leans sit at the car's low
+    # bytes), the page fixed in the template
+    for b in P2_OVL_BANDS:
+        dl = lay[b]["addr"] + lay[b]["ovl"]
+        lines += ["    LDA $%04X" % P2_LEAN, "    STA $%04X" % (dl + 0),
+                  "    LDA #$%02X" % P2_CAR_X, "    STA $%04X" % (dl + 3)]
     lines += ["P2CarEnd:"]
     return lines
 
@@ -4937,6 +5056,29 @@ def rival_car_src(part="main"):
         "    BCC RcP1Show",
         "    JMP RcP1Done",                    # the part of a crash it is hidden
         "RcP1Show:",
+    ] + ([] if not P2_OVL or os.getenv("PP2_NO_OVL_P1") else [
+        # The highlights, when the car is the full-size sprite (size 0: the
+        # car's own pages, $8B00 + angle) and not crashing: an entry of their
+        # own, six rows tall, ending 14 rows above the car's nearest. Appended
+        # BEFORE the car, so the emitter (last entry first) gives the car the
+        # earlier slot and the highlights the next, drawn over it.
+        "    LDA $%04X" % P2_CRASH, "    BNE RcOvNo",
+        "    LDA $%04X" % OC_SIZE, "    BNE RcOvNo",
+        "    LDA $%04X" % OC_ROW,
+        "    CMP #$%02X" % (OVL_LINE0 + 5), "    BCC RcOvNo",
+        "    LDX $00DD",
+        "    CPX #$13",                        # room for this and the car
+        "    BCS RcOvNo",
+        "    SEC", "    SBC #$%02X" % OVL_LINE0, "    STA $1A94,X",
+        "    SEC", "    SBC #$05",             "    STA $1AA9,X",
+        "    LDA $%04X" % OC_LO,  "    STA $1AD3,X",
+        "    LDA #$%02X" % OVL_HI, "    STA $1ABE,X",
+        "    LDA #$%02X" % OVL_PW, "    STA $1BEA,X",
+        "    LDA $%04X" % OC_X,   "    STA $1AE8,X",
+        "    LDA #$04",           "    STA $1A7F,X",   # a car's slot class
+        "    INC $00DD",
+        "RcOvNo:",
+    ]) + [
         # Append. The emitter walks the list from the LAST entry down
         # (rom:E729), so the car appended here is the first to take a car
         # slot in every band it spans: it has priority over every rival, which
@@ -5356,7 +5498,10 @@ def rival_car_src(part="main"):
         "    INX", "    INY",
         "    DEC $%04X" % OC_T,
         "    BNE P2BCopy",
-        "    LDA #$%02X" % P2_OBJ_SLOTS, "    STA $%04X" % OC_T,
+        # the band's slot count: 3 for bands 1-8 (OC_M 0-7), 2 after
+        "    LDA #$07", "    CMP $%04X" % OC_M,   # carry set: OC_M <= 7
+        "    LDA #$02", "    ADC #$00",
+        "    STA $%04X" % OC_T,
         "P2BPark:",
         "    LDA #$00", "    STA $%04X,Y" % P2_DL_BASE, "    INY",
         "    LDA #$1F", "    STA $%04X,Y" % P2_DL_BASE, "    INY",
@@ -5522,7 +5667,7 @@ def p2_emit_src():
         "    STA $%04X" % T_END,
         "P2EmBand:",
         "    LDA $%04X,Y" % P2_SLOTCNT,
-        "    CMP #$%02X" % (4 * P2_OBJ_SLOTS),
+        "    CMP P2ObjCap-1,Y",
         "    BCS P2EmSkip",                    # this band is full
         "    STA $%04X" % T_OFF,
         "    ADC #$04",                        # carry is clear
@@ -5557,6 +5702,8 @@ def p2_slot_tables():
     dobj = [(lay[b]["addr"] - P2_DL_BASE) + lay[b]["obj"] for b in range(1, 13)]
     return [
         "P2ObjOfs:",  "    .byte " + ",".join("$%02X" % v for v in dobj),
+        # per band: the slots' bytes (the emitter's cap), and the count
+        "P2ObjCap:",  "    .byte " + ",".join("$%02X" % (4 * P2_BAND_SLOTS[b]) for b in range(1, 13)),
     ]
 
 
@@ -6101,6 +6248,11 @@ def fix_mirror_split(p):
                     _pos & 0xFF, 0x60, _pos >> 8, 0x40 | (32 - 3), HUD_POS_X, 0x00, 0x00],
               expect=[0xFF] * 12)
     p.put(HUD_DLB, [0x00, 0x00], expect=[0xFF, 0xFF])
+    if P2_OVL:
+        _art = p2_overlay_art()
+        for _pg in range(16):
+            _a = OVL_COL + (_pg << 8)
+            p.put(_a, [_art[_a + i] for i in range(0x28)], expect=[0xFF] * 0x28)
     _xc = list(_ext()[0])
     if EXT_ADDR + len(_xc) - 1 > EXT_END:
         raise SystemExit("the $4000 code area overruns $%04X" % EXT_END)
