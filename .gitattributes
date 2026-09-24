@@ -1,0 +1,3 @@
+# shell scripts must keep LF endings to run under bash, whatever the platform
+*.sh text eol=lf
+*.command text eol=lf
