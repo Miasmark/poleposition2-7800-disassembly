@@ -7161,3 +7161,40 @@ and the centre dashes reach the far road, in both views. The far car draws
 whole across the seam. List integrity is 0 on four recordings, and health
 has the normal shape. `PP2_NO_SPLIT=1` builds without it.
 `PP2_NO_TOPCOPY` (test hook) leaves the top halves without objects.
+
+## Near-band shearing: sized, and not yet built
+
+Asked for after checkpoint 87 (bands 8-11 chosen). Findings from sizing it:
+
+- **Near lines are two objects:** a fixed 16-byte left piece at x-60 and a
+  right piece of 19-31 bytes. Sheared together as one line and split back
+  into two objects of at most 31 bytes (band 12's right piece is already 31),
+  a +/-1 shear costs 33, 37, 41, 43 and 47 bytes a line per shear for bands
+  8-12. Bands 8-11 at +/-1 total 308 bytes a line, about 1.85K. Near lines
+  have no interior gaps, so the split can go anywhere.
+- **The width byte varies:** for bands 10-12 the game sometimes takes 8 bytes
+  off the right piece's width (field `$07` -> `$0F`, etc.). A sheared slice
+  therefore has to carry a width delta, not an absolute field.
+- **Slot use in player 1's near lists** (object slots from +8; three
+  recordings): +8 is used in 6-12 frames out of about 14,000, +12 by cars,
+  +16 rarely, +20 never, +24 sometimes, and +28 (`$1C`) is player 1's car,
+  always. A three-piece layout (the stock pieces with their kerbs clipped,
+  plus small sheared edge pieces) would need +8, and a car there would lose
+  that band's slice in those frames. It would cost about 200 bytes a line.
+- **Why it does not fit:** a slice needs a column of six consecutive pages
+  at one low-byte range. Free space is about 2.2K in all, but mostly
+  fragments: the code area's tail after `$64xx`, 58 bytes a line in the
+  `$6A` column, and the `$7C-$7F` windows. A new column needs the code to
+  end by `$63FF` (or by `$6437` for a 200-byte-wide one). The code ends at
+  `$6942`.
+- **Compaction measured:** tables into `$7C28-$7FDF`, `SmDiv` on |d|
+  (85 entries), and `TopCopy1`'s copies through a shared routine. The code
+  end moved to `$64AD`. It cost race ticks: 91-100 against 94-100.
+  Reverted.
+
+What it would take: move more routines into the `$7C-$7F` windows
+(`TopInit`, `SmInit`, `SmQ`), compact `TopCopy2`, and then add the near
+bands' own selection and apply code. Each step costs some speed, and the
+near bands' per-frame adjustments (four per band per view) come on top.
+Estimated at about 90-93 in the stress test. Or, in scope order, spend less:
+near bands 8-10 only, or reduce the far bands' extreme shears.
