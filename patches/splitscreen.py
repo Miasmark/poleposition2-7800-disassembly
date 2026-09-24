@@ -795,7 +795,9 @@ P2_CAR_BANDS = [7, 8, 9, 10, 11]     # band 7: the car's top (roll hoop), as
 # reach, and inside the free RAM before P2_LATERAL at $2702.
 P2_OBJ_SLOTS = 3
 P2_CAR_SEED = [(0x10, 0xA3), (0x08, 0x9D), (0x08, 0x97), (0xE0, 0xAA), (0x08, 0x8B)]
-P2_CAR_W = 0xD8              # palette 6, 8 bytes
+# player 2's car palette (experiment: PP2_P2PAL; stock 6, the gold car)
+P2_CAR_PAL = int(os.getenv("PP2_P2PAL", "6"))
+P2_CAR_W = (P2_CAR_PAL << 5) | 0x18   # 8 bytes
 P2_CAR_X = 0x40              # 64
 P2_CAR_DELTA = 0x2754        # this frame's lean adjustment, L2 - L1
 
@@ -4926,6 +4928,10 @@ def rival_car_src(part="main"):
         "    LDA $%04X,X" % ROW_CURVE_OFFSET, "    STA $%04X" % OC_S1,
         "    LDA $%04X,X" % (ROW_CURVE_OFFSET - 1), "    STA $%04X" % OC_S0,
         "    JSR OcSprite",
+    ] + ([] if P2_CAR_PAL == 6 else [
+        "    LDA $%04X" % OC_PW, "    AND #$1F", "    ORA #$%02X" % (P2_CAR_PAL << 5),
+        "    STA $%04X" % OC_PW,
+    ]) + [
         "    LDA $%04X" % P2_CRASH,
         "    JSR OcCrash",
         "    BCC RcP1Show",

@@ -6782,3 +6782,34 @@ What it takes:
   cycles a frame, on a race loop close to its limit, so measure it.
 - **Not covered.** The crash and spin frames stay gold unless those are
   converted too.
+
+### Player colours: borrowing a rival palette (built as a switch)
+
+The simpler answer came from the user's overlay idea. The car's three
+colours are light, mid and black (`$2F $26 $00`). Palettes 4 and 5 have the
+same shape: `$0E $98 $00` and `$9C $96 $00`. Drawing the stock 160A car with
+one of them recolours it, shading kept, with no new graphics and no palette
+register touched. `PP2_P2PAL` (default 6, stock) sets player 2's car
+palette in both places it is drawn: its own lists (`P2_CAR_W`) and player
+1's view (`OC_PW` after the first `OcSprite`). Crash frames keep palette 6.
+Checked on screen in a two-player race: palette 5 gives a light blue and blue
+car, palette 4 white and blue, in both views. The start line, signs and
+rivals are unchanged.
+
+*The catch:* the rival cars use the same sprite in palettes 3 (yellow `$1E
+$17`), 4 (white) and 5 (blue). A borrowed palette makes player 2 look like
+one colour of rival. In its own view that does not matter, since the car at
+the bottom centre is always the player's. In player 1's view it does.
+
+**Overlay (the user's idea), costed.** Draw a second 160A object over the
+gold car, in palette 4 or 5, carrying only highlight pixels: a stripe, a
+number. Gold with blue is a combination no rival has.
+
+- **Graphics.** Overlay pages for each lean and band that has highlights:
+  8 bytes x 6 lines per lean per band. That is 1,440 bytes for all 5 leans x
+  6 sheets, or about 480 for a stripe on bands 8-9 only.
+- **Display lists.** A 4-byte header per overlaid band in player 2's lists,
+  which are full at 256 bytes. In player 1's view the other car goes through
+  the rival emitter at 10+ sizes, so an overlay there needs its own slot and
+  graphics per size. Near sizes only is practical.
+- **DMA.** 8 bytes a line on each overlaid band, plus the header.
