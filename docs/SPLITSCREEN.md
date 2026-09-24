@@ -102,6 +102,34 @@ that runs every frame (60 Hz). The build adds to both.
 - Recordings replay against the unsigned build; a signed build (for
   hardware) plays them back differently (README).
 
+## What the ROM is made of
+
+![The VS build, byte by byte](img/vs-rom-map.png)
+
+Every byte of the 48K image, classified by `tools/vs-rom-map.py` (build
+against the retail dump, plus ROM coverage from six recordings and two
+scripted races -- "read" is a lower bound on what play uses):
+
+| bytes | of 48K | what |
+|---:|---:|---|
+| 26,830 | 54.6% | retail, unchanged, read in play |
+| 1,952 | 4.0% | retail, unchanged, never read in these runs |
+| 174 | 0.4% | retail, overwritten: hooks and edits |
+| 68 | 0.1% | retail, overwritten: the VS logo |
+| 2,870 | 5.8% | new code in the retail ROM's own free space (`$F400-$FF46`, all `$FF` in the retail) |
+| 874 | 1.8% | new code and tables where the bypassed scanline injection was (`$EDA0-$F142`) |
+| 9,337 | 19.0% | new code (`$4000-$63AA` and the `$7E` block) |
+| 6,124 | 12.5% | generated graphics (5,484 sheared road slices, 640 the highlight column) |
+| 469 | 1.0% | new tables |
+| 454 | 0.9% | unused |
+
+So 28,782 of the retail 32,768 bytes (87.8%) are still there unchanged, and
+26,830 of them are read in play: 15,526 in `$8000-$BFFF` (graphics and
+tables), 11,304 in `$C000-$FFFF` (code). Retail content actually replaced is
+242 bytes (hooks and the logo), plus the 874-byte injection the mod no
+longer runs. The mod's own bytes come to 19,916 (40.5% of the image),
+including 6,192 generated at build time from the retail's own pixels.
+
 ## Checking a build
 
     MAME=/path/to/mame tools/check-build.sh pp2-vs.a78
@@ -295,76 +323,76 @@ after changing the layout.
 
 | from | bytes | first described at (patches/splitscreen.py line) |
 |---|---:|---|
-| $A5D6 | 4 | 1788 |
-| $A6BE | 1 | 6979 |
-| $A6C1 | 1 | 6989 |
-| $A6D3 | 1 | 6980 |
-| $B00E | 4 | 1798 |
-| $B10A | 8 | 1807 |
-| $B20A | 8 | 1806 |
-| $B30A | 8 | 1805 |
-| $B40A | 8 | 1804 |
-| $B50A | 8 | 1803 |
-| $B60A | 8 | 1802 |
-| $B70A | 8 | 1801 |
-| $B80A | 8 | 1800 |
-| $B90A | 8 | 1799 |
-| $C372 | 3 | 4390 |
-| $C378 | 3 | 4399 |
-| $C87E | 3 | 3821 |
-| $CBE3 | 4 | 901 |
-| $CBEB | 4 | 896 |
-| $CC5E | 3 | 6389 |
-| $CDF2 | 3 | 7124 |
-| $CE0F | 3 | 7124 |
-| $CE72 | 3 | 7124 |
-| $CE8B | 3 | 7124 |
-| $D30D | 4 | 5017 |
-| $D316 | 3 | 4982 |
-| $D31C | 4 | 5075 |
-| $D324 | 4 | 4816 |
-| $D32D | 6 | 4948 |
-| $D422 | 3 | 4469 |
-| $D4BC | 4 | 4816 |
-| $D58D | 6 | 4916 |
-| $D6A9 | 4 | 4895 |
-| $D70A | 6 | 5098 |
-| $D713 | 6 | 1680 |
-| $D81B | 2 | 6955 |
-| $D848 | 3 | 890 |
-| $D8BC | 3 | 7160 |
-| $D8D7 | 1 | 6965 |
-| $DA92 | 2 | 6957 |
-| $DB55 | 6 | 4940 |
-| $DF5A | 3 | 4336 |
-| $DFDA | 3 | 4361 |
-| $E3CD | 3 | 2851 |
-| $E4B7 | 5 | 3803 |
-| $E59D | 5 | 3955 |
-| $E5E8 | 5 | 3809 |
-| $E617 | 4 | 3815 |
-| $E70D | 3 | 1684 |
-| $E79C | 3 | 6366 |
-| $E8E6 | 3 | 5291 |
-| $E8F8 | 2 | 7085 |
-| $E90E | 2 | 7085 |
-| $E935 | 2 | 7085 |
-| $E9BE | 4 | 626 |
-| $EA2C | 1 | 823 |
-| $EBFD | 2 | 7099 |
-| $EC02 | 2 | 7100 |
-| $ED1E | 2 | 7001 |
-| $ED29 | 2 | 985 |
-| $ED42 | 5 | 916 |
-| $ED48 | 2 | 7246 |
-| $ED9D | 156 | 874 |
-| $EE3A | 108 | 342 |
-| $EEC0 | 12 | 677 |
-| $EED0 | 518 | 464 |
-| $F0EB | 88 | 472 |
-| $F150 | 2 | 7097 |
-| $F158 | 2 | 1045 |
-| $F160 | 3 | 5275 |
-| $F16C | 2 | 7308 |
-| $F171 | 11 | 7268 |
-| $F400 | 2887 | 882 |
+| $A5D6 | 4 | 1789 |
+| $A6BE | 1 | 6980 |
+| $A6C1 | 1 | 6990 |
+| $A6D3 | 1 | 6981 |
+| $B00E | 4 | 1799 |
+| $B10A | 8 | 1808 |
+| $B20A | 8 | 1807 |
+| $B30A | 8 | 1806 |
+| $B40A | 8 | 1805 |
+| $B50A | 8 | 1804 |
+| $B60A | 8 | 1803 |
+| $B70A | 8 | 1802 |
+| $B80A | 8 | 1801 |
+| $B90A | 8 | 1800 |
+| $C372 | 3 | 4391 |
+| $C378 | 3 | 4400 |
+| $C87E | 3 | 3822 |
+| $CBE3 | 4 | 902 |
+| $CBEB | 4 | 897 |
+| $CC5E | 3 | 6390 |
+| $CDF2 | 3 | 7125 |
+| $CE0F | 3 | 7125 |
+| $CE72 | 3 | 7125 |
+| $CE8B | 3 | 7125 |
+| $D30D | 4 | 5018 |
+| $D316 | 3 | 4983 |
+| $D31C | 4 | 5076 |
+| $D324 | 4 | 4817 |
+| $D32D | 6 | 4949 |
+| $D422 | 3 | 4470 |
+| $D4BC | 4 | 4817 |
+| $D58D | 6 | 4917 |
+| $D6A9 | 4 | 4896 |
+| $D70A | 6 | 5099 |
+| $D713 | 6 | 1681 |
+| $D81B | 2 | 6956 |
+| $D848 | 3 | 891 |
+| $D8BC | 3 | 7161 |
+| $D8D7 | 1 | 6966 |
+| $DA92 | 2 | 6958 |
+| $DB55 | 6 | 4941 |
+| $DF5A | 3 | 4337 |
+| $DFDA | 3 | 4362 |
+| $E3CD | 3 | 2852 |
+| $E4B7 | 5 | 3804 |
+| $E59D | 5 | 3956 |
+| $E5E8 | 5 | 3810 |
+| $E617 | 4 | 3816 |
+| $E70D | 3 | 1685 |
+| $E79C | 3 | 6367 |
+| $E8E6 | 3 | 5292 |
+| $E8F8 | 2 | 7086 |
+| $E90E | 2 | 7086 |
+| $E935 | 2 | 7086 |
+| $E9BE | 4 | 627 |
+| $EA2C | 1 | 824 |
+| $EBFD | 2 | 7100 |
+| $EC02 | 2 | 7101 |
+| $ED1E | 2 | 7002 |
+| $ED29 | 2 | 986 |
+| $ED42 | 5 | 917 |
+| $ED48 | 2 | 7247 |
+| $ED9D | 156 | 875 |
+| $EE3A | 108 | 343 |
+| $EEC0 | 12 | 678 |
+| $EED0 | 518 | 465 |
+| $F0EB | 88 | 473 |
+| $F150 | 2 | 7098 |
+| $F158 | 2 | 1046 |
+| $F160 | 3 | 5276 |
+| $F16C | 2 | 7309 |
+| $F171 | 11 | 7269 |
+| $F400 | 2887 | 883 |
