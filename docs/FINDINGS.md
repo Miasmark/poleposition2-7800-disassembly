@@ -1499,6 +1499,12 @@ unpatched run exactly, and the mirrored top view (Phase 1, above) shows the
 redrawn car automatically, since it already reads the same live sub-lists
 player 1's road does.
 
+*Corrected later (after checkpoint 89):* this held for the mirror-era build
+it was tested on, but not since the dead injection was reclaimed ("931 bytes
+of the base ROM are dead", below). The hack's two palette bytes `$EDE3`/`$EDE7`
+lie inside it, and the VS build no longer runs the stock code that read them.
+See "The .abp bundle grows the cartridge".
+
 One thing this option's `.abp` does that this project's own patches
 deliberately avoid: its BPS necessarily carries the replacement bytes
 themselves; a CRC32 can identify someone else's finished artwork but cannot
@@ -6874,7 +6880,9 @@ highlights. That is the same within the test's noise (one early reading of
 highlights, and there player 2 still looks like a gold rival. Combined with
 the higher-detail car (graphics hack), which redraws the upright frame
 `$8B10`, the highlights are derived from the stock car and misalign on that
-frame. `PP2_NO_OVL=1` builds without them. `PP2_NO_OVL_P1` (test hook)
+frame. (*Corrected later:* this was inferred, not tested. The two builds do
+not stack at all, because the hack's palette bytes are in the reclaimed
+injection. See "The .abp bundle grows the cartridge".) `PP2_NO_OVL=1` builds without them. `PP2_NO_OVL_P1` (test hook)
 leaves out player 1's view only.
 
 ## Player 2's bonuses, tallied with player 1's
@@ -7370,3 +7378,88 @@ first-fit packing failed on the fragments. Band 1's range went from +/-5 to
 
 *Not covered:* band 12 (its right piece is already 31 bytes and there was no
 ROM left); +/-2 px a line on the near bands.
+
+## The .abp bundle grows the cartridge
+
+After checkpoint 89. The toolkit's anchored bundle could only patch fixed
+extents of the dump, so the 48K build had no bundle and `--bundle` refused.
+Toolkit commit `2ad23b3` adds `patchset/3`. With it, an option can say
+`"grow": {"size": 49152, "at": "front", "fill": "0xFF"}`:
+
+- A linear 7800 cartridge ends at `$FFFF`, so it grows at the front, and the
+  body's base moves from `$8000` to `$4000`.
+- Sections are CPU addresses in the grown body. Those in the new 16K describe
+  the `$FF` fill.
+- The `.a78` header's ROM size (bytes 49-52) is set to the grown size.
+- A header whose cartridge type puts anything at `$4000`, or banks the image,
+  refuses to grow.
+- The toolkit's `docs/patchset-format.md`, "Growing the cartridge", has the
+  rules.
+
+**The VS bundle.** It has one option (`vs-split`): 476 sections covering
+16,880 bytes, one BPS spanning them (16,994 bytes), and anchors at `$A415`,
+`$B912`, `$D000` and `$F17C`. On the retail dump, `patchset.py apply`:
+
+- grows the body to 48K and sets the header to 49,152;
+- signs the result, which is **byte-identical to `--build --sign`**
+  (`8eb5dab8...`);
+- is recognised afterwards: `check` on the result says "applied", and a
+  second `apply` changes nothing;
+- gives the same body from a headerless dump.
+
+The self-test pins all of these on an invented cartridge ("patch sets that
+grow"). The bundle goes to `build/`, not `dist/`, because of the generated
+graphics (README).
+
+**A wrong turn in recognising a grown cartridge.** The patcher tries every
+layout the bundle can produce: the dump's 32K at `$8000`, and 48K at
+`$4000`. On a 48K file, the 32K layout also fits, at the file's last 32K
+(the offset `len(file) - body_size` it always tries for trailing bodies). The
+anchors all sit in `$8000`-`$FFFF`, so both layouts scored 4 of 4, and the
+first one won. The cartridge was then read as a 32K body with a 16K
+"header", which is wrong. Ties now go to the offset the bundle declares
+(0 or 128), then to the larger size.
+
+**The graphics hack and VS do not stack. This corrects two earlier claims.**
+Checkpoint 83 and the mirror-era test both said they touch disjoint bytes.
+Stacking the two bundles showed otherwise:
+
+- The hack's section `s_EDE3` (`$EDE3`-`$EDE7`, the car's palette `P6C1`/`P6C2`
+  as the stock injection loads it) lies inside VS's `s_ED9D` (265 bytes). That
+  is the injection VS reclaimed at `$EDA0`-`$F142`.
+- VS no longer runs that code. `RoadTail` and `MirrorPalette` set `P6C1`/`P6C2`
+  with their own `LDA #$2F`/`#$26`.
+
+So the combination is a real clash, not an artefact of the tool. A VS-aware
+redraw would change those two immediates to `$93`/`$0D` instead, and rederive
+the highlights from the new upright frame. It is not built.
+
+The first stacking attempt reported "not the cartridge" in both orders. That
+was the wrong error:
+
+- The hack's anchors `$B000` and `$F000` contained bytes VS changes (4 and 234).
+- A VS anchor lay on hack-changed bytes.
+
+Each generator now keeps its anchors off the other's bytes:
+
+- `splitscreen.py` avoids `graphics_hack.CAR_SPRITE_EDITS`.
+- `graphics_hack.py` avoids every retail byte the VS edits change, plus the
+  signature at `$FF80`-`$FFF7`. Its anchors moved to `$A415`, `$B912`,
+  `$D000` and `$F17C`.
+- `dist/pp2-graphics-hack.abp` was regenerated. Applied to the retail dump,
+  its output is unchanged.
+
+Now each bundle recognises the other's cartridge, and the refusal names the
+clashing bytes:
+
+    hires-car cannot apply: the bytes it covers (33 sections, s_8B13..s_EDE3)
+    hold neither what it expects nor what it would write. Something else has
+    changed them: s_EDE3 ($EDE3, 5 bytes).
+
+That message needed a toolkit change too. A span is judged as a whole, so the
+refusal used to list all 33 of the hack's sections. It now picks out the
+sections that no longer hold the dump's bytes. That is sound because an
+option refused this way is known not to be on the cartridge.
+
+The standalone reader (`Anchored-Bundle-of-Patches/abp.py`) refuses a `/3`
+bundle by name, as intended: "is 'patchset/3', not patchset/2".

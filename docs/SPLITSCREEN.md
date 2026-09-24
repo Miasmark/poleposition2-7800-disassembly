@@ -97,8 +97,9 @@ that runs every frame (60 Hz). The build adds to both.
   band's bottom half only (rare).
 - In player 1's view, player 2's car has highlights only at the nearest size;
   further ahead it looks like a gold rival.
-- With the separate higher-detail car hack (`patches/graphics_hack.py`), the
-  highlights are misaligned on the upright frame.
+- The separate higher-detail car hack (`patches/graphics_hack.py`) does not
+  stack with this build: its car-palette bytes `$EDE3`/`$EDE7` are in the
+  reclaimed injection (README).
 - Recordings replay against the unsigned build; a signed build (for
   hardware) plays them back differently (README).
 

@@ -218,6 +218,29 @@ def pick_anchors(rom, sections, n=4, size=256):
     return out
 
 
+def vs_split_ranges():
+    """The retail bytes the VS build (patches/splitscreen.py) changes, as
+    sections for pick_anchors to avoid: so this bundle still recognises a VS
+    cartridge, and a clash between the two is reported as the section it is
+    rather than as "not the cartridge". The signature bytes are included, as
+    any signed build rewrites them. Empty if the VS generator is not there."""
+    try:
+        sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+        import splitscreen as S
+    except ImportError:
+        return {}
+    _src, _hdr, rom = S.load_source()
+    p = S.Patcher(bytes(rom))
+    pristine = bytes(p.rom)
+    for fix in S.FIXES:
+        fix["fn"](p)
+    changed = {a for addr, data in p.writes for a in range(addr, addr + len(data))
+               if a >= BASE and pristine[a - S.OUT_BASE] != p.rom[a - S.OUT_BASE]}
+    changed.update(range(0xFF80, 0xFFF8))               # the signature
+    return {"vs_%04X" % at: {"addr": "0x%04X" % at, "length": n}
+            for at, n in _runs(changed, gap=4)}
+
+
 def build(out_path, sign=False):
     """Apply the fix directly. Unsigned by default -- see
     docs/FINDINGS.md, "the cartridge signature", for why that matters if
@@ -264,7 +287,7 @@ def build_bundle(out_path=None):
             "addr": "0x%04X" % at, "length": n,
             "crc32": "0x%08X" % patchset.crc32(bytes(rom[at - BASE:at - BASE + n])),
         }
-    anchors = pick_anchors(rom, sections)
+    anchors = pick_anchors(rom, dict(sections, **vs_split_ranges()))
 
     touched_ids = sorted(sections, key=lambda sid: int(sections[sid]["addr"], 16))
     before, after = bytearray(), bytearray()

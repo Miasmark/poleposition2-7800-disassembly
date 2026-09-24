@@ -15,7 +15,8 @@ Pole Position II VS: a two-player split-screen build from the retail cartridge.
 * Python 3 (built and tested with 3.10).
 * The a7800 toolkit's tools directory -- asm.py and m6502.py for every
   build, sign7800.py for --sign. Looked for at ../a7800-toolkit-local/tools
-  (tested at commit 59a55e9), or wherever PP2_TOOLKIT points.
+  (tested at commit 59a55e9; --bundle needs 2ad23b3 or later, for
+  bundles that grow the cartridge), or wherever PP2_TOOLKIT points.
 
 The build is deterministic: the same dump gives the same bytes, and the
 SHA-256 printed at the end can be compared with README.md's.
@@ -59,13 +60,23 @@ PP2_NO_OTHERCAR, PP2_NO_P2RIVAL, PP2_NO_P2SKY, PP2_FULL_E8AC, PP2_CARCAP,
 PP2_BURN, PP2_FORCE_LEAN and the layout overrides (PP2_SAMPLE, PP2_IDX8,
 PP2_HOOKAT, ...). Each is described where it is read.
 
-## Why not an .abp bundle any more
+## The .abp bundle
 
---bundle writes the toolkit's anchored-bundle format, which patches fixed
-extents of the source body and cannot grow it; the 48K build cannot be
-expressed as one, so --bundle refuses. The generated graphics are also
-derived from the dump, which is one more reason the build runs against the
-user's own copy rather than shipping bytes.
+--bundle writes the toolkit's anchored bundle (patchset/3): one option,
+vs-split, that grows the 32K body to 48K at the front (a linear 7800
+cartridge ends at $FFFF) and has the .a78 header's ROM size set to match.
+Applying it gives exactly the --build --sign image. Until toolkit commit
+2ad23b3 the format could only patch fixed extents, and --bundle refused.
+It goes to build/, not dist/: the bundle carries the generated graphics,
+which are derived from the dump's pixels, so building against the user's
+own copy stays the main route.
+
+It does not stack with the higher-detail car (graphics_hack.py). Two of that
+patch's bytes, $EDE3/$EDE7 (the car's palette), sit in the scanline
+injection this build reclaims, and RoadTail/MirrorPalette set the car
+palette here instead. Each bundle's anchors avoid the other's bytes, so
+patchset.py recognises either cartridge and names the clash rather than
+calling it another game.
 
 ## Signing this and testing against a recording are two different needs
 
@@ -7427,43 +7438,59 @@ def build(out_path, sign=False):
 
 
 def build_bundle(out_path=None):
-    """Write dist/pp2-splitscreen.abp: sections, the one option, its BPS."""
-    if OUT_SIZE != ROM_SIZE:
-        # A .abp section is a fixed extent of the source body, and the format
-        # has no way to grow the body (patchset-format.md, "Length changes"),
-        # so the 48K image -- code at $4000-$7FFF -- cannot be expressed as
-        # one. Refuse rather than write a bundle that would patch the wrong
-        # offsets. dist/pp2-splitscreen.abp predates this (commit d05d31f).
-        raise SystemExit("--bundle: the build is now a %dK cart and the .abp "
-                         "format cannot grow the %dK source; use --build"
-                         % (OUT_SIZE // 1024, ROM_SIZE // 1024))
+    """Write the .abp: one option, vs-split, that grows the cartridge to 48K.
+
+    The toolkit's patchset/3 lets an option grow the body ("grow": front, $FF,
+    to 49,152 bytes, as a linear 7800 cartridge grows toward $4000) and sets
+    the .a78 header's ROM size to match. Sections are CPU addresses in the
+    grown body, so the new space's pre-image is the fill. Anchors are retail
+    ground nothing touches. One patch spans every section.
+
+    Written to build/ by default, not dist/: the bundle carries the generated
+    graphics (sheared road slices, player 2's highlights, the VS), which are
+    derived from the retail dump's pixels -- see README, "Pole Position II
+    VS". Applying it signs the result (patchset.py always does).
+    """
     sys.path.insert(0, TOOLKIT_TOOLS)
     import patchset
     import bps
 
     src, header, rom = load_source()
     p = Patcher(bytes(rom))
+    pristine = bytes(p.rom)                      # the grown body before any edit
     for fix in FIXES:
         fix["fn"](p)
 
     touched = set()
     for addr, data in p.writes:
         touched.update(range(addr, addr + len(data)))
+    touched = {a for a in touched if pristine[a - OUT_BASE] != p.rom[a - OUT_BASE]}
 
     sections = {}
     for at, n in _runs(touched, gap=4):
         sections["s_%04X" % at] = {
             "addr": "0x%04X" % at, "length": n,
-            "crc32": "0x%08X" % patchset.crc32(bytes(rom[at - BASE:at - BASE + n])),
+            "crc32": "0x%08X" % patchset.crc32(pristine[at - OUT_BASE:at - OUT_BASE + n]),
         }
-    anchors = pick_anchors(rom, sections)
+    # Anchors avoid the higher-detail car's bytes too (patches/graphics_hack.py),
+    # so a cartridge carrying it is still recognised -- and a clash between
+    # the two is then reported as the section it is, not as "another game".
+    busy = {k: v for k, v in sections.items() if int(v["addr"], 16) >= BASE}
+    try:
+        sys.path.insert(0, HERE)
+        import graphics_hack
+        for a, _old, new in graphics_hack.CAR_SPRITE_EDITS:
+            busy["hack_%04X" % a] = {"addr": "0x%04X" % a, "length": len(new)}
+    except ImportError:
+        pass
+    anchors = pick_anchors(rom, busy)
 
-    touched_ids = sorted(sections, key=lambda sid: int(sections[sid]["addr"], 16))
+    ids = sorted(sections, key=lambda sid: int(sections[sid]["addr"], 16))
     before, after = bytearray(), bytearray()
-    for sid in touched_ids:
+    for sid in ids:
         at, n = int(sections[sid]["addr"], 16), sections[sid]["length"]
-        before += rom[at - BASE:at - BASE + n]
-        after += p.rom[at - BASE:at - BASE + n]
+        before += pristine[at - OUT_BASE:at - OUT_BASE + n]
+        after += p.rom[at - OUT_BASE:at - OUT_BASE + n]
 
     member = "p/vs-split.bps"
     files = {member: bps.create(bytes(before), bytes(after))}
@@ -7471,15 +7498,16 @@ def build_bundle(out_path=None):
         "id": "vs-split",
         "title": FIXES[0]["title"],
         "note": FIXES[0]["note"],
-        "patches": [{"sections": touched_ids, "bps": member,
+        "grow": {"size": OUT_SIZE, "at": "front", "fill": "0xFF"},
+        "patches": [{"sections": ids, "bps": member,
                      "before": "0x%08X" % patchset.crc32(bytes(before))}],
     }
-
     manifest = {
-        "format": patchset.FORMAT,
+        "format": patchset.FORMAT_GROW,
         "name": "Pole Position II VS (two-player split screen)",
-        "what": "Two-player split screen (unused: the 48K build cannot be "
-                "expressed as a bundle; see the docstring).",
+        "what": "Two players at once: player 2's view on top, the HUD as a "
+                "divider, player 1's view below. Grows the cartridge from 32K "
+                "to 48K.",
         "target": {
             "what": os.path.basename(src),
             "body_size": len(rom),
@@ -7492,17 +7520,15 @@ def build_bundle(out_path=None):
         "sections": sections,
         "options": [option],
     }
-    out_path = out_path or os.path.join(DISTDIR, "pp2-splitscreen.abp")
-    if not os.path.isdir(DISTDIR):
-        os.makedirs(DISTDIR)
+    out_path = out_path or os.path.join(ROOT, "build", "pp2-vs.abp")
+    if not os.path.isdir(os.path.dirname(out_path)):
+        os.makedirs(os.path.dirname(out_path))
     patchset.write_bundle(out_path, manifest, files)
     print(out_path)
-    print("  1 option, %d sections, %d bytes covered"
-          % (len(sections), sum(s["length"] for s in sections.values())))
-    print("  %d bps file(s), %d bytes"
-          % (len(files), sum(len(v) for v in files.values())))
+    print("  1 option, %d sections, %d bytes covered, grows 32K -> 48K"
+          % (len(sections), sum(v["length"] for v in sections.values())))
+    print("  %d bytes of BPS" % len(files[member]))
     print("")
-    print("  python ../a7800-toolkit-local/tools/patchset.py list %s" % out_path)
     print("  python ../a7800-toolkit-local/tools/patchset.py apply %s "
           "--rom \"%s\" --with vs-split --out pp2-vs.a78" % (out_path, ROM_NAME))
     return 0
@@ -7521,7 +7547,8 @@ def main():
                          "build you intend to test against an existing .inp "
                          "recording -- see the docstring's note on why")
     ap.add_argument("--bundle", nargs="?", const="", metavar="OUT",
-                    help="write the .abp (default: dist/pp2-splitscreen.abp)")
+                    help="write the .abp (default: build/pp2-vs.abp); needs the "
+                         "toolkit's patchset/3 (a body that grows)")
     ap.add_argument("-o", "--out", help="output path for --build")
     args = ap.parse_args()
 

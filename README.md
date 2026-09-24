@@ -110,7 +110,8 @@ You need:
 3. **The a7800 toolkit's `tools` directory**: `asm.py` and `m6502.py` for
    every build, `sign7800.py` to sign. It is looked for at
    `../a7800-toolkit-local/tools` (built and verified with that checkout at
-   commit `59a55e9`); set `PP2_TOOLKIT` to use another.
+   commit `59a55e9`; the `.abp` bundle below needs `2ad23b3` or later); set
+   `PP2_TOOLKIT` to use another.
 
 Then, from this directory:
 
@@ -145,10 +146,22 @@ in the generator's docstring.
 leave out one feature each; `PP2_P2PAL=n` recolours player 2's car. They and
 the test hooks are listed in the generator's docstring.
 
-**Why no `.abp` bundle.** The toolkit's anchored-bundle format patches fixed
-extents of the source and cannot grow a 32K image into 48K, so `--bundle`
-refuses; the mirror-era bundle that used to sit in `dist/` has been removed
-as out of date.
+**As an `.abp` bundle.** The same build can be written as the toolkit's
+anchored bundle, which grows the 32K dump to 48K and sets the `.a78`
+header's ROM size to match (`patchset/3`, see the toolkit's
+`docs/patchset-format.md`):
+
+```
+python patches/splitscreen.py --bundle                        # writes build/pp2-vs.abp
+python ../a7800-toolkit-local/tools/patchset.py apply build/pp2-vs.abp     --rom "Pole Position II (NTSC) (Atari) (1987) (A85FB962).a78"     --with vs-split --out pp2-vs.a78
+```
+
+`patchset.py apply` always signs, and its result is byte-identical to
+`--build --sign` (the signed hash above). `patchset.py check` on a VS
+cartridge reports it as applied, and applying again changes nothing. The
+bundle is written to `build/`, not `dist/`. It is 17K of BPS, most of it
+the generated graphics, which are derived from the retail pixels. So
+building from your own dump stays the main route.
 
 ### Checking a build
 
@@ -172,8 +185,13 @@ published on the AtariAge forums on 2014-04-12. All credit for the artwork
 is theirs -- this only locates exactly which bytes their release changed
 (two sprite objects, confirmed live against the display list, not guessed
 from the diff) so the redraw can be applied on its own to the retail 32K
-cartridge, always with their names attached. It is not part of the VS build
-(the two touch disjoint bytes, but see the note on the highlights below).
+cartridge, always with their names attached. It is not part of the VS build,
+and **does not stack with it**: two of its bytes (`$EDE3`/`$EDE7`, the car's
+palette) sit in the old scanline injection that the VS build has reclaimed
+for its own code, and VS sets the car palette elsewhere. The two bundles
+recognise each other's cartridges and `patchset.py` refuses the combination,
+naming those bytes. A VS-aware version of the redraw is possible, but it
+does not exist yet.
 
 ```
 python ../a7800-toolkit-local/tools/patchset.py apply dist/pp2-graphics-hack.abp \
@@ -187,10 +205,9 @@ In the split-screen build, player 2's car carries blue and white highlights
 over its top section, in both views, so it cannot be mistaken for a gold
 rival. The look follows a mock-up by **Defender_2600** on AtariAge; the pixels
 are generated from the stock car by `p2_overlay_art()` in
-`patches/splitscreen.py`. The highlights are derived from the *stock* car, so
-combining the split-screen build with the higher-detail car above misaligns
-them on the upright frame (the two patches still touch disjoint bytes).
-`PP2_NO_OVL=1` builds without them.
+`patches/splitscreen.py`. The highlights are derived from the *stock* car
+and would need redrawing for the higher-detail car above, which does not
+currently stack with the VS build anyway. `PP2_NO_OVL=1` builds without them.
 
 ## Recording a session
 
