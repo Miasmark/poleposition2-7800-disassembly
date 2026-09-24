@@ -6620,3 +6620,10 @@ letters decode from the message itself (Q = `$A4`, R = `$A5`, Y = `$AA`).
 
 Checked: all three cases on screen; the banner at `$07` and the HUD in the
 race are back afterwards.
+
+*Wrong turn, reported in play:* the race banner and the start lights showed
+only their top halves after checkpoint 78. The race's set-up (`$07`) points
+the divider's middle row at the banner's lower half before QMsg sees the
+state change, and QMsg then put its saved blank back over it. It now restores
+the row only while the row still points at its own line. Checked against the
+build before (whole) and Q1 (top halves): Q2 shows both whole.

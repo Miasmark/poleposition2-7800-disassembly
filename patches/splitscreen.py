@@ -4390,12 +4390,22 @@ def vbl_src():
         "    CMP #$0E", "    BEQ QmOn",
         "    LDA $%04X" % QM_ON,
         "    BEQ QmRet",
+        # Only if the row is still ours: the race's set-up ($07) points it at
+        # the banner's lower half before this sees the state change, and
+        # putting the saved blank back cut the banner and the start lights
+        # in half.
+        "    LDA #$00", "    STA $%04X" % QM_ON,
+        "    LDA $%04X" % (DIVIDER_ADDR + 5),
+        "    CMP #$%02X" % (QM_DL & 0xFF),
+        "    BNE QmRet",
+        "    LDA $%04X" % (DIVIDER_ADDR + 4),
+        "    CMP #$%02X" % (QM_DL >> 8),
+        "    BNE QmRet",
         "    LDX #$02",
         "QmRest:",
         "    LDA $%04X,X" % QM_SAVE, "    STA $%04X,X" % (DIVIDER_ADDR + 3),
         "    DEX",
         "    BPL QmRest",
-        "    LDA #$00", "    STA $%04X" % QM_ON,
         "QmRet:",
         "    RTS",
         "QmOn:",
