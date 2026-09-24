@@ -1,3 +1,8 @@
+-- probe-tally-both.lua -- an ADD-ON, not a standalone probe: spliced into
+-- the scripted-race probe (after its `local lastst=-1`), it uses that
+-- probe's `mem`, `f`, `o` and `M`. Logs each tally/game-over state entry
+-- (TS lines: $AC/$AB, player 2's pending seconds $202D and cars $273A,
+-- both scores) and snapshots 40 frames into $0F/$08.
 local tlast=-1; local tsn=0; local tent=0
 local function bcd3(a) return string.format("%02X%02X%02X",mem:read_u8(a),mem:read_u8(a+1),mem:read_u8(a+2)) end
 emu.register_frame_done(function() local st=mem:read_u8(0x9D)
