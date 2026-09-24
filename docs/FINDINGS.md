@@ -6198,3 +6198,98 @@ Health identical to checkpoint 70 on four recordings (run-02: 7 single-frame
 **Seen, for cleanup:** while player 1 sits out, 1UP shows its frozen clock,
 and its view shows its car standing on the grid. One car-tally point (50)
 was credited to player 1 at the end of a race it sat out.
+
+## Two-player racing back at full speed: the vblank wait, split
+
+Checkpoint 72. Race-tick rate in a racing window (f7000-7600, both cars at
+240, traffic):
+
+    stock 100 ticks / 600 frames    checkpoint 71: 53    now: 100
+
+### Where the time went
+
+A sampling profile (`tools/probe-race-profile.lua`, taps on the DLL reads)
+put 28% of the two-player race's visible-frame samples in `sub_DB8E`, the
+vblank spin, at SP `$F1-$F5`: interrupt code. Stock had about 1% there.
+Tapped by caller and beam line (`tools/probe-race-spin.lua`), all of it was
+DLI idx11's tail waiting at rom:F160:
+- **stock** spins from line ~248: its 97-`WSYNC` road injection fills the
+  lines before;
+- **this build** spins from line ~176: RoadTail bypasses the injection and
+  jumps straight to rom:F143, so the handler reached the wait about 70 lines
+  early and held the main loop for about a quarter of every frame.
+
+The spin was not new cost; the injection used to spend those lines. But it
+is reclaimable time, and the main loop was missing its six-frame slot
+(rom:EA28) for lack of it.
+
+### The split
+
+- `VbSplit` at rom:F160: clears `$9C` (DLIs allowed again), sets `$FF` = 12,
+  returns from the interrupt.
+- DLI index 12, `VbTail`, on the first bottom-margin zone (DLL line 232):
+  releases `$E5` (moved there from rom:F150, `STA` -> `BIT`), stages
+  MirrorStage's inputs, and goes on into the stock tail at rom:F163.
+- The NMI's handler tables are relocated to the code area (`DliLo`/`DliHi`,
+  rom:EBFC and rom:EC01 retargeted) to carry the 13th entry.
+- **No wait for vblank in VbTail.** The tail's real deadlines are only "after
+  the view it writes": player 1's road (ends line 217), player 2's (ends 104),
+  and `sub_DC4F`'s decor list (zone 19, lines 135-144, rewritten every other
+  frame; that is why the tail alternates in length).
+- **MirrorStage's inputs are staged.** The main loop now runs between lines
+  176 and 232 too, so VbTail can fire mid-P2Tick. MirrorStage read the curve
+  (rom:E93D's `RowCurveOffset`) and player 2's `P2_BANDX` live. Stock never
+  met this: the spin kept the main loop out until MirrorStage had run. P2Tick
+  now raises `TICK_BUSY` while it writes. VbTail copies the 13 sampled rows
+  and `P2_BANDX` into `$1C38-$1C52` when it is clear; mid-tick, the last
+  complete values stand. `$1C38-$1C55` was `RowCurveOffsetAlt`'s tail, written
+  only by the walk tail this build strips (rom:E9BE) and read only by
+  rom:EA38's copy into zero page, which nothing reads. A write tap over a
+  whole two-player race saw no writes after boot.
+
+### Wrong turns
+
+- **V1: no road at all.** VbTail called `sub_DC4F` itself, as stock's tail
+  does, but this build retargets that `JSR` (rom:F16B) to MirrorStage, which
+  draws the road for both views. The palettes and DLI chain were fine; the
+  chain trace (idx 7-12 every frame) ruled them out. VbTail now jumps into the
+  stock tail rather than copying it.
+- **V2: a torn player 2 view** about one frame in 24 (bands broken into
+  slabs). The first guess was the timing of the object rebuild; the 12/40-line
+  alternation of player 2's staging writes turned out to be the same in
+  checkpoint 71, so it was not new.
+- **V4 moved the six-frame counter** (`$B8`, rom:F145) into VbTail so the
+  stock curve copy (rom:EA2C) could not straddle it. That halved the overlaps
+  (37 -> 17 of 2,000), but `$B8` stays 0 for a whole frame, so a late copy
+  still met VbTail. V5 gated the copy with a "late" flag instead. Then it
+  emerged that the copy moves nothing live any more (the strip stopped its
+  source being written), and the real race was P2Tick's own output. V6 gated
+  P2Tick's start: no better, because it starts before 176 and runs past 232,
+  and the waits cost 26 ticks. Both gates were removed for the staging above.
+- **V3-V8: `ObjWait`**, a vblank requirement added at rom:E709 (the rebuild's
+  `$E5` wait). It livelocked qualifying on 0923-0205 from f4656: the tail
+  ends after vblank, the next frame's first DLI sets `$E5` again, and the
+  main loop never saw both conditions at once. Removed; `$E5` alone gives
+  checkpoint 71's rebuild timing. V8 still locked with VbTail waiting for
+  vblank: the tail, now a little longer, always ran past idx7 (line 16),
+  which re-set `$E5` before the main loop resumed. Checkpoint 71 got through
+  on every other frame only because its tail alternated between ending at
+  line 12 and line 40. Dropping the wait (V9) fixed it: the rebuild now runs
+  on every tick (102 rebuilds in 600 frames, against 53).
+
+### Checked
+
+- tick rate 100/600 (stock 100, checkpoint 71 53); rebuild every tick;
+- no tearing in 24-frame bursts at qualifying, the race start and two race
+  points, including a crash and the start line under player 1;
+- state flow on all four recordings. They drift (the game now runs at a
+  different speed from the recordings) but play through qualifying, races,
+  game over and the attract demo, with health the same shape as checkpoint 71;
+  0923-0205, which locked on V3-V8, now plays through;
+- integrity 0 on four recordings;
+- scripted flows: player 1 out of time with player 2 finishing, and player 2
+  racing alone, unchanged.
+
+Still on the table for speed: `sub_E8AC` stages all 78 rows of
+`RowCurveYStaged` in the interrupt (~8% of samples) where this build reads a
+few, and the stock object pass (rom:CE40, 8.5%).

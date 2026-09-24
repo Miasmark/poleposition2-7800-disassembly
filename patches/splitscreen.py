@@ -679,6 +679,14 @@ P2_LAPN = 0x2733             # laps completed, as $A7 (the race is $C3 + 1)
 P2_RST = 0x2734              # 0 racing, 1 finished, 2 out of time
 P2_RACE = 0x2735             # nonzero: player 2 is in this race
 P1_OUT = 0x2736              # nonzero: player 1 did not qualify and sits the race out
+TICK_BUSY = 0x2737           # nonzero while P2Tick writes the curve and player 2's bands
+# MirrorStage's inputs, as last completed by P2Tick (VbTail copies them when
+# P2Tick is not mid-write). $1C38-$1C55 was RowCurveOffsetAlt's tail, written
+# only by the walk tail this build strips (rom:E9BE) and read only by
+# rom:EA38's copy into zero page, which nothing reads: never written after boot
+# (a write tap over a whole 2-player race).
+STG_ROFF = 0x1C38            # 13: RowCurveOffset at each band's sample row
+STG_BANDX = 0x1C45           # 13: P2_BANDX
 HUD_BUF1 = 0x27C2            # the 1UP line, 31 characters
 HUD_BUF2 = 0x27E1            # the 2UP line, 31 characters, to $27FF
 HUD_X = 0x12                 # both lines' x: (160 - 31*4) / 2
@@ -1186,7 +1194,7 @@ def road_stage_src():
             # for the 13 rows anything actually reads, lets the whole tail of
             # its walk be stripped.
             lines += ["    LDA $%04X" % (ROW_CURVE_Y + i), "    STA $%04X" % (band + 1),
-                      "    LDA $%04X" % (ROW_CURVE_OFFSET + i),
+                      "    LDA $%04X" % (STG_ROFF + b),   # RowCurveOffset[i], staged
                       "    CLC",
                       "    ADC #$%02X" % band_base(i),
                       "    STA $%04X" % (band + 3)]
@@ -1213,7 +1221,7 @@ def road_stage_src():
             n = i - NEAR_FIRST_ROW
             lines += ["    LDA $%04X" % (NEAR_SLOT1_W + n), "    STA $%04X" % (band + 5),
                       "    AND #$E0", "    ORA #$10", "    STA $%04X" % (band + 1),
-                      "    LDA $%04X" % (ROW_CURVE_OFFSET + i),
+                      "    LDA $%04X" % (STG_ROFF + b),   # RowCurveOffset[i], staged
                       "    CLC", "    ADC #$%02X" % band_base(i),
                       "    STA $%04X" % (band + 7)]
             lines += wrap_guard()
@@ -1324,6 +1332,7 @@ def _check_p2_ram():
         ("P2_HUD", P2_HUD_DL, 12),
         ("P2_QUAL", P2_QST, 6),
         ("P2_RACE", P2_CLOCK, 7),
+        ("TICK_BUSY", TICK_BUSY, 1),
         ("HUD_BUFS", HUD_BUF1, 62),
     ]
     regions.sort(key=lambda r: r[1])
@@ -1541,6 +1550,10 @@ def p2_tick_src():
     """
     return [
         "P2Tick:",
+        # busy while the curve (rom:E93D's RowCurveOffset) and player 2's
+        # bands are being written: VbTail stages them for MirrorStage only
+        # when they are whole (see vbl_src)
+        "    LDA #$01", "    STA $%04X" % TICK_BUSY,
         "    JSR $E93D",                       # player 1's own walk, as before
         # Player 2's drive runs here now too, straight after player 1's has run
         # this cycle, so nothing moves player 2's track position behind the
@@ -1552,7 +1565,9 @@ def p2_tick_src():
         # never start on the wrong half.
         "    LDA #$00", "    STA $%04X" % P2_HALF,
         "    JSR P2Geom",
-        "    JMP P2Geom",
+        "    JSR P2Geom",
+        "    LDA #$00", "    STA $%04X" % TICK_BUSY,
+        "    RTS",
         "P2ObjCommit:",
         "    LDX #$0B",
         "P2OcClear:",
@@ -4141,9 +4156,58 @@ def _ext():
         lines = ([".org $%04X" % EXT_ADDR] + fast_zrow_src() + rival_car_src()
                  + ["P2Emit:"] + p2_emit_src() + ["    RTS"] + p2_slot_tables()
                  + car_world_src() + p2_hazard_src() + hud_src() + audio_src()
-                 + qual_src())
+                 + qual_src() + vbl_src())
         _EXT.append(_assemble(lines))
     return _EXT[0]
+
+
+def vbl_src():
+    """The vblank wait, split (see the checkpoint 72 notes): VbSplit ends DLI
+    idx11 at rom:F160 instead of spinning; VbTail, DLI index 12 on the bottom
+    margin, releases $E5, stages MirrorStage's inputs and goes on into the
+    stock tail at rom:F163 -- whose `JSR sub_DC4F` this build retargets to
+    MirrorStage, so it must be that tail and not a copy of it. The DLI handler tables move here to hold the 13th entry."""
+    stock_lo = [0x56, 0x10, 0x57, 0x76, 0x87, 0x9E, 0x8C, 0xA1, 0x2B, 0x30, 0x4A, 0x4F]
+    stock_hi = [0x24, 0xEC, 0xEC, 0xEC, 0xEC, 0xEC, 0xEC, 0xEC, 0xED, 0xED, 0xED, 0xED]
+    return [
+        "VbSplit:",
+        "    LDA #$00", "    STA $009C",
+        "    LDA #$0C", "    STA $00FF",
+        "    JMP $EC09",
+        # No wait for vblank here. Stock waited because its tail ran after the
+        # road was drawn; the tail's own deadlines are only "after the view it
+        # writes": player 1's road (ends line 217, this DLI fires at 232),
+        # player 2's (ends 104), and sub_DC4F's decor list (zone 19, 135-144,
+        # every other frame). Waiting pushed the tail -- MirrorStage runs long
+        # -- past the next frame's first DLI, which sets $E5 again: the main
+        # loop then never saw $E5 clear and qualifying locked up (seen on
+        # 0923-0205 from f4656).
+        "VbTail:",
+        "    LDA #$00",
+        "    STA $00E5",
+        # MirrorStage's inputs, staged. The main loop now runs from line ~176
+        # to here too, so it can be in the middle of P2Tick -- the curve or
+        # player 2's bands half written -- when this fires; read live, that
+        # tore player 2's view (seen: bands broken into slabs). Stock never
+        # met it: the spin held the main loop until MirrorStage had run. Mid
+        # P2Tick, the last complete values stand for the frame.
+        "    LDA $%04X" % TICK_BUSY,
+        "    BNE VtStale",
+    ] + sum((["    LDA $%04X" % (ROW_CURVE_OFFSET + r), "    STA $%04X" % (STG_ROFF + b)]
+             for b, r in enumerate([6 * b + BAND_SAMPLE for b in range(13)])), []) + [
+        "    LDX #$0C",
+        "VtBx:",
+        "    LDA $%04X,X" % P2_BANDX, "    STA $%04X,X" % STG_BANDX,
+        "    DEX",
+        "    BPL VtBx",
+        "VtStale:",
+        "    JMP $F163",                       # the stock tail, hooks and all
+                                               #   (rom:F16B calls MirrorStage)
+        "DliLo:",
+        "    .byte " + ",".join("$%02X" % b for b in stock_lo) + ",<VbTail",
+        "DliHi:",
+        "    .byte " + ",".join("$%02X" % b for b in stock_hi) + ",>VbTail",
+    ]
 
 
 def rival_car_tables():
@@ -4970,7 +5034,7 @@ def p2_stage_src():
                 "    LDA $%04X,Y" % STRIPE_TEX]
 
     def band_x():
-        out = ["    LDA $%04X,X" % (P2_BANDX + 1),
+        out = ["    LDA $%04X,X" % (STG_BANDX + 1),   # P2_BANDX, staged
                "    CLC", "    ADC $%04X" % (S + 6)]
         if P2_X_OFFSET:
             out += ["    CLC", "    ADC #$%02X" % (P2_X_OFFSET & 0xFF)]
@@ -5101,7 +5165,7 @@ def dll_template():
     # six lines of its farthest band in the bargain.
     for lines, dl, _mini in plan:
         z.append([(lines - 1), dl >> 8, dl & 0xFF])
-    z.append([0x0F, 0x24, 0xF6])                      # bottom margin
+    z.append([0x8F, 0x24, 0xF6])                      # bottom margin, DLI idx12
     z.append([0x0F, 0x24, 0xF6])
     total = sum((e[0] & 0x0F) + 1 for e in z)
     tl, bl = sum(p[0] for p in top), sum(p[0] for p in plan)
@@ -5335,6 +5399,14 @@ def fix_mirror_split(p):
           expect=[0xA5, 0xDE, 0xD0, 0xE2])
     p.put(0xD70A, [0x20, _xs["P1Coll"] & 0xFF, _xs["P1Coll"] >> 8],
           expect=[0x20, 0x66, 0xC8])
+    # the vblank wait split in two (vbl_src): the NMI's handler tables moved
+    # (rom:EBFC, rom:EC01), $E5 not released at rom:F150 (`STA` -> `BIT`,
+    # same size and cycles), and rom:F160's spin replaced by VbSplit
+    p.put(0xEBFD, [_xs["DliLo"] & 0xFF, _xs["DliLo"] >> 8], expect=[0x8A, 0xA4])
+    p.put(0xEC02, [_xs["DliHi"] & 0xFF, _xs["DliHi"] >> 8], expect=[0x96, 0xA4])
+    p.put(0xF150, [0x24, 0xE5], expect=[0x85, 0xE5])
+    p.put(0xF160, [0x4C, _xs["VbSplit"] & 0xFF, _xs["VbSplit"] >> 8],
+          expect=[0x20, 0x8E, 0xDB])
     p.put(0xE617, [0x20, _xs["CrTimerX"] & 0xFF, _xs["CrTimerX"] >> 8, 0xEA],
           expect=[0xA6, 0xD4, 0xE0, 0x14])
     p.put(0xC87E, [0x20, _xs["ColZHi"] & 0xFF, _xs["ColZHi"] >> 8],

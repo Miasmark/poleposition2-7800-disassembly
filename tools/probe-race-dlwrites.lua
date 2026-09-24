@@ -31,11 +31,10 @@ TAPS[3]=mem:install_read_tap(P2C,P2C,"c",function(a,v) if cpu.state["PC"].value=
 TAPS[4]=mem:install_read_tap(P2P,P2P,"d",function(a,v) if cpu.state["PC"].value==P2P then ev("P2PUDDLE",mem:read_u8(0x27BC)) end return v end)
 local function hx(a,n) local t={} for i=0,n-1 do t[#t+1]=string.format("%02X",mem:read_u8(a+i)) end return table.concat(t) end
 local lastst=-1
-local CA,CB=tonumber(os.getenv("CA") or "0"),tonumber(os.getenv("CB") or "0")
-CNT={} local ki=30
-local function ctap(addr,name) ki=ki+1; CNT[name]=0; TAPS[ki]=mem:install_read_tap(addr,addr,"k"..name,function(a,v) if cpu.state["PC"].value==addr and f>=CA and f<CB then CNT[name]=CNT[name]+1; if CNT[name]<=6 then local sp=cpu.state["SP"].value; o:write(string.format("K f%d %s ret=%04X",f,name,mem:read_u8(0x100+((sp+1)&0xFF))+256*mem:read_u8(0x100+((sp+2)&0xFF)))..string.char(10)) end end return v end) end
-ctap(0xC705,"C705"); ctap(0xCC23,"CC23"); ctap(0xE70D,"rebuild"); 
-emu.register_frame_done(function() if f==CB then local t={} for k,v in pairs(CNT) do t[#t+1]=k.."="..v end o:write("COUNT "..table.concat(t," ")..string.char(10)) end end)
+local TA,TB=tonumber(os.getenv("TA")),tonumber(os.getenv("TB")); local tt0=0; local TFP=1/59.92
+local to=io.open(os.getenv("TEAR_OUT"),"w"); local last=""
+TAPS[60]=mem:install_write_tap(0x2600,0x26FB,"p2dl",function(a,d) if f>=TA and f<TB then local line=math.floor((M.time:as_double()-tt0)/TFP*263); local pc=cpu.state["PC"].value; local k=string.format("f%d line=%d pc=%04X",f,line//4*4,pc); if k~=last then to:write(k..string.format(" a=%04X",a)..string.char(10)); last=k end end end)
+emu.register_frame_done(function() tt0=M.time:as_double(); if f==TB then to:close() end end)
 emu.register_frame_done(function()
   f=f+1
   local stq=mem:read_u8(0x9D)

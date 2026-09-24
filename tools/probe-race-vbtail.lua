@@ -31,11 +31,10 @@ TAPS[3]=mem:install_read_tap(P2C,P2C,"c",function(a,v) if cpu.state["PC"].value=
 TAPS[4]=mem:install_read_tap(P2P,P2P,"d",function(a,v) if cpu.state["PC"].value==P2P then ev("P2PUDDLE",mem:read_u8(0x27BC)) end return v end)
 local function hx(a,n) local t={} for i=0,n-1 do t[#t+1]=string.format("%02X",mem:read_u8(a+i)) end return table.concat(t) end
 local lastst=-1
-local CA,CB=tonumber(os.getenv("CA") or "0"),tonumber(os.getenv("CB") or "0")
-CNT={} local ki=30
-local function ctap(addr,name) ki=ki+1; CNT[name]=0; TAPS[ki]=mem:install_read_tap(addr,addr,"k"..name,function(a,v) if cpu.state["PC"].value==addr and f>=CA and f<CB then CNT[name]=CNT[name]+1; if CNT[name]<=6 then local sp=cpu.state["SP"].value; o:write(string.format("K f%d %s ret=%04X",f,name,mem:read_u8(0x100+((sp+1)&0xFF))+256*mem:read_u8(0x100+((sp+2)&0xFF)))..string.char(10)) end end return v end) end
-ctap(0xC705,"C705"); ctap(0xCC23,"CC23"); ctap(0xE70D,"rebuild"); 
-emu.register_frame_done(function() if f==CB then local t={} for k,v in pairs(CNT) do t[#t+1]=k.."="..v end o:write("COUNT "..table.concat(t," ")..string.char(10)) end end)
+local VA,VB=tonumber(os.getenv("VA")),tonumber(os.getenv("VB")); local VT=tonumber(os.getenv("VBT"),16)
+local VH={}; local vn=0
+TAPS[70]=mem:install_read_tap(VT,VT,"vbt",function(a,d) if f>=VA and f<VB then local sp=cpu.state["SP"].value; local pc=mem:read_u8(0x100+((sp+5)&0xFF))+256*mem:read_u8(0x100+((sp+6)&0xFF)); vn=vn+1; local k=string.format("%04X",pc); VH[k]=(VH[k] or 0)+1 end return d end)
+emu.register_frame_done(function() if f==VB then local o3=io.open(os.getenv("VB_OUT"),"w"); o3:write("total "..vn..string.char(10)); for k,c in pairs(VH) do o3:write(k.." "..c..string.char(10)) end o3:close() end end)
 emu.register_frame_done(function()
   f=f+1
   local stq=mem:read_u8(0x9D)
