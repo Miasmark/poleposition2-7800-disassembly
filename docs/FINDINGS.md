@@ -7825,3 +7825,466 @@ is what matters for this game.
 
 Measured with the toolkit's `probes/handover.lua`, which records the frame,
 registers and RAM at the first instruction of rom:D205.
+
+## BankSet 2x48K, stage 1: the same game on a BankSet cartridge
+
+Asked for: a 2 x 48K BankSet cartridge, for room (the 48K build is full:
+SPLITSCREEN "What is left in the budget"), then better curve smoothing with
+it.
+
+**The plan.** A flat BankSet cartridge is two 48K images at `$4000-$FFFF`.
+The CPU runs the first; MARIA, during her DMA, reads the second at the same
+addresses. Stage 1 makes MARIA's half a copy of the CPU's, so nothing can
+change. Stage 2 then frees each half's room: in the CPU's, the graphics only
+MARIA reads; in MARIA's, the code. Stage 3 spends it on the curves.
+
+**`PP2_BANKSET=1`** (`patches/splitscreen.py`, `maria_half`,
+`bankset_header`):
+- The image is the 48K build followed by `maria_half()`, for now a copy.
+- The header is version 3, type `$2000`, size 98,304. The retail header is
+  version 4, with zero mapper fields ("linear, no bankset"). A version-4
+  reader would then ignore the bankset bit, so the version goes back to 3,
+  as Karateka's BankSet carts have it (they run on the openFPGA core and in
+  MAME).
+- `--sign` signs the CPU's half before the copy.
+
+**Display lists in the cartridge.** The spec, a7800 and MAME's Atari fork
+refuse them on a BankSet cart. `probes`-style, a tap on DPPH/DPPL and a walk
+of the zones every frame, over two checkpoint-90 recordings (attract,
+qualifying, race, game over):
+- `$7FE0`, `$7FEC`, `$7FF8`: the divider's three rows, the whole race.
+- `$5901`: `QmSplit`, the divider's middle row from game over on.
+- Frames 210-212 only: zones pointing into `$7275-$FFFF`. That's the game's
+  zone list half-built at boot (stock behaviour). The fork refuses its
+  first entry (`$8081`, or `$ABAC` under Atari's BIOS) once, with a warning.
+
+**Moved to console RAM** (both builds):
+- the two text rows' lists to `$1B36-$1B4D`;
+- `QmSplit` to `$1BD8-$1BE3`;
+- the third row to the stock blank list at `$24F6`.
+- `DivListInit` copies them once, from `MirrorInit`; the ROM lists stay as
+  the templates.
+- Checked first: a write tap on both pieces over a whole recording. Only
+  the BIOS (`$F908`, `$FB69`, and its copy in RAM at `$2657`) and the
+  boot's clear (`$F1A0`, frame 210) write them. The generator's `FREE_RAM`
+  said the same, from coverage after frame 600. Claimed out of it;
+  `$1BE4-$1BE9` stays free.
+
+**Checked:**
+- The 48K build with the lists moved, against checkpoint 90
+  (`tools/check-build.sh`, stock MAME 0.287; the baseline from checkpoint
+  90's own generator, a worktree at `../pp2-ck90`):
+  - every verdict identical: health on four recordings (the same game frame
+    by frame), integrity 0 on four, `ZRowUp` 0 differences (18,016 and
+    13,769 searches, as before), no wild fetch;
+  - tick rates 100 100 102 100 100 100 against 100 x 6: one start's phase.
+- The BankSet cart against that build on MAME's Atari fork (`atari-0.289`,
+  `5738bfa`), two recordings each:
+  - Run as `-bios skip -playback_force -playback_offset 209`. The fork
+    emulates 2600 mode: an unsigned build fails the BIOS's check, the BIOS
+    starts its 2600 bootstrap, and the fork follows it.
+  - Every race picture is identical (412 and 184 pictures).
+  - The title logo differs in 25 and 10 pictures, and one attract palette
+    change: the same colours, at another step of the logo's colour cycle.
+    The boot sets that phase, and the fork's refusal of the half-built list
+    in frames 210-212 shortens MARIA's DMA there. Real hardware doesn't
+    refuse it.
+- The signed BankSet cart boots through Atari's BIOS on the fork, in 7800
+  mode, to the title.
+- Not yet on the openFPGA core.
+
+**Player 2's start/finish line** (the user: "in the skybox area... does not
+setup in the correct spot until the race starts"), investigated, not
+reproduced yet:
+- Player 2's road never gets the start line. `E8Lite` ORs palette 7
+  (`$E0`) into player 1's stripe rows between `$E6` and `$E7`. Player 2's
+  bands take their stripe byte from player 2's own phase only
+  (`p2_stage_src`'s `stripe()`), with no line rows. A list dump at frame 380
+  of the qualifying start shows palettes 0 and 1 on every one of player 2's
+  road headers.
+- Player 2's sky lists at that frame are the same as player 1's (horizon
+  `$B04A`; decor `$B0ED`, `$B02C`, `$B03B`, `$B02C`).
+- No wide white band shows in player 2's sky in the four checkpoint-90
+  recordings (snapshots every 10 frames). The hits were the title's
+  blinking track names and the divider's banner.
+
+## Player 2's horizon: white at the dunes' foot
+
+**Seen on the Analogue Pocket** (the user's screenshot, the dunes track,
+"PREPARE TO QUALIFY"):
+- In player 2's view, a thin white line at the foot of the dunes, from about
+  the middle of the screen to the right edge.
+- The user took it for the start line, "not set up in the correct spot until
+  the race starts". MAME doesn't show it: `run-03` (its first race is the
+  dunes) on checkpoint 90, stock MAME 0.287, every 30 frames.
+
+**What it is.**
+- `P2SkyEnd` (DLI index 13, on zone 4, the decor's last two lines) waits for
+  two line ends (the NMI's own `WSYNC` at rom:EBEF and its own). Then it sets
+  the horizon colour (`$FA`) and runs `MirrorPalette` without waiting. That
+  writes every road palette, then P7 (`$0F`, white: the start line, the
+  stripes, the smoke), P6 (the cars) and the ground.
+- P6 and P7 are also the decor's: the skyline pieces `$B02C` and `$B03B` are
+  palette 7.
+- `probes`-style beam log (a write tap on the palette registers, the line
+  from `screen:time_until_pos`), `run-03` frame 500:
+  - the interrupt's `WSYNC`s at raster 46.68 and 47.86 (raster = zone
+    line + 16);
+  - `BACKGRND = $FA` at 48.04;
+  - P0C1 at 49.31, then P7C1-3 = `$0F` at 49.54-49.60, cycle 62;
+  - P6 at 49.64-49.73, the ground at 49.78.
+- Cycle 62 is about 135 pixels into a line, where the white starts on the
+  Pocket (142 of 320).
+- So on the core the same write shows one line sooner, on the decor's last
+  line, and the dunes' pixels in P7 from mid-screen on turn white. (Karateka
+  found the same on the core: a display interrupt's palette writes show a
+  line sooner there than in MAME.)
+- In a race, MARIA's DMA delays the handler enough to push the write past
+  the decor, so the line goes once the cars move.
+- Not the start line. That one has never been drawn in player 2's view
+  ("BankSet 2x48K, stage 1").
+
+**Fix** (`PP2_SKY_W3`, default 1): `MirrorPalette` writes P0-P5 (the road's
+only) as before. Then it waits for a line end, and writes the ground first
+(cycle 4 of the line, in the horizontal blank), then P7 and P6.
+- On the core: the decor's last two lines in the horizon colour, as
+  `P2SkyEnd`'s comment always meant, and the road from its first line on
+  the ground colour. The decor's palettes are unchanged to its end.
+- In MAME, which shows those writes a line later, the road's first line
+  (picture row 23) keeps the horizon colour. A light row under player 2's
+  dunes that player 1's view has no counterpart of, in MAME only.
+
+**Checked** (`tools/check-build.sh`, against the build with the lists moved):
+- health identical on four recordings;
+- integrity 0 on four;
+- `ZRowUp` 0 differences, its searches 18,016 -> 17,980 and 13,769 ->
+  13,803 (the window holds a few more or fewer passes);
+- no wild fetch;
+- tick rates 100 100 102 100 100 100, unchanged.
+- Against that build over `run-03`'s first 1,200 frames (every 30), only
+  picture row 23 differs.
+- Not yet on the Pocket. Test carts: `build/bs/pp2-vs-48k-skyfix-signed.a78`
+  (`60927bd2…`) and `build/bs/pp2-vs-bankset-skyfix-signed.a78`
+  (`a74143a7…`).
+
+## BankSet 2x48K, stage 2: a CPU half of its own, and player 2's start/finish line
+
+**Who reads what.** Two sources:
+- What the build places itself:
+  - `$4000-$63FF`, the code area, is the CPU's;
+  - `$6400-$7BFF`, the sheared slices and the highlight column, is MARIA's.
+- For the retail areas, `probes`-style taps on the CPU's program space and on
+  MARIA's own DMA space (MAME's Atari fork), over four recordings:
+  - `$8000-$BFFF`: 7,048 bytes MARIA's, 585 the CPU's, 4 both (`$A9D6`,
+    `$AC2F`, `$AD2F`, `$B0EE`);
+  - `$C000-$FFFF`: 6,785 the CPU's, 124 MARIA's.
+- *Wrong turn:* the same taps showed no MARIA read at all in `$6400-$6FFF`.
+  A list dump in a curve has player 1's bands on `$64CB`, `$6786`, `$7680`
+  and others, so MARIA does read them. The tap on her `$4000-$7FFF` misses
+  reads, so the regions the build places are taken by construction, not
+  from that tap.
+
+**EXT2** (BankSet only; `ext2_src`, `cpu_half`): the CPU's half has its own
+code at `$6400-$7BFF`, where MARIA's half keeps the slices and highlights.
+`build()` now makes MARIA's half from the image as built, and the CPU's half
+from the same image with EXT2 written over `$6400`. A jump table at `$6400`
+(`P2LineTick`, `P2LinePost`, `P2LineCalc`) lets the code area call it by
+address. 6K of code room, about 400 bytes used.
+
+**Player 2's start/finish line** (BankSet only):
+- **Where the line is.** In the stock game the line is the first type-1
+  object while player 1 is in object segment 0, at `$A0/$A1`, the countdown
+  to the segment's end. Measured over `run-03`: the line's Z equals
+  `$A0/$A1` on every tick in segment 0.
+- So player 2's line is `P2_OA0` ahead while `P2_OA2` is 0: player 2's own
+  object segment, kept by `P2ObjSeg`, which calls `P2Line` at that boundary.
+  That holds wherever player 1 is, so the line doesn't depend on player 1's
+  object window.
+- **`P2LineCalc`** (EXT2): the rows as rom:CC3D-CC60 work them out, the
+  nearer from Z + 6 and the farther from Z + 106. It uses `FastZRow` (the
+  same table and answer as `sub_CC63`, in seven steps), with `$48/$49`
+  saved, into `P2_LN_HI/BASE/SPAN` (`$2139-$213C`, claimed from `FREE_RAM`).
+- **When it runs:**
+  - each object tick, through `P2LineTick`, which makes the stock call to
+    `sub_CC23` first. Both routes needed it: rom:C9CE's `JMP sub_CC23` (the
+    stock object tick) and `CarTick`'s own `JMP $CC23` (the race's).
+    *Wrong turn:* with only rom:C9CE hooked, player 2's rows froze once the
+    race started, because the race tick is `CarTick`.
+  - from `P2ObjInit` (a session's start) and `P2ObjSeg` (a segment's end):
+    on the grid and between sessions the object tick doesn't run.
+    *Wrong turn:* without these, the grid had no line, and the qualifying's
+    line stayed in place after player 2 crossed it.
+- **`P2LinePost`** (EXT2, from `MirrorStage` after player 2's staging, every
+  frame): ORs `$E0` (palette 7) into the palette byte of every one of player
+  2's road headers whose sample row is covered. That's 12 bands, the near
+  bands' two pieces, and the 7 top halves, unrolled with the addresses known
+  at build time.
+  - The existing staging loops are unchanged.
+  - With no line in view it costs one load and a branch.
+
+**Checked** (the BankSet cart on MAME's Atari fork, `-bios skip`; the
+scripted two-player race of `probe-race-tickrate.lua`, both cars at
+211/210 then 240):
+- On the qualifying and race grids, player 2's line rows are player 1's
+  (`$0F-$11`).
+- Rolling off, player 2's rows close in on the line ahead of player 1's (it
+  leads by up to 60) and clear when it crosses. The pictures show the line
+  across player 2's road at the start and at its lap crossing (frame 6570,
+  after player 1's at 6510).
+- Tick rates: 100 on all six starts, with and without the line (the fork,
+  stress scenario).
+- The 48K build is byte-identical without these (`55c17860…`).
+- In the attract demo player 2 sits out at its grid slot, right on the line,
+  so its line sits under its car for the whole demo. Player 1's passes under
+  it at the start. That's player 2's true position; not changed.
+- `probe-race-tickrate.lua` now finds the inputs under MAME 0.289's
+  upper-case port tags (`:BUTTONS`, `:JOYSTICKS`, `:CONSOLE`) as well as
+  0.287's.
+- `check-build.sh` runs MAME with `-video none`. It opened windows before.
+
+Test cart: `build/bs/pp2-vs-bankset-line-signed.a78` (BankSet, the sky fix
+and the line).
+
+## Curves on BankSet: more bands, band 12, and half-pixel shears
+
+The BankSet build's room went into the curve smoothing (checkpoints 86-89).
+Each step is BankSet only; the 48K build stays byte-identical
+(`55c17860…`) throughout.
+
+**Step A: bands 6 and 7, band 1 back to ±5** (`bs7`):
+- `SMOOTH` = {1: 5, 2: 4, 3: 4, 4: 3, 5: 3, 6: 3, 7: 2}. Band 7 at ±3 is
+  32 bytes, past the widest object, so it stays at ±2.
+- The smoothing code (`SmSelect`, `SmApply`, `SmInit`) moves to EXT2, behind
+  three more jump-table entries (`$6409`, `$640C`, `$640F`). The code area
+  keeps equates for them.
+- Six more slice columns, pages `$40-$63` of MARIA's half. Those pages are
+  code in the CPU's half, and MARIA never fetches from code, so the slices go
+  into her half only (`MARIA_ONLY_ART`, applied by `maria_half`).
+- `SM_IX` grows to 14 entries; the last four go to `$1BE4-$1BE7`
+  (`sm_ix()`).
+
+**Step B: the near bands at ±2** (`bs8`): `NEAR_R` = 2, five variants a
+band. A variant too wide for an object falls back to the next smaller shear
+(none did, for bands 8-11).
+- It is rarely asked for. The near bands' slopes are 1.4 px a line at the
+  90th percentile, which rounds to 1. Over the scripted race player 1 never
+  picked ±2; player 2 did only when held far off-centre (lateral -90, 449 of
+  2,001 frames on bands 8 and 9).
+- Kept: it costs no tick rate and covers the sharpest bends.
+- Measured with a histogram of the picks (`SM_NIX`) per frame. `run-03`'s
+  replay is no use for this on the fork: it never leaves the centre picks
+  (the replay doesn't drive the VS build there).
+
+**Step C: band 12** (`bs9`). The plan said band 12 would need clipping, since
+its right piece is already 31 bytes. **That was wrong.** The line widens a
+pixel a row on each side, so a ±1 shear stands one edge upright and slants
+the other twice as much, and moving the right piece's start absorbs it: still
+31 bytes. Only ±2 overflows (33), and the fallback gives it ±1.
+- Band 12 has no band 13, so its slope is its own sample less band 11's,
+  doubled. For player 2 that is `P2_BANDX[12] - P2_BANDX[11]` less the bases,
+  doubled, plus the same lateral term.
+- **RAM.** Band 12 takes two more picks and two more table entries.
+  - `SM_NIX` (10), `NEAR_DB` (10) and `NEAR_NX` (10) go into `$2021-$203E`.
+    Player 2's entries now start after player 1's, so player 2's stage
+    indexes `NEAR_DB + len(NEAR_SMOOTH) - 7` (it was `- 3`).
+  - What sat there moves:
+    - `HUD_POS` goes to `$222A-$222F`, the stock race DLL's bytes. MARIA
+      reads it, so it stays in `$2xxx` RAM.
+    - Player 2's qualifying (`P2_QST`..`P2_TBS`, 7 bytes) goes to zero page
+      `$94-$9A`, which `SM_NIX` leaves. It is CPU-only, and nothing stock
+      writes there since checkpoint 76 NOPed the row-colour writes.
+  - `FREE_RAM` (BankSet): `$2230-$2233`, `$9B`, `$203F`.
+  - `probe-race-tickrate.lua` takes the qualifying's address as `QA` (default
+    `2027`; `0094` for BankSet builds). Checked: the same qualifying result
+    as `bs8` (P2 8th, parked). *Correction:* both builds had the register
+    bug below, so this comparison could not have caught it.
+- A variant that falls back to a shear already built now shares its slices
+  instead of storing a copy.
+
+**Why ±2 and band 12 were not the limit.** `rcolog.lua` logs
+`RowCurveOffset`'s 78 rows and the picks every frame. That is the per-row x
+the stock engine wanted, so it is ground truth for each band's six rows.
+- With the picks made, every near band was within 0.4-0.8 px a row of it, yet
+  the pictures showed 4-6 px steps at band edges.
+- One frame (5500, player 1, lateral -40), the left edge in picture px (two a
+  160-mode pixel) and `RowCurveOffset`, band 8 to 12:
+
+      band 8   122 120 118 116 114 112    RCO 33-36
+      band 9   112 112 112 112 112 112    RCO 36-39
+      band 10  106 106 106 106 106 106
+      band 11  102 ...                    (flat inside each band)
+
+- The stock art's edge already slopes a pixel a row, from perspective. The
+  curve adds about +0.5 px a row (`RowCurveOffset` 33 to 36 over band 8), so
+  the true edge moves -0.5 px a row. Whole-pixel shears draw that as -1
+  (shear 0) or 0 (shear +1): half a pixel off on every row, 3 px by a band's
+  end, which is the step.
+
+**Step D: half-pixel shears for the near bands** (`bs10`):
+- `NEAR_DEN` = 2 and `NEAR_R` = 3: shears of -1.5 to +1.5 px a line in
+  halves, seven variants a band. Line k moves `round(h·(k-3)/2)`
+  (`near_off`).
+- The pick quantises d/6 (`SmQh`, its table `SmDivH`, in EXT2) where whole
+  pixels take d/12.
+- The near tables are now 35 entries each, too big for the data windows. In
+  the BankSet build they go into EXT2 beside `SmApply` (`near_data()`).
+
+**Measuring it.** `jagged.py`'s second difference at band edges misled
+twice:
+- A correctly drawn half-pixel slope (0, 0, 1, 1, 2, 2) has a second
+  difference of 1 on every row. So step D read as rougher inside bands
+  (0.00 to 1.55) though the line is truer.
+- Step C read as worse at 11|12 (3.2 to 3.7).
+
+`jagfit.py` replaces it. It fits one straight line through the edge over both
+bands at each boundary (12 rows) and takes the mean |residual|, in picture
+px. A 3 px stair shows as about 1.5; a straight line in whole pixels as at
+most 0.5.
+
+**Results** (the scripted race, both cars at 211/210 then 240, pictures
+every 20 frames from 4400 to 6400; mean |residual| in picture px):
+
+| build | P1 far 1-6 | P1 near 7-12 | P1 11\|12 | P2 far | P2 near |
+|---|---|---|---|---|---|
+| bs6 (checkpoint 89 on BankSet) | 1.29 | 1.13 | 1.40 | 1.93 | 0.89 |
+| bs7 (A) | 1.08 | 1.04 | 1.40 | 1.89 | 0.88 |
+| bs8 (B) | 1.09 | 1.04 | 1.40 | 1.81 | 0.89 |
+| bs9 (C, lateral -40) | 1.10 | 0.95 | 0.93 | 1.80 | 0.96 |
+| bs10 (D, lateral -40) | 1.09 | **0.59** | 0.63 | 1.87 | 0.90 |
+
+- In these runs player 2 sat on the other side of the road (x2 = +40),
+  so its columns aren't comparable with player 1's. See "Player 2 at the
+  screen's edge" below.
+- Step A took P1's 5|6 from 1.67 to 0.93 and 6|7 from 1.42 to 0.90.
+- Held at lateral -90, P1's near bands go from 0.26 (bs9) to 0.13 (bs10).
+- Against `RowCurveOffset` (`rcofit.py`), step D's mean row error, per band:
+  band 8 0.50 to 0.28, band 10 0.77 to 0.44, band 11 0.73 to 0.15.
+
+**Tick rates** (the fork's stress scenario, six starts):
+
+| build | ticks |
+|---|---|
+| bs6 | 100 ×6 |
+| bs7 | 104 100 100 102 102 100 |
+| bs8 | 102 100 100 100 100 102 |
+| bs9 | 102 102 100 100 102 102 |
+| bs10 | 100 100 100 102 100 100 |
+
+**Player 2 at the screen's edge: a measuring artifact, and a real wrap.**
+- Held at "-90", the two scripted cars sit on opposite sides (x1 = -90,
+  x2 = +90). Player 2's road then shifts left and its near bands' left edge
+  leaves the screen, so "first grey pixel from the left" reads 0. That was
+  most of player 2's near 2.7-3.2 above. With player 2 on player 1's side
+  (`PHASES` lateral 2 = +L, so x2 = -L), player 2's near bands match player
+  1's: 0.72 against 0.73 at -40.
+- What was left is real. At x -90 player 2's band 12 right piece was
+  `C3 21 70 8F`: x 143, 31 bytes (124 px), so it ran to x 267. MARIA's
+  8-bit x wrapped the last 11 px onto the left edge: a sliver of kerb at the
+  screen's bottom left. Player 1's same piece was `C3 29 70 92`, 23 bytes.
+  - rom:E7E9 sets `$B6` = 8 while player 1's x is -51 or less
+    (`PlayerX < $CE`). `BuildRowCurveY` adds it into the width of rows `$3C`
+    on (bands 10-12), so the right piece is 8 bytes narrower and doesn't
+    wrap. Player 2's stage used a fixed width.
+  - **Fixed (BankSet):** `P2_B6` (zero page `$9B`) is 8 while `P2_LATERAL`
+    is 51 or more (player 2's lateral is the other sign). Player 2's camera
+    sets it each frame, and its near stage adds it for bands 10-12. At x -90
+    player 2's right piece is now `C3 29`, as player 1's, and its near bands
+    go from 0.62 to 0.14 (11|12 2.45 to 0.10; player 1: 0.13). Tick rates
+    100 100 104 100 104 100.
+  - The 48K build has the same wrap. Not fixed there (its code area is the
+    shortage that started the BankSet work).
+- The linear lateral model itself is right. `sub_E9DA` builds the lateral
+  seed as `floor((X+1)·step/256)` and `AccumulateRowCurveOffset` adds it once
+  per row; player 2's camera takes `(6b+3)·step/256` at each sample row.
+  That's a constant one row's worth of offset, which can't cause steps.
+- Slopes drawn against the neighbours' secants (`slopebias.py`): player 1
+  has no bias. Player 2's far bands are biased by 0.2-0.4 picture px a row,
+  with more spread. That is the remaining gap: one walk sample a band.
+
+**Step E: half-pixel steps for the far bands** (`bs12`):
+- Each far band keeps its whole-pixel variants and gains ±0.5 and ±1.5 px a
+  line, where most slopes are (`far_variants`, offsets `half_off`). That's
+  83 variants, up from 55, about 590 bytes a line more.
+- The pick quantises to half pixels (`SmQh`); a per-band map (`FarMap<b>`,
+  in EXT2) takes that to the nearest variant the band has, plus its base.
+- The far tables (`far_data()`) go into EXT2 as well.
+- Three more columns at `$C2`, `$C8` and `$CE` of MARIA's half (`maria_only`).
+  The CPU's half is retail code there, and MARIA reads only `$C000-$C03D` and
+  `$C100-$C13D` of `$C000-$FFFF`.
+- Checked:
+  - the CPU's half of `$C200-$FFFF` is unchanged against `bs11`;
+  - 150 pictures of title and attract (no input, 152 s) differ from `bs11`
+    only at y 142-184, player 1's far bands in the attract race.
+- Against `RowCurveOffset`, player 1's far picks now beat the best whole-pixel
+  shear on bands 2-7. Mean row error, picked against best whole:
+
+  | band | 1 | 2 | 3 | 4 | 5 | 6 | 7 |
+  |---|---|---|---|---|---|---|---|
+  | picked | 0.48 | 0.36 | 0.48 | 0.43 | 0.30 | 0.41 | 0.37 |
+  | best whole | 0.47 | 0.50 | 0.52 | 0.46 | 0.49 | 0.48 | 0.42 |
+
+- Tick rates: 100 100 100 100 102 100.
+
+**Results so far**, both cars on the same side (x1 = x2 = -40), mean
+|residual| in picture px:
+
+| build | P1 far | P1 near | P2 far | P2 near |
+|---|---|---|---|---|
+| bs7 (A) | 1.02 | 1.36 | 1.38 | 1.03 |
+| bs10 (D) | 1.02 | 0.73 | 1.31 | 0.72 |
+| bs11 (P2 wrap) | 1.02 | 0.74 | 1.41 | 0.72 |
+| bs12 (E) | **0.78** | 0.72 | **1.19** | 0.69 |
+
+(Run-to-run noise is about ±0.1: the builds' tick timing differs, so the
+cars aren't in quite the same place at each picture.)
+
+**Still open:** player 2's far bands (1.19 against player 1's 0.78), from its
+one walk sample a band.
+
+**The fork's display-list warning.** Every BankSet run logs once: "MARIA
+fetched a display list from bankset cartridge space ($8100)". It fires within
+the first second, before the game sets up its lists. That is the start-up
+case the fork's own comment describes: DMA switched on mid-frame reads a list
+from a stale pointer. `dlwhere.lua` walks the list of lists and every zone's
+list each frame, and over the whole scripted race on `bs8` none was in
+cartridge space. The warning is reported only once a run, so the walk is what
+rules out later ones.
+
+## Player 2's lap crossing on BankSet: a register clobbered by the line
+
+Found while checking the release builds. In the scripted race with both cars
+on the same side (`-40:40`, start 214), the 48K build qualified player 2
+(7th) and the BankSet build put it out. Player 2 crossed the line just after
+player 1 in both, but in the BankSet build the crossing never counted. Its
+lap clock ran on to 73 s and the session ended.
+
+- **Cause.** `P2ObjSeg` calls `EXT2_LINE_CALC` right after `STX P2_OA2`, and
+  the next instruction is `ADC OBJ_SEG_LEN_LO,X`. `P2LineCalc` returned with
+  X holding `FastZRow`'s row. It does its work only in segment 0 (otherwise
+  it returns at once with X intact), so only the start line's segment got a
+  wrong length. `P2Line` fires when player 2 leaves segment 0, so the
+  crossing came at the wrong distance: late enough here to miss the
+  qualifying clock.
+  - This dates from player 2's line (BankSet stage 2), in every BankSet build
+    since.
+  - The step C check above compared two builds with the bug.
+- **Fix.** `P2LineCalc` keeps X and Y. `P2LineTick` also keeps A and the
+  flags: it sits in the stock tail call `JMP sub_CC23` (rom:C9CE, and
+  `CarTick`'s), so its callers get `sub_CC23`'s registers back as before.
+- **Checked:**
+  - both scenarios now match the 48K build: player 2 qualifies 7th (same
+    side) and 8th (opposite sides);
+  - tick rates are 100 on all six starts, in both builds.
+  - Start 220 still differs (8th on BankSet, out on 48K). That's timing, not
+    the bug: the builds' crashes diverge from about frame 2420, and player
+    2's lap is marginal (about 70 s against the 73.00 cutoff).
+- **The probes' player 2 addresses.** `P2CrashStart` and `P2Puddle` are at
+  `$49D2`/`$498E` in the BankSet build, not the 48K build's `$49D0`/`$498C`.
+  Every BankSet run here used the 48K addresses, so none logged player 2's
+  crashes. Play wasn't affected, only the logs, but that hid the divergence.
+  The README gives both sets.
+
+The higher-detail car on BankSet, checked once with the fix (start 214,
+`-40:40`): tick rate 100, player 2 qualifies 7th as in the other two builds.
+Player 2's road headers are at the same addresses as the standard build's.
+Before the fix, the same build had no road header zeroed over the race.

@@ -33,7 +33,7 @@ run() {   # run <autoboot script> <extra mame args...>
     local s="$1"; shift
     "$MAME" a7800 -rompath "$BIOS" -cart "$ROM" -skip_gameinfo -keyboardprovider none \
         -input_directory . "$@" -autoboot_script "$s" \
-        -window -nomax -nothrottle -sound none -video soft
+        -nothrottle -sound none -video none
 }
 read P2C P2P ZR1 ZR2 < <(python - <<'EOF'
 import sys; sys.path.insert(0, "patches")

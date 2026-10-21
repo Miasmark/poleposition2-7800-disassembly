@@ -1,7 +1,8 @@
 # Pole Position II VS -- the current design
 
-This page describes the build as it stands at **checkpoint 90**. It is the
-reference; `docs/FINDINGS.md` is the history (why each piece is the way it is,
+This page describes the build as it stands at **checkpoint 90**, plus the
+October 2026 sky fix and the divider's lists moved into RAM, and (in its own
+section) the BankSet build, `PP2_BANKSET=1`. It is the reference; `docs/FINDINGS.md` is the history (why each piece is the way it is,
 wrong turns included), and `patches/splitscreen.py` is the source, with the
 reasoning next to each edit. To build it, see the README ("Pole Position II
 VS: building it").
@@ -83,8 +84,8 @@ that runs every frame (60 Hz). The build adds to both.
 
 - **Speed:** the stress scenario (both cars at 240 in traffic) runs 100 race
   ticks per 600 frames, the stock rate, at checkpoints 88 and 89.
-- **ROM:** essentially full. The code area ends at `$63B6` (limit `$63FF`,
-  73 bytes spare); the `$7E` code block has 10 of 216 bytes spare; the four
+- **ROM:** essentially full. The code area ends at `$63CD` (limit `$63FF`,
+  50 bytes spare); the `$7E` code block has 10 of 216 bytes spare; the four
   slice columns are packed to within ~30 bytes a line; the table windows in
   `$7C/$7D/$7F` have ~150 bytes left in pieces. More would mean compacting
   code (each loop costs some speed) -- FINDINGS, checkpoint 89.
@@ -93,8 +94,14 @@ that runs every frame (60 Hz). The build adds to both.
 
 ## Known limits
 
-- Band 12, the nearest, still steps on bends (its right piece is already 31
-  bytes, and there was no ROM left for it).
+- Band 12, the nearest, still steps on bends: there was no ROM left for its
+  slices. (It fits an object sheared ±1 after all; the BankSet build has it.)
+- Player 2's start/finish line is not drawn on player 2's road (the BankSet
+  build draws it).
+- Off the road to its left (lateral 51 or more), player 2's band 10-12 right
+  piece runs past x 255 and wraps onto the screen's left edge as a sliver of
+  kerb. Player 1's is narrowed by rom:E7E9's `$B6`; player 2's is only in the
+  BankSet build.
 - Band 1's stripes (2.5 rows long) are still coarser than stock at half-band
   resolution.
 - A far band's third object, or one in a slot the copy does not search,
@@ -109,6 +116,37 @@ that runs every frame (60 Hz). The build adds to both.
   (`PP2_HIRES_CAR`, bundle option `vs-hires-car`).
 - Recordings replay against the unsigned build; a signed build (for
   hardware) plays them back differently (README).
+
+## The BankSet build
+
+`PP2_BANKSET=1` builds a 2x48K BankSet cartridge (`.a78` header v3, type
+`$2000`): the CPU reads one 48K half, MARIA the other. It needs a BankSet
+target: the openFPGA 7800 core, or MAME's Atari fork
+(`Miasmark/mame-Atari8bit7800`); stock MAME 0.287 has no BankSet. The 48K
+build is unchanged by any of it. FINDINGS has the detail ("BankSet 2x48K",
+stages 1 and 2, and "Curves on BankSet").
+
+- **The halves.** MARIA's half is the 48K image as built, plus slices placed
+  where the CPU's half has code (`$4000-$63FF` and `$C200-$D3FF`; MARIA reads
+  only `$C000-$C03D` and `$C100-$C13D` of retail `$C000-$FFFF`). The CPU's
+  half has a second code area, EXT2, at `$6400-$7BFF` (6K), entered through
+  a jump table at `$6400`.
+- **Display lists** stay in console RAM, as BankSet requires; the divider's
+  lists were moved there for both builds.
+- **Player 2's start/finish line**, drawn from player 2's own object segment
+  (`P2LineTick`, `P2LineCalc`, `P2LinePost` in EXT2).
+- **Curve smoothing:** far bands 1-7 (band 1 to ±5 px a line, bands 6-7
+  added), with half-pixel steps at ±0.5 and ±1.5; near bands 8-12 (band 12
+  added) in half pixels to ±1.5. The choice and its tables are in EXT2.
+- **Player 2's near right piece** narrowed off the road to its left, as
+  player 1's is (`P2_B6`).
+- **RAM moved:** `SM_NIX`/`NEAR_DB`/`NEAR_NX` to `$2021-$203E`, `HUD_POS` to
+  `$222A`, player 2's qualifying (`P2_QST`..`P2_TBS`) to zero page `$94-$9A`,
+  `P2_B6` at `$9B`. The tables below are the 48K build's.
+- **Checked** on the fork: the race tick rate is 100 on all six stress
+  starts; no road header zeroed and no CPU fetch from `$8000-$BFFF` over
+  12,000 frames; title and attract screens identical to the 48K build's
+  apart from the road. Not yet confirmed on hardware.
 
 ## What the ROM is made of
 
@@ -198,9 +236,9 @@ after changing the layout.
 | 22 | 92 | 6 |  | $26D0 | player 2, band 11 |
 | 23 | 98 | 6 | x | $26E6 | player 2, band 12 |
 | 24 | 104 | 6 | x | $24F6 | blank |
-| 25 | 110 | 7 |  | $7FE0 | divider row 1 (2UP) |
-| 26 | 117 | 7 |  | $7FEC | divider row 2 (1UP) |
-| 27 | 124 | 7 | x | $7FF8 | divider row 3 |
+| 25 | 110 | 7 |  | $1B36 | divider row 1 (2UP) |
+| 26 | 117 | 7 |  | $1B42 | divider row 2 (1UP) |
+| 27 | 124 | 7 | x | $24F6 | blank |
 | 28 | 131 | 10 |  | $18FA | player 1's horizon (stock) |
 | 29 | 141 | 10 | x | $1D3B | player 1's decor (stock) |
 | 30 | 151 | 3 |  | $2599 | player 1, band 1 top half |
@@ -295,9 +333,8 @@ after changing the layout.
 
 | from | to | note |
 |---|---|---|
-| $1B36 | $1B4D | RowCurveXStaged's tail: the dead curve copy's target (patched out) |
-| $1BD8 | $1BE9 | RowCurveXStagedSrc's tail: the stripped walk tail's output |
-| $2139 | $213F | untouched (below the stack's reach) |
+| $1BE8 | $1BE9 | RowCurveXStagedSrc's tail: the stripped walk tail's output |
+| $213D | $213F | untouched (below the stack's reach) |
 | $222A | $2233 | stock race DLL, replaced by DLL_BASE; untouched |
 | $25FB | $25FF | past the end of DLL_BASE's 51 zones and the top-half lists |
 
@@ -305,7 +342,7 @@ after changing the layout.
 
 | from | to | what |
 |---|---|---|
-| $4000 | $63B6 | new code area (`_ext()`), 9143 bytes; limit $63FF |
+| $4000 | $63CD | new code area (`_ext()`), 9166 bytes; limit $63FF |
 | $7028 | $75FF | sheared road slices: pages $70-$75, low bytes $28-$FF |
 | $7628 | $7BFF | sheared road slices: pages $76-$7B, low bytes $28-$FF |
 | $6A00 | $6FFF | sheared road slices: pages $6A-$6F, low bytes $00-$FF |
@@ -330,83 +367,83 @@ after changing the layout.
 | $7FE0 | $7FF9 | the divider's row lists |
 | $8000 | $FFFF | the retail 32K, changed in the ranges below |
 
-### Ranges changed in the retail 32K (76 ranges, 4040 bytes)
+### Ranges changed in the retail 32K (76 ranges, 4045 bytes)
 
 | from | bytes | first described at (patches/splitscreen.py line) |
 |---|---:|---|
-| $A5D6 | 4 | 1861 |
-| $A6BE | 1 | 7077 |
-| $A6C1 | 1 | 7087 |
-| $A6D3 | 1 | 7078 |
-| $B00E | 4 | 1871 |
-| $B10A | 8 | 1880 |
-| $B20A | 8 | 1879 |
-| $B30A | 8 | 1878 |
-| $B40A | 8 | 1877 |
-| $B50A | 8 | 1876 |
-| $B60A | 8 | 1875 |
-| $B70A | 8 | 1874 |
-| $B80A | 8 | 1873 |
-| $B90A | 8 | 1872 |
-| $C372 | 3 | 4483 |
-| $C378 | 3 | 4492 |
-| $C87E | 3 | 3914 |
-| $CBE3 | 4 | 969 |
-| $CBEB | 4 | 964 |
-| $CC5E | 3 | 6486 |
-| $CDF2 | 3 | 7222 |
-| $CE0F | 3 | 7222 |
-| $CE72 | 3 | 7222 |
-| $CE8B | 3 | 7222 |
-| $D30D | 4 | 5110 |
-| $D316 | 3 | 5075 |
-| $D31C | 4 | 5168 |
-| $D324 | 4 | 4909 |
-| $D32D | 6 | 5041 |
-| $D422 | 3 | 4562 |
-| $D4BC | 4 | 4909 |
-| $D58D | 6 | 5009 |
-| $D6A9 | 4 | 4988 |
-| $D70A | 6 | 5191 |
-| $D713 | 6 | 1748 |
-| $D71F | 3 | 2357 |
-| $D7BE | 3 | 2357 |
-| $D81B | 2 | 7053 |
-| $D848 | 3 | 958 |
-| $D8BC | 3 | 7261 |
-| $D8C5 | 3 | 2357 |
-| $D8D7 | 1 | 7063 |
-| $DA92 | 2 | 7055 |
-| $DB55 | 6 | 5033 |
-| $DF5A | 3 | 4429 |
-| $DFDA | 3 | 4454 |
-| $E3CD | 3 | 2944 |
-| $E4B7 | 5 | 3896 |
-| $E59D | 5 | 4048 |
-| $E5E8 | 5 | 3902 |
-| $E617 | 4 | 3908 |
-| $E70D | 3 | 1752 |
-| $E79C | 3 | 6463 |
-| $E8E6 | 3 | 5384 |
-| $E8F8 | 2 | 7183 |
-| $E90E | 2 | 7183 |
-| $E935 | 2 | 7183 |
-| $E9BE | 4 | 648 |
-| $EA2C | 1 | 891 |
-| $EBFD | 2 | 7197 |
-| $EC02 | 2 | 7198 |
-| $ED1E | 2 | 7099 |
-| $ED29 | 2 | 1053 |
-| $ED42 | 5 | 984 |
-| $ED48 | 2 | 7357 |
-| $ED9D | 156 | 942 |
-| $EE3A | 108 | 364 |
-| $EEC0 | 12 | 699 |
-| $EED0 | 518 | 486 |
-| $F0EB | 88 | 494 |
-| $F150 | 2 | 7195 |
-| $F158 | 2 | 1113 |
-| $F160 | 3 | 5368 |
-| $F16C | 2 | 7419 |
-| $F171 | 11 | 7379 |
-| $F400 | 2884 | 950 |
+| $A5D6 | 4 | 1984 |
+| $A6BE | 1 | 7344 |
+| $A6C1 | 1 | 7354 |
+| $A6D3 | 1 | 7345 |
+| $B00E | 4 | 1994 |
+| $B10A | 8 | 2003 |
+| $B20A | 8 | 2002 |
+| $B30A | 8 | 2001 |
+| $B40A | 8 | 2000 |
+| $B50A | 8 | 1999 |
+| $B60A | 8 | 1998 |
+| $B70A | 8 | 1997 |
+| $B80A | 8 | 1996 |
+| $B90A | 8 | 1995 |
+| $C372 | 3 | 4724 |
+| $C378 | 3 | 4733 |
+| $C87E | 3 | 4155 |
+| $CBE3 | 4 | 1075 |
+| $CBEB | 4 | 1070 |
+| $CC5E | 3 | 6749 |
+| $CDF2 | 3 | 7494 |
+| $CE0F | 3 | 7494 |
+| $CE72 | 3 | 7494 |
+| $CE8B | 3 | 7494 |
+| $D30D | 4 | 5351 |
+| $D316 | 3 | 5316 |
+| $D31C | 4 | 5409 |
+| $D324 | 4 | 5150 |
+| $D32D | 6 | 5282 |
+| $D422 | 3 | 4803 |
+| $D4BC | 4 | 5150 |
+| $D58D | 6 | 5250 |
+| $D6A9 | 4 | 5229 |
+| $D70A | 6 | 5432 |
+| $D713 | 6 | 1871 |
+| $D71F | 3 | 2586 |
+| $D7BE | 3 | 2586 |
+| $D81B | 2 | 7320 |
+| $D848 | 3 | 1064 |
+| $D8BC | 3 | 7537 |
+| $D8C5 | 3 | 2586 |
+| $D8D7 | 1 | 7330 |
+| $DA92 | 2 | 7322 |
+| $DB55 | 6 | 5274 |
+| $DF5A | 3 | 4670 |
+| $DFDA | 3 | 4695 |
+| $E3CD | 3 | 3183 |
+| $E4B7 | 5 | 4137 |
+| $E59D | 5 | 4289 |
+| $E5E8 | 5 | 4143 |
+| $E617 | 4 | 4149 |
+| $E70D | 3 | 1875 |
+| $E79C | 3 | 6726 |
+| $E8E6 | 3 | 5634 |
+| $E8F8 | 2 | 7450 |
+| $E90E | 2 | 7450 |
+| $E935 | 2 | 7450 |
+| $E9BE | 4 | 673 |
+| $EA2C | 1 | 997 |
+| $EBFD | 2 | 7464 |
+| $EC02 | 2 | 7465 |
+| $ED1E | 2 | 7366 |
+| $ED29 | 2 | 1159 |
+| $ED42 | 5 | 1090 |
+| $ED48 | 2 | 7633 |
+| $ED9D | 156 | 1048 |
+| $EE3A | 108 | 387 |
+| $EEC0 | 12 | 735 |
+| $EED0 | 518 | 509 |
+| $F0EB | 88 | 517 |
+| $F150 | 2 | 7462 |
+| $F158 | 2 | 1232 |
+| $F160 | 3 | 5618 |
+| $F16C | 2 | 7695 |
+| $F171 | 11 | 7655 |
+| $F400 | 2889 | 1056 |

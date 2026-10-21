@@ -5,9 +5,12 @@
 local M=(type(manager.machine)=="function") and manager:machine() or manager.machine
 local cpu=M.devices[":maincpu"]; local mem=cpu.spaces["program"]
 local P=M.ioport.ports
-local function fld(n) for _,t in ipairs({":buttons",":joysticks",":console_buttons"}) do local f=P[t].fields[n]; if f then return f end end end
+-- (MAME 0.287 names the ports in lower case, 0.289 and its Atari fork in upper: either)
+local function fld(n) for _,t in ipairs({":buttons",":joysticks",":console_buttons",":BUTTONS",":JOYSTICKS",":CONSOLE"}) do local f=P[t] and P[t].fields[n]; if f then return f end end end
 local reset,b1,b2,sel=fld("Reset"),fld("P1 Button 1"),fld("P2 Button 1"),fld("Select")
 local ph={} for a,b,c,d,e,g in string.gmatch(os.getenv("PHASES"),"(%d+):(%d+):(%d+):(%-?%d+):(%-?%d+):(%d)") do ph[#ph+1]={tonumber(a),tonumber(b),tonumber(c),tonumber(d),tonumber(e),tonumber(g)} end
+-- player 2's qualifying (P2_QST..P2_PARK): $2027 in the 48K build, $0094 in the BankSet one
+local QA=tonumber(os.getenv("QA") or "2027",16)
 local o=io.open(os.getenv("O"),"w")
 local f,drive0=0,nil; local lastph=nil
 local function s16(a) local v=mem:read_u8(a)+256*mem:read_u8(a+1); if v>=32768 then v=v-65536 end return v end
@@ -40,7 +43,7 @@ emu.register_frame_done(function()
   f=f+1
   local stq=mem:read_u8(0x9D)
   if f%60==0 or stq~=lastst then lastst=stq
-    o:write(string.format("V f%d st=%02X p1score=%s p2score=%s p1lap=%02X%02X.%02X p2lap=%02X%02X run=%d clock=%02X gap=%d A6=%d qst=%d qpos=%d park=%d x1=%d x2=%d | C3=%d A7=%d p2clk=%02X%02X p2lapn=%d rst=%d race=%d",f,stq,hx(0x1CA5,3),hx(0x2770,3),mem:read_u8(0xBE),mem:read_u8(0xBD),mem:read_u8(0xBC),mem:read_u8(0x2775),mem:read_u8(0x2774),mem:read_u8(0x2776),mem:read_u8(0xDF),s16(0x275C),mem:read_u8(0xA6),mem:read_u8(0x2027),mem:read_u8(0x2028),mem:read_u8(0x202B),(function(v) if v>127 then return v-256 end return v end)(mem:read_u8(0xD1)),-(function(v) if v>127 then return v-256 end return v end)(mem:read_u8(0x2702)),mem:read_u8(0xC3),mem:read_u8(0xA7),mem:read_u8(0x2730),mem:read_u8(0x2731),mem:read_u8(0x2733),mem:read_u8(0x2734),mem:read_u8(0x2735))..string.char(10)) end
+    o:write(string.format("V f%d st=%02X p1score=%s p2score=%s p1lap=%02X%02X.%02X p2lap=%02X%02X run=%d clock=%02X gap=%d A6=%d qst=%d qpos=%d park=%d x1=%d x2=%d | C3=%d A7=%d p2clk=%02X%02X p2lapn=%d rst=%d race=%d",f,stq,hx(0x1CA5,3),hx(0x2770,3),mem:read_u8(0xBE),mem:read_u8(0xBD),mem:read_u8(0xBC),mem:read_u8(0x2775),mem:read_u8(0x2774),mem:read_u8(0x2776),mem:read_u8(0xDF),s16(0x275C),mem:read_u8(0xA6),mem:read_u8(QA),mem:read_u8(QA+1),mem:read_u8(QA+4),(function(v) if v>127 then return v-256 end return v end)(mem:read_u8(0xD1)),-(function(v) if v>127 then return v-256 end return v end)(mem:read_u8(0x2702)),mem:read_u8(0xC3),mem:read_u8(0xA7),mem:read_u8(0x2730),mem:read_u8(0x2731),mem:read_u8(0x2733),mem:read_u8(0x2734),mem:read_u8(0x2735))..string.char(10)) end
   if SNAPAT[f] then M.video:snapshot(); o:write(string.format("SNAP f%d after %s cr1=%d cr2=%d gap=%d",f,SNAPAT[f],mem:read_u8(0xD4),mem:read_u8(0x27B5),s16(0x275C))..string.char(10)) end
   if os.getenv("SNAPS") then for w in string.gmatch(os.getenv("SNAPS"),"%d+") do if f==tonumber(w) then M.video:snapshot(); o:write(string.format("SNAP f%d cr1=%d cr2=%d",f,mem:read_u8(0xD4),mem:read_u8(0x27B5))..string.char(10)) end end end
   reset:set_value((f>=480 and f<490) and 1 or 0)

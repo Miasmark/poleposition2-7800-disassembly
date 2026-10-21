@@ -87,11 +87,14 @@ retail dump: player 2 on the top half of the screen, player 1 on the bottom,
 the HUD between them. Each player has their own car, camera, laps, clock,
 score and result; they qualify, race, collide and are tallied separately, and
 the title logo reads *POLE POSITION VS*. The build is a 48K cartridge
-(`$4000-$FFFF`); the retail game is 32K.
+(`$4000-$FFFF`); the retail game is 32K. A second form, a 2x48K BankSet
+cartridge, adds player 2's start/finish line and smoother curves
+([below](#the-bankset-build)).
 
 [`docs/SPLITSCREEN.md`](docs/SPLITSCREEN.md) describes the current design:
 screen layout, what runs when, RAM and ROM maps, features and known limits.
-`docs/FINDINGS.md` is how it got there (checkpoints 1-89).
+`docs/FINDINGS.md` is how it got there (checkpoints 1-90, then the BankSet
+work).
 
 **Controls.** Player 1 as stock. Player 2 uses a two-button 7800 controller
 in port 2 with the same scheme: the buttons are gas and brake, left and right
@@ -133,8 +136,8 @@ What it does carry:
 - the car redraw's 159 bytes, with credit.
 
 Rebuilding a bundle gives the same file, byte for byte. With the toolkit at
-`e44dca9`, `pp2-vs.abp` is SHA-256
-`3fe2203536ed4f60e6f79a2a93b1852a356729089d3176e7f46df51840c3cca0` and
+`0be62ea`, `pp2-vs.abp` is SHA-256
+`ef3c3e42b6f49a8d218f66cd9e77e198f21b03dc3f2b5462baba581661fb73fe` and
 `pp2-graphics-hack.abp` is
 `96585a15328115c5240009be3606d535ca99b5f625ef7d7be9cc11bf5f2f1b07`.
 
@@ -161,6 +164,7 @@ Then, from this directory:
 python patches/splitscreen.py --build -o pp2-vs.a78           # unsigned: MAME, recordings
 python patches/splitscreen.py --build --sign -o pp2-vs.a78    # signed: real hardware
 PP2_HIRES_CAR=1 python patches/splitscreen.py --build -o pp2-vs-hires.a78
+PP2_BANKSET=1 python patches/splitscreen.py --build --sign -o pp2-vs-bankset.a78
 python patches/splitscreen.py --bundle                        # rewrites dist/pp2-vs.abp
 ```
 
@@ -169,8 +173,10 @@ dump:
 
 | | unsigned | signed |
 |---|---|---|
-| VS (checkpoint 90) | `45ca22aa4653a4a2de343ae145cf55968f302d5e149e531f047db9898fc1c844` | `b2ce96ea3bd028fa6c90fe120c7f7e4bc7ef62064372c2d02982a2afa527f8dc` |
-| VS, higher-detail car | `07a28034a3d22c0c65306dc20eb60146763bd5c921188a1b0d5ee8eb7b472cc1` | `825fee1285d518735efa4298d3114b4685fdecb5f465096d4bf39d655ba72e71` |
+| VS | `55c178608cf625b9614b8bd0627fd8d862432dc226855e0bea7f1eadb5d1e2d8` | `60927bd2c3897b310da750a8ebedd64b6472bdf6191080c3b764ea8ccbd47e31` |
+| VS, higher-detail car | `cfac95a4e278f95728140cba32e2830b0770e1c6853c9266b5936a20697f7e6f` | `d705b2c945354731a9f83b9f5c8ff5853b864c8f93002ab0e65724ee0354c9b3` |
+| VS BankSet | `2b8b72e546cb8325d8f53c088334ea959764e953130f4d968e8b5e446810febb` | `73bb5f8c5a89ad52858f7fb0fc7533558ffe74dc17ebd0c43fa0fa81aae013ae` |
+| VS BankSet, higher-detail car | `3f04fbf5dc4b0fef45e05813fcd8ad8da875aab046644af4e212e3d45cab7faf` | `13a4ccd28fabcd53c26149f944855e0e0b37bfe1688de7baf3cb58db831512b6` |
 
 (A headerless dump gives a headerless 49,152-byte image with the same body.)
 
@@ -185,10 +191,37 @@ them back as a different race. Use the unsigned build for MAME and for
 testing, the signed one (or the bundle's output) for a real console or flash
 cart. The full account is in the generator's docstring.
 
-**Switches.** `PP2_HIRES_CAR=1` builds in the higher-detail car.
+**Switches.** `PP2_HIRES_CAR=1` builds in the higher-detail car;
+`PP2_BANKSET=1` builds the BankSet form.
 `PP2_NO_SMOOTH`, `PP2_NO_NEAR`, `PP2_NO_SPLIT`, `PP2_NO_OVL` and `PP2_NO_VS`
 leave out one feature each; `PP2_P2PAL=n` recolours player 2's car. They and
 the test hooks are listed in the generator's docstring.
+
+### The BankSet build
+
+`PP2_BANKSET=1` writes a 98,432-byte cartridge: a v3 `.a78` header (type
+`$2000`, BankSet) and two 48K halves, the CPU's and MARIA's. The second half
+gives the build the room the 48K one ran out of, and it goes to:
+
+- **player 2's start/finish line**, drawn on player 2's own road (the 48K
+  build has player 1's only);
+- **smoother curves**: more road bands draw from pre-sheared copies, the
+  nearest band included, with half-pixel slopes as well as whole ones;
+- **a fix** for a sliver of kerb that wraps onto the left edge of player 2's
+  view when it drives off the road to its left.
+
+It needs a player that does BankSet: the openFPGA 7800 core, or the Atari
+fork of MAME ([Miasmark/mame-Atari8bit7800](https://github.com/Miasmark/mame-Atari8bit7800)).
+Stock MAME 0.287 doesn't. It is not yet confirmed on hardware, and there is
+no bundle for it yet: build it with the generator. `docs/SPLITSCREEN.md`
+("The BankSet build") summarises the design; `docs/FINDINGS.md` has the
+measurements.
+
+On the fork an unsigned build boots the 2600 bootstrap first; run it with
+`-bios skip`. The committed recordings don't drive this build there.
+`tools/probe-race-tickrate.lua` (scripted races) does; give it player 2's
+addresses for this build: `QA=0094 P2C=49D2 P2P=498E` (the 48K build:
+`2027`, `49D0`, `498C`).
 
 ### Checking a build
 

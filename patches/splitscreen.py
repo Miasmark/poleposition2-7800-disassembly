@@ -136,6 +136,29 @@ ROM_SIZE = 32768                 # the SOURCE ROM, as dumped
 # recordings, and bytes placed at $4000 and $7FFF read back through the CPU.
 OUT_BASE = 0x4000
 OUT_SIZE = 49152
+# PP2_BANKSET=1: a 2 x 48K flat BankSet cartridge (header type $2000). The CPU's half is the
+# 48K image above; MARIA's half, which she reads during her DMA at the same addresses, is
+# built by maria_half(). Stage 1 (FINDINGS "BankSet 2x48K"): a copy of the CPU's half, so
+# the game runs exactly as the 48K build does, on anything that runs BankSet.
+BANKSET = bool(os.environ.get("PP2_BANKSET"))
+BANKSET_TYPE = 0x2000
+# The BankSet build's second code area, in the CPU's half only: $6400-$7BFF holds the sheared
+# road slices and the highlight column, which only MARIA reads, so MARIA's half keeps them
+# there and the CPU's half has the room for code (FINDINGS "BankSet 2x48K, stage 2"). It
+# starts with a jump table, so code assembled elsewhere can call it by fixed address.
+EXT2_ADDR = 0x6400
+EXT2_END = 0x7BFF
+EXT2_LINE_TICK = EXT2_ADDR          # JMP P2LineTick
+EXT2_LINE_POST = EXT2_ADDR + 3      # JMP P2LinePost
+EXT2_LINE_CALC = EXT2_ADDR + 6      # JMP P2LineCalc: player 2's rows from its own state
+EXT2_SM_SELECT = EXT2_ADDR + 9      # JMP SmSelect  (the curve smoothing, smooth_far_src)
+EXT2_SM_APPLY = EXT2_ADDR + 12      # JMP SmApply
+EXT2_SM_INIT = EXT2_ADDR + 15       # JMP SmInit
+# player 2's start/finish line (ext2_src): the rows it covers, as $E6/$E7 are player 1's
+P2_LN_HI = 0x2139                   # the nearer row (Z + 6), $FF: no line in view
+P2_LN_BASE = 0x213A                 # the first row covered: the farther row (Z + 106) + 1
+P2_LN_T = 0x213B                    # scratch: the nearer row, while the farther is found
+P2_LN_SPAN = 0x213C                 # rows covered - 1
 EXT_ADDR = 0x4000                # the object code's own area
 EXT_END = 0x63FF                 # $6400-$6FFF: sheared road slices;
                                  # $7000-$7FFF: the highlight column (low
@@ -620,14 +643,16 @@ P2_LAPRUN = 0x2776           # nonzero once player 2 has crossed the start line
 P2_EPITCH = 0x2777           # player 2's engine note, as $210D
 P2_ERATE = 0x2778            #   its rate, as $210C
 P2_EVOL = 0x2779             #   its volume, as $210B (pulsed on the verge)
-# player 2's qualifying, in the five free bytes after its display lists
-P2_QST = 0x2027              # 0 qualifying, 1 qualified, 2 out
-P2_QPOS = 0x2028             # its grid position, 1..8 (9: sitting out)
-P2_QSEC = 0x2029             # the qualifying lap's seconds and hundredths,
-P2_LAPC = 0x202A             #   for a tie on position
-P2_PARK = 0x202B             # 0 driving, 1 parked (qualified, waiting), 2 out
-P2_LAPPH = 0x202C            # player 2's lap tick phase 0..5, as $E0 is player 1's
-P2_TBS = 0x202D              # player 2's time bonus still to tally: seconds, BCD
+# player 2's qualifying, in the five free bytes after its display lists (BankSet: in zero
+# page $94-$9A, freed at checkpoint 76, which SM_NIX leaves for $2021: see NEAR_SMOOTH)
+_QB = 0x0094 if BANKSET else 0x2027
+P2_QST = _QB                 # 0 qualifying, 1 qualified, 2 out
+P2_QPOS = _QB + 1            # its grid position, 1..8 (9: sitting out)
+P2_QSEC = _QB + 2            # the qualifying lap's seconds and hundredths,
+P2_LAPC = _QB + 3            #   for a tie on position
+P2_PARK = _QB + 4            # 0 driving, 1 parked (qualified, waiting), 2 out
+P2_LAPPH = _QB + 5           # player 2's lap tick phase 0..5, as $E0 is player 1's
+P2_TBS = _QB + 6             # player 2's time bonus still to tally: seconds, BCD
 # player 2's race: its own clock (as $DE/$DF), laps, and whether it is done.
 # $A7 is 1 when the race starts and the race ends at the crossing where it
 # equals $C3 (5): four laps; player 2's count starts from $A7 too.
@@ -653,10 +678,11 @@ P2_PASSY = 0x273F            # the list index, while testing a slot
 # all four tracks and 0923-0205 the attract demo). "untouched": never written
 # either. Free for new work; claim a range by moving it out of this list.
 FREE_RAM = [
-    (0x1B36, 0x1B4D, "RowCurveXStaged's tail: the dead curve copy's target (patched out)"),
-    (0x1BD8, 0x1BE9, "RowCurveXStagedSrc's tail: the stripped walk tail's output"),
-    (0x2139, 0x213F, "untouched (below the stack's reach)"),
-    (0x222A, 0x2233, "stock race DLL, replaced by DLL_BASE; untouched"),
+    (0x1BE8, 0x1BE9, "RowCurveXStagedSrc's tail: the stripped walk tail's output"),
+    (0x213D, 0x213F, "untouched (below the stack's reach)"),
+] + ([(0x2230, 0x2233, "stock race DLL, replaced by DLL_BASE; untouched"),
+       (0x203F, 0x203F, "untouched")] if BANKSET else [
+    (0x222A, 0x2233, "stock race DLL, replaced by DLL_BASE; untouched")]) + [
     (0x25FB, 0x25FF, "past the end of DLL_BASE's 51 zones and the top-half lists"),
 ]
 # Player 2's skybox (checkpoint 77): its heading, as $C9/$CA/$CB are player
@@ -687,8 +713,8 @@ HUD_BUF2 = 0x27E1            # the 2UP line, 31 characters, to $27FF
 HUD_X = 0x0A                 # both lines' x: (160 - 35*4) / 2 -- 31 characters,
                              #   a space, and the race position's 3
 HUD_POS_X = HUD_X + 32 * 4   # the position's own object
-HUD_POS2 = 0x2021            # "1ST"/"2ND" for the 2UP line (3 characters)
-HUD_POS1 = 0x2024            # ... and for the 1UP line
+HUD_POS2 = 0x222A if BANKSET else 0x2021   # "1ST"/"2ND" for the 2UP line (3 characters;
+HUD_POS1 = HUD_POS2 + 3      # ... and for the 1UP line              BankSet: the stock DLL's)
 # The three divider rows' display lists, in the new code area's last page --
 # fixed, so HUD_ROWS stays a constant: a 31-character header and the
 # position's 3-character one for each of the two lines, and an empty list
@@ -696,6 +722,16 @@ HUD_POS1 = 0x2024            # ... and for the 1UP line
 HUD_DL2 = 0x7FE0
 HUD_DL1 = 0x7FEC
 HUD_DLB = 0x7FF8
+# ... and since the BankSet build (FINDINGS "BankSet 2x48K"), the zones take them from console
+# RAM, where DivListInit copies the two text rows' lists (the ROM ones are their templates):
+# a BankSet cartridge may not hold a display list (MARIA reads her own half there, and the
+# spec and the emulators refuse it). The third row's list is empty: the stock blank list.
+# RowCurveXStaged's tail and RowCurveXStagedSrc's ($1B36-$1B4D, $1BD8-$1BE3): written only
+# by the BIOS and the boot's clear (a write tap over a whole recording, attract to game over).
+HUD_RAM2 = 0x1B36
+HUD_RAM1 = 0x1B42
+HUD_RAMB = 0x24F6                    # the stock game's blank list
+QM_SPLIT_RAM = 0x1BD8                # QmSplit's 12 bytes
 P2_HUD_TEMPLATE = 0xEEC0            # 12 bytes; moved off $FC00 to leave
                                     # P2_TEMPLATE room to grow
 SWCHA = 0x0280               # player 2's stick: bit 3 right, 2 left, 1 down, 0 up
@@ -772,6 +808,11 @@ P2_OVL = not os.getenv("PP2_NO_OVL")
 # the largest |s| kept (its measured worst slope, docs/FINDINGS.md "Curve
 # smoothing, re-evaluated").
 SMOOTH = {} if os.getenv("PP2_NO_SMOOTH") else {1: 4, 2: 4, 3: 4, 4: 3, 5: 3}   # band 1 was +/-5 until checkpoint 89
+# The BankSet build has the room (FINDINGS "Curves on BankSet"): band 1 back to +/-5, its
+# measured worst (27 px over five rows), and bands 6 and 7 too (13 and 12: +/-3), which met
+# band 5 stepped (band 7 +/-2: at 3 its slice is 32 bytes, past the widest object). The slices for them go in MARIA's half, the code in EXT2.
+if BANKSET and SMOOTH and not os.getenv("PP2_BS_SMOOTH_OLD"):
+    SMOOTH = {1: 5, 2: 4, 3: 4, 4: 3, 5: 3, 6: 3, 7: 2}   # (band 7 at +/-3 is 32 bytes)
 # Tables the smoothing reads, out of the code area: the low bytes $28-$DF/$FF
 # of pages $7C-$7F, past the highlight column's padding (checkpoint 88).
 DATA_WINDOWS = [(0x7C28, 0xD8), (0x7D28, 0xD8), (0x7F28, 0xB8)]   # $7E28: HI_CODE
@@ -779,14 +820,79 @@ DATA_WINDOWS = [(0x7C28, 0xD8), (0x7D28, 0xD8), (0x7F28, 0xB8)]   # $7E28: HI_CO
 # 0) sheared +/-1 px a line and split back into a 16-byte left piece and a right
 # piece; the right piece's width goes in as a delta, its x as an offset.
 NEAR_SMOOTH = [] if (os.getenv("PP2_NO_NEAR") or os.getenv("PP2_NO_SMOOTH")) else [8, 9, 10, 11]
+# BankSet: band 12 too. Sheared +/-1 its right piece is still 31 bytes (the line widens a
+# pixel a row each side, so the shear stands one edge upright); +/-2 would be 33, and takes
+# +/-1. It has no band 13, so its slope is its own sample less band 11's, doubled.
+if BANKSET and NEAR_SMOOTH and not os.getenv("PP2_NO_NEAR12"):
+    NEAR_SMOOTH = NEAR_SMOOTH + [12]
 NEAR_W1 = {8: 19, 9: 21, 10: 25, 11: 29, 12: 31}   # the right piece, stock ($1F3C near rows)
-SM_NIX = 0x0094              # 8: near slice index, player 1's bands 8-11 then player 2's
-NEAR_DB = 0x202E             # 9: right-piece width delta, P1 b8-11, P2 b8-12 (b12 stays 0)
-NEAR_NX = 0x2037             # 9: P1: the band's x base + offset; P2: the offset
+# The near bands' shears: -NEAR_R..NEAR_R steps of 1/NEAR_DEN px a line, 2*NEAR_R + 1
+# variants a band; one wider than an object can be takes the next smaller shear instead.
+# Checkpoint 89: whole pixels, +/-1. BankSet: half pixels, +/-1.5. The stock art's edge
+# already slopes a pixel a line (perspective), and a curve adds a fraction to it: whole
+# pixels drew -0.5 px a line as 0 or -1, half a pixel off on every line, so 3 px off by a
+# band's end (FINDINGS "Curves on BankSet, step D").
+NEAR_DEN = int(os.environ.get("PP2_NEAR_DEN", "2" if BANKSET else "1"))
+NEAR_R = int(os.environ.get("PP2_NEAR_R", "3" if BANKSET else "1"))
+
+
+def near_off(h, k):
+    """Line k's offset, px, for near shear h (steps of 1/NEAR_DEN px a line), rounded."""
+    return (h * (k - BAND_SAMPLE) * 2 + NEAR_DEN) // (2 * NEAR_DEN)
+# Per near band: SM_NIX, its slice index, player 1's bands then player 2's; NEAR_DB, the
+# right piece's width delta, and NEAR_NX, player 1's x base + offset or player 2's offset:
+# player 1's smoothed bands, then player 2's bands 8-12 (any not smoothed stays 0).
+NEAR_N = len(NEAR_SMOOTH) + 5
+# Player 2's $B6 (BankSet): rom:E7E9 sets $B6 = 8 while player 1 is at x -51 or less, and
+# sub_E8AC adds it into the width of rows $3C on (bands 10-12): the right piece 8 bytes
+# narrower, so it does not run past x 255 and wrap onto the left edge. Player 2's stage
+# had no such thing: off the road to that side, its band 10-12 right pieces wrapped (a
+# sliver of kerb at the screen's left edge). Its lateral is the other sign.
+P2_B6 = 0x009B if BANKSET else None
+SM_NIX = 0x2021 if BANKSET else 0x0094   # 2 * len(NEAR_SMOOTH)
+NEAR_DB = SM_NIX + 2 * len(NEAR_SMOOTH) if BANKSET else 0x202E   # NEAR_N
+NEAR_NX = NEAR_DB + NEAR_N
 HI_CODE = 0x7E28             # a code block in the $7E window (216 bytes): cold or shared
 SMOOTH_COLS = [(0x70, 0x28), (0x76, 0x28), (0x6A, 0x00), (0x64, 0x00)]   # 6-page columns:
+# (BankSet: MARIA's half has the code area's pages too, $40-$63, which in the CPU's half
+# are code; slices there go into MARIA's half only, MARIA_ONLY_ART)
+if BANKSET:
+    SMOOTH_COLS = SMOOTH_COLS + [(pg, 0x00) for pg in (0x5E, 0x58, 0x52, 0x4C, 0x46, 0x40)]
+# (BankSet, step E: three more in MARIA's half of retail $C200-$D3FF. The CPU's half is code
+# there; MARIA reads only $C000-$C03D and $C100-$C13D of $C000-$FFFF, measured over four
+# recordings: FINDINGS "BankSet 2x48K, stage 2")
+FAR_HALF = BANKSET and bool(SMOOTH) and not os.getenv("PP2_NO_FAR_HALF")
+if FAR_HALF:
+    SMOOTH_COLS = SMOOTH_COLS + [(pg, 0x00) for pg in (0xC2, 0xC8, 0xCE)]
+
+
+def maria_only(a):
+    """Whether slice art at a goes into MARIA's half only (the CPU's half has code there)."""
+    return BANKSET and (a <= EXT_END or a >= 0xC200)
+
+
+def far_variants(b):
+    """Band b's far shears, in half pixels a line: every whole pixel to SMOOTH[b], and (step E)
+    +/-0.5 and +/-1.5, where most slopes are. Ascending; 0 is the stock slice."""
+    r = SMOOTH[b]
+    hs = set(range(-2 * r, 2 * r + 1, 2))
+    if FAR_HALF:
+        hs |= {h for h in (-3, -1, 1, 3) if abs(h) <= 2 * r}
+    return sorted(hs)
+
+
+def half_off(h, k):
+    """Line k's offset, px, for a shear of h half pixels a line, rounded (whole h: exact)."""
+    return (h * (k - BAND_SAMPLE) * 2 + 2) // 4
+MARIA_ONLY_ART = {}
                                                            #   first page, first low byte
 SM_IX = 0x0067               # 10: each smoothed band's slice index, P1's then P2's
+SM_IX_MORE = 0x1BE4          # (BankSet, 7 bands a view: entries 10-13 here, sm_ix())
+
+
+def sm_ix(k):
+    """The address of smoothed entry k's slice index, as an operand."""
+    return "$%02X" % (SM_IX + k) if k < 10 else "$%04X" % (SM_IX_MORE + k - 10)
 SM_NEW = 0x0071              # set by SmSelect, cleared by SmApply
 SM_W1 = 0x0072               # 7: player 1's far bands 1-7, width field
 SM_DX1 = 0x0079              # 7:   and x adjustment
@@ -924,9 +1030,9 @@ DIVIDER_ADDR = DLL_BASE + DIVIDER_ZONE * 3
 # Seven lines each, as stock: the font is seven tall. (Tried 8+8+5, which
 # keeps the divider's 21: the eighth line reads past the glyphs and draws
 # stray dots under every space.)
-HUD_ROWS = [0x06, HUD_DL2 >> 8, HUD_DL2 & 0xFF,
-            0x06, HUD_DL1 >> 8, HUD_DL1 & 0xFF,
-            0x86, HUD_DLB >> 8, HUD_DLB & 0xFF]
+HUD_ROWS = [0x06, HUD_RAM2 >> 8, HUD_RAM2 & 0xFF,
+            0x06, HUD_RAM1 >> 8, HUD_RAM1 & 0xFF,
+            0x86, HUD_RAMB >> 8, HUD_RAMB & 0xFF]
 
 # HudReassert lives here: $F3FF-$FF7E (2,945 bytes) is a run of untouched $FF
 # filler, confirmed via the toolkit's own --gaps report (disasm.py) and by
@@ -1097,11 +1203,24 @@ def hud_reassert_src(addr):
         # rom:EDE2); L_ECF8 loads this region's from ram_00F4-$F9 instead,
         # which is why the car in the mirror came out blue while the same car
         # below it was yellow.
+        # P6 and P7 are also the decor's (the skyline: $B02C, $B03B in P7),
+        # so they wait for a line end first (FINDINGS "Player 2's horizon:
+        # white at the dunes' foot"). In MAME these writes landed on the road's
+        # second line; on the openFPGA core a display interrupt's writes show
+        # a line or two sooner, and P7's white came on the decor's last line
+        # from mid-screen to the right edge, "a line at the base of the dunes".
+        # P0-P5 above are the road's only, so they can land on the decor.
+        # After the line end the ground goes first, in the horizontal blank:
+        # on the core that is the road's first line, the decor's last two
+        # lines having had the horizon colour ($FA) as designed. In MAME,
+        # which shows a display interrupt's writes a line later than the core,
+        # the road's first line keeps the horizon colour too.
+    ] + ["    STA WSYNC"] * int(os.environ.get("PP2_SKY_W3", "1")) + [
+        "    LDA $00FB", "    STA BACKGRND",
         "    LDA #$0F", "    STA P7C1", "    STA P7C2", "    STA P7C3",
         "    LDA #$%02X" % car_colours(2)[0], "    STA P6C1",
         "    LDA #$%02X" % car_colours(2)[1], "    STA P6C2",
         "    LDA #$00", "    STA P6C3",
-        "    LDA $00FB", "    STA BACKGRND",
         "    JMP $EC09",
         # Copies both boot images into RAM: the zone list to DLL_BASE and the
         # mini display lists to MINI_DL_BASE. Replaces sub_F171's first loop,
@@ -1150,6 +1269,7 @@ def hud_reassert_src(addr):
         "    JSR P2HudInit",
         "    JSR SmInit",
         "    JSR TopInit",
+        "    JSR DivListInit",
     ] + ([] if os.getenv("PP2_NO_MINI_COPY") else _mini_copy_src()) + [
         "    JMP P2BuildLists",                 # in the helpers, for room
         # Once per frame, straight after the game stages the per-scanline road
@@ -1164,9 +1284,11 @@ def hud_reassert_src(addr):
         "    JSR $%04X" % PER_FRAME_HOOK,
     ] + _unrolled_mirror_stage() + (
         [] if os.getenv("PP2_KEEP_INJECTION") else road_stage_src()
-    ) + p2_stage_src() + p2_car_src() + [
+    ) + p2_stage_src() + p2_car_src() + ([
+        "    JSR $%04X" % EXT2_LINE_POST,        # player 2's start line (BankSet: EXT2)
+    ] if BANKSET else []) + [
         "    RTS",
-    ] + p2_stage_tables() + p2_slot_tables() + ["P2Emit = $%04X" % _ext()[1]["P2Emit"], "SmSelect = $%04X" % _ext()[1]["SmSelect"], "TopInit = $%04X" % _hi_code()[1]["TopInit"], "TopCopy1 = $%04X" % _ext()[1]["TopCopy1"], "TopCopy2 = $%04X" % _ext()[1]["TopCopy2"], "P2TopStage = $%04X" % _ext()[1]["P2TopStage"], "SmInit = $%04X" % _ext()[1]["SmInit"], "VbTail = $%04X" % _ext()[1]["VbTail"], "P2ObjSeg = $%04X" % _ext()[1]["P2ObjSeg"], "P2ObjInit = $%04X" % _ext()[1]["P2ObjInit"], "P2Collide = $%04X" % _ext()[1]["P2Collide"], "P2Clear = $%04X" % _ext()[1]["P2Clear"], "HudTick = $%04X" % _ext()[1]["HudTick"], "PvpCrash = $%04X" % _ext()[1]["PvpCrash"], "P2RaceSlot = $%04X" % _ext()[1]["P2RaceSlot"], "P2RaceLane = $%04X" % _ext()[1]["P2RaceLane"], "P2Ctl = $%04X" % _ext()[1]["P2Ctl"], "HudFill = $%04X" % _ext()[1]["HudFill"], "P2CrashTick = $%04X" % _ext()[1]["P2CrashTick"], "P2BuildLists = $%04X" % _rival_helpers()[1]["P2BuildLists"]] + [
+    ] + p2_stage_tables() + p2_slot_tables() + ["P2Emit = $%04X" % _ext()[1]["P2Emit"], "SmSelect = $%04X" % _ext()[1]["SmSelect"], "TopInit = $%04X" % _hi_code()[1]["TopInit"], "TopCopy1 = $%04X" % _ext()[1]["TopCopy1"], "TopCopy2 = $%04X" % _ext()[1]["TopCopy2"], "P2TopStage = $%04X" % _ext()[1]["P2TopStage"], "SmInit = $%04X" % _ext()[1]["SmInit"], "DivListInit = $%04X" % _ext()[1]["DivListInit"], "VbTail = $%04X" % _ext()[1]["VbTail"], "P2ObjSeg = $%04X" % _ext()[1]["P2ObjSeg"], "P2ObjInit = $%04X" % _ext()[1]["P2ObjInit"], "P2Collide = $%04X" % _ext()[1]["P2Collide"], "P2Clear = $%04X" % _ext()[1]["P2Clear"], "HudTick = $%04X" % _ext()[1]["HudTick"], "PvpCrash = $%04X" % _ext()[1]["PvpCrash"], "P2RaceSlot = $%04X" % _ext()[1]["P2RaceSlot"], "P2RaceLane = $%04X" % _ext()[1]["P2RaceLane"], "P2Ctl = $%04X" % _ext()[1]["P2Ctl"], "HudFill = $%04X" % _ext()[1]["HudFill"], "P2CrashTick = $%04X" % _ext()[1]["P2CrashTick"], "P2BuildLists = $%04X" % _rival_helpers()[1]["P2BuildLists"]] + [
 
         "WrapSlot0:",
         "    CMP #$A0",
@@ -1506,8 +1628,9 @@ def ram_claims():
         ("P2_TBS", P2_TBS, 1),
         ("SM", SM_IX, 0x2B),
         ("ZU", ZU_LO, 2),
-        ("SM_NIX", SM_NIX, 8),
-        ("NEAR", NEAR_DB, 18),
+        ("SM_NIX", SM_NIX, 2 * len(NEAR_SMOOTH)),
+    ] + ([("P2_B6", P2_B6, 1)] if P2_B6 is not None else []) + [
+        ("NEAR", NEAR_DB, 2 * NEAR_N),
     ] + [("P1_TOP%d" % b, P1_TOP[b], TOP_SIZE) for b in SPLIT_BANDS] + [
         ("P2_TOP%d" % b, P2_TOP[b], TOP_SIZE) for b in SPLIT_BANDS] + [
         ("P2_RACE", P2_CLOCK, 7),
@@ -1920,14 +2043,14 @@ def _slices_build():
         w0 = 32 - STOCK_WIDTH_FIELD[b]
         L = [[(rom[(((hi0 + 5 - k) << 8) + lo0 + i) - BASE] >> (6 - 2 * j)) & 3
               for i in range(w0) for j in range(4)] for k in range(6)]
-        r = SMOOTH[b]
         base[b] = len(tab["lo"])
-        for sh in range(-r, r + 1):
-            if sh == 0:
+        for h in far_variants(b):
+            sh = h // 2 if h % 2 == 0 else h / 2.0
+            if h == 0:
                 tab["lo"].append(lo0); tab["hi"].append(hi0)
                 tab["w"].append(32 - w0); tab["dx"].append(0)
                 continue
-            pts = [(k, c + sh * (k - BAND_SAMPLE), v)
+            pts = [(k, c + half_off(h, k), v)
                    for k in range(6) for c, v in enumerate(L[k]) if v]
             first = min(c for _, c, _ in pts)
             first = first // 4 * 4                  # floor, to a byte
@@ -1947,7 +2070,9 @@ def _slices_build():
     # (the stage's wrap guard then places it unchanged); the right piece takes
     # the rest. Its x offset is where it now starts; its width, a delta.
     ntab = {k: [] for k in ("alo", "ahi", "blo", "bhi", "db", "dxb")}
+    alias = {}                          # variant -> the one whose slices it shares
     for b in NEAR_SMOOTH:
+        built = {}
         lo0, hi0 = BAND_GFX[b]
         lo1, hi1 = BAND_SLOT1[b]
         w1 = NEAR_W1[b]
@@ -1968,21 +2093,31 @@ def _slices_build():
                     if v:                   # clear pixels leave the left piece's
                         row[c] = v
             comp.append(row)
-        for sh in (-1, 0, 1):
-            if sh == 0:
+        for sh0 in range(-NEAR_R, NEAR_R + 1):
+            if sh0 == 0:
                 for k2, v in (("alo", lo0), ("ahi", hi0), ("blo", lo1), ("bhi", hi1), ("db", 0), ("dxb", 0)):
                     ntab[k2].append(v)
                 continue
-            pts = {}
-            for k in range(6):
-                for c, v in comp[k].items():
-                    pts[(k, c + sh * (k - BAND_SAMPLE))] = v
-            cmin = min(c for _, c in pts)
-            cmax = max(c for _, c in pts)
-            bs = cmin + 60                           # the right piece's start
-            wb = (cmax - bs) // 4 + 1
+            for sh in range(sh0, 0, -1 if sh0 > 0 else 1):   # the widest that fits an object
+                pts = {}
+                for k in range(6):
+                    for c, v in comp[k].items():
+                        pts[(k, c + near_off(sh, k))] = v
+                cmin = min(c for _, c in pts)
+                cmax = max(c for _, c in pts)
+                bs = cmin + 60                       # the right piece's start
+                wb = (cmax - bs) // 4 + 1
+                if wb <= 31:
+                    break
             assert wb <= 31, "near band %d shear %d: right piece %d bytes" % (b, sh, wb)
             assert all(c >= bs - 60 for _, c in pts)
+            if sh in built:                  # fell back to one already built
+                ix = len(ntab["alo"])
+                for k2 in ntab:
+                    ntab[k2].append(ntab[k2][built[sh]])
+                alias[ix] = built[sh]
+                continue
+            built[sh] = len(ntab["alo"])
             abytes = [[sum(pts.get((k, bs - 60 + i * 4 + j), 0) << (6 - 2 * j) for j in range(4))
                        for i in range(16)] for k in range(6)]
             bbytes = [[sum(pts.get((k, bs + i * 4 + j), 0) << (6 - 2 * j) for j in range(4))
@@ -2013,6 +2148,9 @@ def _slices_build():
         for k in range(6):
             for i in range(wb):
                 art[((page + 5 - k) << 8) + lo + i] = by[k][i]
+    for ix, src in alias.items():
+        for k2 in ("alo", "ahi", "blo", "bhi"):
+            ntab[k2][ix] = ntab[k2][src]
     return art, tab, base, ntab
 
 
@@ -2022,24 +2160,41 @@ def hi_data():
     if SMOOTH:
         _, tab, _vb = smooth_art()
         out["SmDiv"] = [min(6, int(round(i / 12.0))) for i in range(0x55)]
-        for key, lab in (("lo", "SmLo"), ("hi", "SmHi"), ("w", "SmW"), ("dx", "SmDx")):
-            out[lab] = list(tab[key])
-    if NEAR_SMOOTH:
-        nt = near_tabs()
-        for k2, lab in (("alo", "NAlo"), ("ahi", "NAhi"), ("blo", "NBlo"), ("bhi", "NBhi"),
-                        ("db", "NDb"), ("dxb", "NDxb")):
-            out[lab] = list(nt[k2])
-        lay = p2_band_layout()
-        lists = [ALL_ROAD_BANDS[b] for b in NEAR_SMOOTH] + [lay[b]["addr"] for b in NEAR_SMOOTH]
-        out["NLstLo"] = [a & 0xFF for a in lists]
-        out["NLstHi"] = [a >> 8 for a in lists]
-        out["NBase"] = [band_base(6 * b + 3) for b in NEAR_SMOOTH] + [0] * len(NEAR_SMOOTH)
+        if not FAR_HALF:
+            out.update(far_data())
+    if NEAR_SMOOTH and not BANKSET:
+        out.update(near_data())
     if SPLIT_BANDS:
         tpl = []
         for b in SPLIT_BANDS:
             lo, hi = BAND_GFX[b]
             tpl += [lo, STOCK_WIDTH_FIELD[b], hi + 3, 0xA1] + [0x00, 0x1F, 0x00, 0xA1] * TOP_K + [0, 0]
         out["TopTpl"] = tpl
+    return out
+
+
+def far_data():
+    """The far bands' tables, per variant: the slice's low and high byte, width field and x
+    adjustment (SmApply). In the data windows, or with step E's 83 variants in EXT2."""
+    _, tab, _vb = smooth_art()
+    return {lab: list(tab[key])
+            for key, lab in (("lo", "SmLo"), ("hi", "SmHi"), ("w", "SmW"), ("dx", "SmDx"))}
+
+
+def near_data():
+    """The near bands' tables, as SmApply reads them: per variant, the two pieces' addresses,
+    the width delta and the x offset; per entry, its list and x base. In the data windows,
+    or in the BankSet build in EXT2 with SmApply (their 35-entry form fits no window)."""
+    out = {}
+    nt = near_tabs()
+    for k2, lab in (("alo", "NAlo"), ("ahi", "NAhi"), ("blo", "NBlo"), ("bhi", "NBhi"),
+                    ("db", "NDb"), ("dxb", "NDxb")):
+        out[lab] = list(nt[k2])
+    lay = p2_band_layout()
+    lists = [ALL_ROAD_BANDS[b] for b in NEAR_SMOOTH] + [lay[b]["addr"] for b in NEAR_SMOOTH]
+    out["NLstLo"] = [a & 0xFF for a in lists]
+    out["NLstHi"] = [a >> 8 for a in lists]
+    out["NBase"] = [band_base(6 * b + 3) for b in NEAR_SMOOTH] + [0] * len(NEAR_SMOOTH)
     return out
 
 
@@ -2119,6 +2274,25 @@ def _hi_code():
     return _HI[0]
 
 
+_NP = [0]
+
+
+def near_pick():
+    """A = d -> the near variant, 0..2*NEAR_R (s = -NEAR_R..NEAR_R, clamped): SmPick1 for
+    +/-1, as checkpoint 89; inline for more (the BankSet build: in EXT2, out of HI_CODE).
+    Half pixels (NEAR_DEN 2) quantise d/6 (SmQh) where whole pixels take d/12 (SmQ)."""
+    if NEAR_R == 1 and NEAR_DEN == 1:
+        return ["    JSR SmPick1"]
+    _NP[0] += 1
+    lab = "Np%d" % _NP[0]
+    return ["    JSR %s" % ("SmQh" if NEAR_DEN == 2 else "SmQ"),
+            "    CLC", "    ADC #$%02X" % NEAR_R,
+            "    BPL %sa" % lab, "    LDA #$00",
+            "%sa:" % lab,
+            "    CMP #$%02X" % (2 * NEAR_R + 1), "    BCC %sb" % lab, "    LDA #$%02X" % (2 * NEAR_R),
+            "%sb:" % lab]
+
+
 def smooth_far_src():
     """The far bands' sheared slices, in three parts (checkpoint 86).
 
@@ -2149,6 +2323,20 @@ def smooth_far_src():
 
     def pick(k, b, lab):
         r = SMOOTH[b]
+        if FAR_HALF:
+            # A = d -> round(d/6), half pixels a line, clamped to +/-2r; FarMap<b> takes
+            # it to the nearest variant the band has, already plus its base
+            return ["    JSR SmQh",
+                    "    CLC", "    ADC #$%02X" % (2 * r),
+                    "    BPL %sa" % lab,
+                    "    LDA #$00",
+                    "%sa:" % lab,
+                    "    CMP #$%02X" % (4 * r + 1),
+                    "    BCC %sb" % lab,
+                    "    LDA #$%02X" % (4 * r),
+                    "%sb:" % lab,
+                    "    TAY", "    LDA FarMap%d,Y" % b,
+                    "    STA %s" % sm_ix(k)]
         return ["    JSR SmQ",
                 "    CLC", "    ADC #$%02X" % r,
                 "    BPL %sa" % lab,
@@ -2159,7 +2347,7 @@ def smooth_far_src():
                 "    LDA #$%02X" % (2 * r),
                 "%sb:" % lab,
                 "    CLC", "    ADC #$%02X" % vb[b],
-                "    STA $%02X" % (SM_IX + k)]
+                "    STA %s" % sm_ix(k)]
 
     k = 0
     for b in bands:
@@ -2196,19 +2384,29 @@ def smooth_far_src():
         k += 1
     # the near bands: 0..2 (s = -1..+1) a band, from the same differences
     for e, b in enumerate(NEAR_SMOOTH):
+        if b == 12:                         # no band 13: twice band 12 less band 11
+            out += ["    LDA $%04X" % (ROW_CURVE_OFFSET + 6 * b + BAND_SAMPLE),
+                    "    SEC",
+                    "    SBC $%04X" % (ROW_CURVE_OFFSET + 6 * (b - 1) + BAND_SAMPLE),
+                    "    ASL A"] + near_pick() + [
+                    "    CLC", "    ADC #$%02X" % ((2 * NEAR_R + 1) * e),
+                    "    STA $%02X" % (SM_NIX + e)]
+            continue
         out += ["    LDA $%04X" % (ROW_CURVE_OFFSET + 6 * (b + 1) + BAND_SAMPLE),
                 "    SEC",
                 "    SBC $%04X" % (ROW_CURVE_OFFSET + 6 * (b - 1) + BAND_SAMPLE),
-                "    JSR SmPick1",
-                "    CLC", "    ADC #$%02X" % (3 * e),
+            ] + near_pick() + [
+                "    CLC", "    ADC #$%02X" % ((2 * NEAR_R + 1) * e),
                 "    STA $%02X" % (SM_NIX + e)]
     for e, b in enumerate(NEAR_SMOOTH):
-        out += ["    LDA $%04X" % (P2_BANDX + b + 1),
+        # (band 12: (x'(12) - x'(11)) * 2 + 12 * step, the lateral term as the others')
+        out += ["    LDA $%04X" % (P2_BANDX + min(b + 1, 12)),
                 "    SEC", "    SBC $%04X" % (P2_BANDX + b - 1),
-                "    SEC", "    SBC #$%02X" % ((bb(b + 1) - bb(b - 1)) & 0xFF),
+                "    SEC", "    SBC #$%02X" % ((bb(min(b + 1, 12)) - bb(b - 1)) & 0xFF),
+            ] + (["    ASL A"] if b == 12 else []) + [
                 "    CLC", "    ADC $%02X" % (T + 3),
-                "    JSR SmPick1",
-                "    CLC", "    ADC #$%02X" % (3 * e),
+            ] + near_pick() + [
+                "    CLC", "    ADC #$%02X" % ((2 * NEAR_R + 1) * e),
                 "    STA $%02X" % (SM_NIX + len(NEAR_SMOOTH) + e)]
     out += ["    LDA #$01", "    STA $%02X" % SM_NEW, "    RTS"]
 
@@ -2224,7 +2422,7 @@ def smooth_far_src():
                            ("P2", {b: lay[b]["addr"] for b in bands}, SM_W2, SM_DX2)):
         for b in bands:
             top = (P1_TOP if view == "P1" else P2_TOP).get(b) if b in SPLIT_BANDS else None
-            out += ["    LDY $%02X" % (SM_IX + k),
+            out += ["    LDY %s" % sm_ix(k),
                     "    LDA SmLo,Y", "    STA $%04X" % L[b]] + (
                    ["    STA $%04X" % top] if top else []) + [
                     "    LDA SmHi,Y", "    STA $%04X" % (L[b] + 2)] + (
@@ -2256,7 +2454,7 @@ def smooth_far_src():
                 "    DEX",
                 "    BPL SnLoop",
                 "    RTS"]
-        assert n + 1 == 9 and (NEAR_DB + 9 == NEAR_NX)
+        assert n <= NEAR_N
 
     # --- SmInit, at boot: stock widths, no adjustment, nothing pending
     out += ["SmInit:", "    LDX #$06", "SiL:",
@@ -2265,7 +2463,7 @@ def smooth_far_src():
             "    DEX", "    BPL SiL",
             "    STA $%02X" % SM_NEW,
     ] + ([] if not NEAR_SMOOTH else [
-            "    LDX #$08",                      # no width delta, no offset,
+            "    LDX #$%02X" % (NEAR_N - 1),     # no width delta, no offset,
             "SiN:",                              # player 1's x base as stock
             "    LDA SiNx,X", "    STA $%04X,X" % NEAR_NX,
             "    LDA #$00", "    STA $%04X,X" % NEAR_DB,
@@ -2274,9 +2472,40 @@ def smooth_far_src():
             "    RTS",
     ] + ([] if not NEAR_SMOOTH else [
             "SiNx:", "    .byte " + ",".join("$%02X" % v for v in
-                                               [band_base(6 * b + 3) for b in NEAR_SMOOTH] + [0] * 5),
+                                               [band_base(6 * b + 3) for b in NEAR_SMOOTH] +
+                                               [0] * (NEAR_N - len(NEAR_SMOOTH))),
     ]) + [
             "SmStockW:", "    .byte " + ",".join("$%02X" % STOCK_WIDTH_FIELD[b] for b in range(1, 8))]
+    if NEAR_DEN == 2 or FAR_HALF:
+        assert BANKSET
+        # SmQh: A = d (signed) -> round(d/6), half pixels a line (SmQ's form, SmDivH)
+        out += ["SmQh:",
+                "    BMI SqhN",
+                "    CMP #$55", "    BCC SqhP", "    LDA #$54",
+                "SqhP:",
+                "    TAY", "    LDA SmDivH,Y", "    RTS",
+                "SqhN:",
+                "    EOR #$FF", "    CLC", "    ADC #$01",
+                "    CMP #$55", "    BCC SqhQ", "    LDA #$54",
+                "SqhQ:",
+                "    TAY", "    LDA SmDivH,Y",
+                "    EOR #$FF", "    CLC", "    ADC #$01",
+                "    RTS",
+                "SmDivH:", "    .byte " + ",".join("$%02X" % min(14, int(round(i / 6.0)))
+                                                 for i in range(0x55))]
+    if FAR_HALF:
+        for b in sorted(SMOOTH):
+            r, hv = SMOOTH[b], far_variants(b)
+            m = [vb[b] + min(range(len(hv)), key=lambda i: (abs(hv[i] - q), abs(hv[i])))
+                 for q in range(-2 * r, 2 * r + 1)]
+            out += ["FarMap%d:" % b, "    .byte " + ",".join("$%02X" % v for v in m)]
+        for name, vals in sorted(far_data().items()):
+            out += ["%s:" % name] + ["    .byte " + ",".join("$%02X" % v for v in vals[i:i + 16])
+                                     for i in range(0, len(vals), 16)]
+    if NEAR_SMOOTH and BANKSET:
+        for name, vals in sorted(near_data().items()):
+            out += ["%s:" % name] + ["    .byte " + ",".join("$%02X" % v for v in vals[i:i + 16])
+                                     for i in range(0, len(vals), 16)]
     out += ["%s = $%04X" % (k, v) for k, v in sorted(hi_data_addrs().items())]
     out += ["%s = $%04X" % (k, _hi_code()[1][k]) for k in ("SmQ", "SmPick1")]
     return out
@@ -2622,7 +2851,17 @@ def p2_camera_src():
         # accumulator starts at step3
         "    LDA $%04X" % (S + 1), "    STA $%04X" % (S + 5),
         "    LDA $%04X" % (S + 2), "    STA $%04X" % (S + 6),
-    ]
+    ] + ([] if P2_B6 is None else [
+        # $B6 for player 2 (P2_B6): 8 at lateral 51 or more (player 1's x -51 or less)
+        "    LDY #$00",
+        "    LDA $%04X" % P2_LATERAL,
+        "    BMI P2B6",
+        "    CMP #$33",
+        "    BCC P2B6",
+        "    LDY #$08",
+        "P2B6:",
+        "    STY $%02X" % P2_B6,
+    ])
 
 
 def p2_phase_src():
@@ -3265,7 +3504,8 @@ def car_world_src():
         "    JSR CarRetire",
         "    JSR $CB50", "    JSR $CC77", "    JSR $CB50", "    JSR $CE58",
         "    JSR $CB50", "    JSR $CDD6",
-        "    JMP $CC23",
+        # (BankSet: through P2LineTick, which makes the same call, then player 2's rows)
+        "    JMP $%04X" % (EXT2_LINE_TICK if BANKSET else 0xCC23),
         "CarRetire:",
         "    LDA #$00",
         "    STA $%04X" % CR_PART,
@@ -3527,6 +3767,7 @@ def car_world_src():
         "    LDX #$00",
         "P2OsNw:",
         "    STX $%04X" % P2_OA2,
+    ] + (["    JSR $%04X" % EXT2_LINE_CALC] if BANKSET else []) + [
         "    CLC",
         "    LDA $%04X" % P2_OA0, "    ADC $%04X,X" % OBJ_SEG_LEN_LO, "    STA $%04X" % P2_OA0,
         "    LDA $%04X" % (P2_OA0 + 1), "    ADC $%04X,X" % OBJ_SEG_LEN_HI, "    STA $%04X" % (P2_OA0 + 1),
@@ -3563,7 +3804,7 @@ def car_world_src():
         "    STA $%04X" % P2_SCORE, "    STA $%04X" % (P2_SCORE + 1),
         "    STA $%04X" % (P2_SCORE + 2), "    STA $%04X" % P2_SCACC,
         "P2OiKeep:",
-        "    RTS",
+    ] + (["    JMP $%04X" % EXT2_LINE_CALC] if BANKSET else ["    RTS"]) + [
     ]
 
 
@@ -5348,9 +5589,18 @@ def _ext():
         lines = ([".org $%04X" % EXT_ADDR] + fast_zrow_src() + zrow_up_src() + rival_car_src()
                  + ["P2Emit:"] + p2_emit_src() + ["    RTS"] + p2_slot_tables()
                  + car_world_src() + p2_hazard_src() + hud_src() + audio_src()
-                 + qual_src() + vbl_src() + smooth_far_src() + top_half_src())
+                 + qual_src() + vbl_src() + smooth_ext_src() + top_half_src())
         _EXT.append(_assemble(lines))
     return _EXT[0]
+
+
+def smooth_ext_src():
+    """The smoothing's code for the code area: itself, or in the BankSet build equates for
+    its EXT2 entries (ext2_src assembles it there)."""
+    if not BANKSET:
+        return smooth_far_src()
+    return ["SmSelect = $%04X" % EXT2_SM_SELECT, "SmApply = $%04X" % EXT2_SM_APPLY,
+            "SmInit = $%04X" % EXT2_SM_INIT]
 
 
 def _qm_text(t):
@@ -5453,9 +5703,9 @@ def vbl_src():
         "    CPX #$%02X" % (QM_DL >> 8),
         "    BEQ QmOurs",
         "QmOurs2:",
-        "    CMP #<QmSplit",
+        "    CMP #$%02X" % (QM_SPLIT_RAM & 0xFF),
         "    BNE QmRet",
-        "    CPX #>QmSplit",
+        "    CPX #$%02X" % (QM_SPLIT_RAM >> 8),
         "    BNE QmRet",
         "QmOurs:",
         "    LDX #$02",
@@ -5721,8 +5971,21 @@ def vbl_src():
         # centred message above and its bold tally below
         "QmZoneS:",
         "    LDA #$06", "    STA $%04X" % (DIVIDER_ADDR + 3),
-        "    LDA #>QmSplit", "    STA $%04X" % (DIVIDER_ADDR + 4),
-        "    LDA #<QmSplit", "    STA $%04X" % (DIVIDER_ADDR + 5),
+        "    LDA #$%02X" % (QM_SPLIT_RAM >> 8), "    STA $%04X" % (DIVIDER_ADDR + 4),
+        "    LDA #$%02X" % (QM_SPLIT_RAM & 0xFF), "    STA $%04X" % (DIVIDER_ADDR + 5),
+        "    RTS",
+        # the three lists the zones take from RAM (HUD_RAM2): once, from MirrorInit
+        "DivListInit:",
+        "    LDX #$17",
+        "DlCopy1:",
+        "    LDA $%04X,X" % HUD_DL2, "    STA $%04X,X" % HUD_RAM2,
+        "    DEX",
+        "    BPL DlCopy1",
+        "    LDX #$0B",
+        "DlCopy2:",
+        "    LDA QmSplit,X", "    STA $%04X,X" % QM_SPLIT_RAM,
+        "    DEX",
+        "    BPL DlCopy2",
         "    RTS",
         "QmSplit:",
         "    .byte $%02X,$60,$%02X,$%02X,$04" % (QM_BUF & 0xFF, QM_BUF >> 8, 0x40 | (32 - 10)),
@@ -6813,15 +7076,19 @@ def p2_stage_src():
         "    LDY P2StWid,X",
         "    ORA $%04X,Y" % STRIPE_TEX,
     ] + ([] if not NEAR_SMOOTH else [
-        "    SEC", "    SBC $%04X,X" % (NEAR_DB - 3),       # checkpoint 89: X = band-1,
-    ]) + [                                                  #   entry 4 + band-8
+        "    SEC", "    SBC $%04X,X" % (NEAR_DB + len(NEAR_SMOOTH) - 7),   # checkpoint 89:
+    ]) + ([] if P2_B6 is None else [            #   X = band-1, entry len(NEAR_SMOOTH) + band-8
+        "    CPX #$09", "    BCC P2StNb6",      # bands 10-12: P2_B6 narrower
+        "    CLC", "    ADC $%02X" % P2_B6,
+        "P2StNb6:",
+    ]) + [
         "    LDY P2StDst,X",
         "    STA $%04X,Y" % (P2_DL_BASE + 5),
         "    LDA $%04X" % P2_STAGE_TMP,
         "    ORA #$10",
         "    STA $%04X,Y" % (P2_DL_BASE + 1),
     ] + advance() + band_x() + ([] if not NEAR_SMOOTH else [
-        "    CLC", "    ADC $%04X,X" % (NEAR_NX - 3),
+        "    CLC", "    ADC $%04X,X" % (NEAR_NX + len(NEAR_SMOOTH) - 7),
     ]) + [
         "    LDY P2StDst,X",
         "    STA $%04X,Y" % (P2_DL_BASE + 7),
@@ -7209,6 +7476,11 @@ def fix_mirror_split(p):
     if not os.getenv("PP2_STOCK_TRAFFIC"):
         ct = _ext()[1]["CarTick"]
         p.put(0xD70D, [0x20, ct & 0xFF, ct >> 8], expect=[0x20, 0xAD, 0xC9])
+    # rom:C9CE -- the object tick's tail call `JMP sub_CC23` (player 1's start-line rows) becomes
+    # P2LineTick in EXT2, which makes that call and then works out player 2's rows
+    # (BankSet only: in the 48K build $6400 holds the slices)
+    if BANKSET:
+        p.put(0xC9CE, [0x4C, EXT2_LINE_TICK & 0xFF, EXT2_LINE_TICK >> 8], expect=[0x4C, 0x23, 0xCC])
     for _dl, _buf, _pos in ((HUD_DL2, HUD_BUF2, HUD_POS2), (HUD_DL1, HUD_BUF1, HUD_POS1)):
         p.put(_dl, [_buf & 0xFF, 0x60, _buf >> 8, 0x41, HUD_X,
                     _pos & 0xFF, 0x60, _pos >> 8, 0x40 | (32 - 3), HUD_POS_X, 0x00, 0x00],
@@ -7238,7 +7510,11 @@ def fix_mirror_split(p):
         p.put(_ha[_n], _hd[_n], expect=[0xFF] * len(_hd[_n]))
     if SMOOTH:
         _sa = smooth_art()[0]
+        MARIA_ONLY_ART.clear()
         for _a in sorted(_sa):
+            if maria_only(_a):
+                MARIA_ONLY_ART[_a] = _sa[_a]    # code in the CPU's half: MARIA's half only
+                continue
             p.put(_a, [_sa[_a]], expect=[0xFF])
     if not os.getenv("PP2_NO_VS"):
         for _a, _old, _new in TITLE_VS:
@@ -7471,6 +7747,137 @@ def _runs(addrs, gap=1):
     return out
 
 
+def ext2_src():
+    """The CPU's code at $6400 in the BankSet build (EXT2_ADDR)."""
+    fz = _ext()[1]["FastZRow"]
+    lay = p2_band_layout()
+    # every road header of player 2's whose row the line can cover: (row, palette bytes)
+    entries = []
+    for b in range(1, 13):
+        hdrs = [lay[b]["addr"] + 1]
+        if lay[b]["road1"] is not None:
+            hdrs.append(lay[b]["addr"] + lay[b]["road1"] + 1)
+        entries.append((6 * b + BAND_SAMPLE, hdrs))
+    for b in SPLIT_BANDS:
+        entries.append((6 * b + 1, [P2_TOP[b] + 1]))
+    entries.sort()
+    post = ["P2LinePost:",
+            "    LDA $%04X" % P2_LN_HI,
+            "    BPL PlpGo",
+            "    RTS",
+            "PlpGo:"]
+    for k, (row, hdrs) in enumerate(entries):
+        post += ["    LDA #$%02X" % row, "    SEC", "    SBC $%04X" % P2_LN_BASE,
+                 "    CMP $%04X" % P2_LN_SPAN,
+                 "    BEQ PlpH%d" % k, "    BCS PlpS%d" % k,
+                 "PlpH%d:" % k]
+        for h in hdrs:
+            post += ["    LDA $%04X" % h, "    ORA #$E0", "    STA $%04X" % h]
+        post += ["PlpS%d:" % k]
+    post += ["    RTS"]
+    return [
+        ".org $%04X" % EXT2_ADDR,
+        "    JMP P2LineTick",
+        "    JMP P2LinePost",
+        "    JMP P2LineCalc",
+        "    JMP SmSelect",
+        "    JMP SmApply",
+        "    JMP SmInit",
+        # rom:C9CE's call: player 1's line as stock (sub_CC23), then player 2's. In player 2's
+        # object segment 0 the line is P2_OA0 ahead (as it is $A0/$A1 ahead of player 1 in
+        # player 1's: measured, run-03). Rows as rom:CC3D-CC60: the nearer from Z + 6, the
+        # farther from Z + 106, by FastZRow (the same table and answer as sub_CC63's search,
+        # in seven steps); covered when farther < row <= nearer.
+        "P2LineTick:",
+        "    JSR $CC23",
+        # (a tail call in the stock code: hand back sub_CC23's registers and flags as it left them)
+        "    PHP", "    PHA",
+        "    JSR P2LineCalc",
+        "    PLA", "    PLP",
+        "    RTS",
+        # ... and again whenever player 2's own segment state changes (P2ObjInit at a session's
+        # start, P2ObjSeg at a segment's end): on the grid and between sessions the object tick
+        # does not run, and the rows would be the last tick's (measured: the grid had none, and
+        # the qualifying's line stayed on after player 2 crossed it). X and Y are kept: P2ObjSeg
+        # indexes the segment lengths with X straight after. (They were not at first, and
+        # FastZRow's row in X gave segment 0 a wrong length: player 2's crossing then fired late,
+        # and a lap that should have qualified did not -- FINDINGS "Curves on BankSet".)
+        "P2LineCalc:",
+        "    TXA", "    PHA", "    TYA", "    PHA",
+        "    LDA #$FF", "    STA $%04X" % P2_LN_HI,
+        "    LDA $%04X" % P2_OA2,
+        "    BNE PltOut",
+        "    LDA $0048", "    PHA",
+        "    LDA $0049", "    PHA",
+        "    CLC",
+        "    LDA $%04X" % P2_OA0, "    ADC #$06", "    STA $0048",
+        "    LDA $%04X" % (P2_OA0 + 1), "    ADC #$00", "    STA $0049",
+        "    BMI PltDone",                      # (FastZRow takes 0-$7FFF)
+        "    JSR $%04X" % fz,
+        "    CPX #$FF",
+        "    BEQ PltDone",                      # past the horizon
+        "    STX $%04X" % P2_LN_T,
+        "    CLC",
+        "    LDA $0048", "    ADC #$64", "    STA $0048",
+        "    BCC PltLo",
+        "    INC $0049",
+        "PltLo:",
+        "    JSR $%04X" % fz,
+        "    INX",                              # the first row covered ($FF + 1: the top)
+        "    TXA",
+        "    CMP $%04X" % P2_LN_T,
+        "    BEQ PltBase", "    BCS PltDone",  # nothing between the two
+        "PltBase:",
+        "    STA $%04X" % P2_LN_BASE,
+        "    LDA $%04X" % P2_LN_T, "    SEC", "    SBC $%04X" % P2_LN_BASE,
+        "    STA $%04X" % P2_LN_SPAN,
+        "    LDA $%04X" % P2_LN_T, "    STA $%04X" % P2_LN_HI,
+        "PltDone:",
+        "    PLA", "    STA $0049",
+        "    PLA", "    STA $0048",
+        "PltOut:",
+        "    PLA", "    TAY", "    PLA", "    TAX",
+        "    RTS",
+    ] + post + smooth_far_src()
+
+
+def cpu_half(image):
+    """The CPU's half of the BankSet image: the build's image with EXT2 at $6400."""
+    code, _ = _assemble(ext2_src())
+    assert len(code) <= EXT2_END + 1 - EXT2_ADDR, "EXT2 is %d bytes" % len(code)
+    out = bytearray(image)
+    o = EXT2_ADDR - OUT_BASE
+    out[o:o + len(code)] = code
+    return bytes(out)
+
+
+def maria_half(cpu):
+    """MARIA's half of the BankSet image: the image as built (its graphics), plus the slices
+    placed where the CPU's half has code (MARIA_ONLY_ART). MARIA never fetches from the code
+    area, so its bytes there may as well stay."""
+    out = bytearray(cpu)
+    for a, v in MARIA_ONLY_ART.items():
+        out[a - OUT_BASE] = v
+    return bytes(out)
+
+
+def bankset_header(hdr, size):
+    """A version-3 .a78 header for the BankSet image: version-3 readers (MAME, the openFPGA
+    core) take the type word; version 4's mapper fields (zero in the retail header, "linear,
+    no bankset") are dropped with the version, so nothing reads the two ways."""
+    h = bytearray(hdr) if len(hdr) == HDR else bytearray(HDR)
+    if len(hdr) != HDR:
+        h[1:10] = b"ATARI7800"
+        h[17:17 + 23] = b"Pole Position II (NTSC)"
+        h[55] = 1
+        h[100:128] = b"ACTUAL CART DATA STARTS HERE"
+    h[0] = 3
+    h[49:53] = size.to_bytes(4, "big")
+    h[53:55] = BANKSET_TYPE.to_bytes(2, "big")
+    h[64:100] = bytes(36)
+    return bytes(h)
+
+
 def build(out_path, sign=False):
     """Apply the fix directly. Unsigned by default -- see the docstring above
     on why: a recording made against the pristine ROM depends on the
@@ -7487,6 +7894,10 @@ def build(out_path, sign=False):
     for fix in FIXES:
         fix["fn"](p)
     body = bytes(p.rom)
+    maria = None
+    if BANKSET:
+        maria = body                       # MARIA's half: the image with all its graphics
+        body = cpu_half(body)              # the CPU's: EXT2 over the slices
 
     if sign:
         sys.path.insert(0, TOOLKIT_TOOLS)
@@ -7497,7 +7908,10 @@ def build(out_path, sign=False):
             raise SystemExit("could not sign the patched image: %s" % e)
 
     hdr = bytearray(b"\x00" * header if header == 0 else io.open(src, "rb").read()[:header])
-    if header:
+    if BANKSET:
+        body = body + maria_half(maria)
+        hdr = bytearray(bankset_header(hdr, len(body)))
+    elif header:
         hdr[49:53] = len(body).to_bytes(4, "big")    # the a78 cart-size field
     out = bytes(hdr) + body
     io.open(out_path, "wb").write(out)
