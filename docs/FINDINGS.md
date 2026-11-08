@@ -7939,6 +7939,15 @@ reproduced yet:
   line, and the dunes' pixels in P7 from mid-screen on turn white. (Karateka
   found the same on the core: a display interrupt's palette writes show a
   line sooner there than in MAME.)
+  - *Corrected 2026-11-08:* Karateka's findings (`karateka-enh/FINDINGS.md`)
+    hold no such result. The nearest is a guess, still open, about level 2's
+    hawk ("They may be the core's (its DLI and DMA timing: the hawk's grey
+    is written early by `NmiDli` after 4 `WSYNC`s)"). Its other colour
+    timing is MAME's only, and nothing there measures the core against
+    MAME. So "a line sooner on the core" rests on this one Pocket
+    screenshot, with the white's start (142 of 320) where the write's
+    cycle puts it: a hint, not a measured difference. The sky fix's test
+    on the Pocket would settle it.
 - In a race, MARIA's DMA delays the handler enough to push the write past
   the decor, so the line goes once the cars move.
 - Not the start line. That one has never been drawn in player 2's view
