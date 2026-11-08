@@ -8288,3 +8288,44 @@ The higher-detail car on BankSet, checked once with the fix (start 214,
 `-40:40`): tick rate 100, player 2 qualifies 7th as in the other two builds.
 Player 2's road headers are at the same addresses as the standard build's.
 Before the fix, the same build had no road header zeroed over the race.
+
+## MAME's Atari fork: MARIA's DMA costs revised (2026-10-21)
+
+The fork (`Miasmark/mame-Atari8bit7800`, `d83f5929a9a`) now charges MARIA's
+DMA as the 7800 Software Guide's revised Appendix 3 gives it:
+- a display list interrupt costs no DMA time (it was 17 MARIA cycles);
+- the first DMA of a frame costs 8 MARIA cycles more;
+- holey character graphics cost 6 or 9 a object (direct objects stay 3).
+
+Checked on this build, the fork before (`5738bfa8997`) against after, both
+the 48K and the BankSet build:
+- **No change in play.** Six stress starts each: tick rate 100 on all 24
+  runs. `WaitStageTick`'s idle spin (rom:EA28, counted over frames
+  7000-7600) is identical to the pass: 876-1770 idle CPU cycles a frame,
+  depending on the build and start.
+- **Why.** PP2's DLI handlers begin with a `WSYNC` (rom:EBEF, line 46 in
+  the race), so a DLI that starts 17 MARIA cycles (about 4 CPU cycles)
+  sooner just waits longer for the line's end. The handler's first write
+  moves from cycle 82.7 to 78.7 of its line; everything after the `WSYNC`
+  lands where it did.
+- **The sky fix** (`PP2_SKY_W3`) holds: its writes are `WSYNC`-anchored and
+  land on the same beam positions, before and after.
+- **Pictures:** 73 a build, title to race (every 100 frames, scripted), are
+  identical before and after.
+- PP2 uses no holey DMA, so that change doesn't apply.
+
+## MAME's fork with MARIA timed on a real 7800 (2026-10-31)
+
+- **The change** (the user's, measured on an NTSC console with the toolkit's measuring
+  carts; fork `6e12c8b639d`, local `mame-fork/a78.exe` rebuilt at `0a6a1bf19a9`, the
+  one before kept as `a78-de70481.exe`): the first zone of a frame no longer draws its
+  first line twice (a line of DMA a frame less, the picture a line higher); a line past
+  the DMA limit holds the CPU 107 cycles. The Pocket core was changed to match.
+- **Checked** on the BankSet cart (`build/bs/pp2-vs-bankset-curves-signed.a78`):
+  `check-build.sh`'s stress scenario, six starts each (`build/ab/tick_ab.sh`). Tick
+  rates 100 102 100 100 102 100 before, 100 100 102 100 100 100 after: one start's
+  phase, as in every earlier comparison.
+- **A dead end:** `check-build.sh` on `pp2-vs.a78` (the 48K build of 2026-09-24, the
+  BIOS from `../bios`) gave identical verdicts on both builds, but the race clock
+  stayed frozen and every tick rate read 0: the recordings don't race on the fork that
+  way, so that run proves nothing about timing.
